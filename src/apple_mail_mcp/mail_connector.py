@@ -16,7 +16,15 @@ from typing import Any, cast
 
 from imapclient.exceptions import IMAPClientError, LoginError
 
-from .draft_builder import build_draft_mime
+from .draft_builder import (
+    build_draft_mime,
+    build_forward_body,
+    build_reply_body,
+    derive_reply_recipients,
+    forward_subject,
+    parse_original_message,
+    reply_subject,
+)
 from .drafts import _validate_draft_id
 from .exceptions import (
     MailAccountNotFoundError,
@@ -73,6 +81,20 @@ def _now() -> _datetime:
     local time so comparison with IMAP envelope dates (also tz-aware) is
     well-defined."""
     return _datetime.now().astimezone()
+
+
+def _bare_message_id(message_id: str) -> str:
+    """Strip surrounding angle brackets from an RFC 5322 Message-ID.
+
+    ``make_msgid()`` (and raw ``Message-ID`` headers) produce the
+    bracketed form ``<id@host>``, but Mail.app and the read tools store
+    and emit the bare ``id@host``. The IMAP-APPEND draft path returns the
+    bare form as ``draft_id`` so it round-trips through draft-id
+    validation and the ``delete_draft`` / ``update_draft`` lookups (#245)."""
+    mid = message_id.strip()
+    if mid.startswith("<") and mid.endswith(">"):
+        return mid[1:-1]
+    return mid
 
 
 def _construct_as_date_var(var: str, year: int, month: int, day: int) -> str:
@@ -3851,6 +3873,26 @@ class AppleMailConnector:
         result = self._run_applescript(script)
         return cast(list[dict[str, Any]], parse_applescript_json(result))
 
+    def _resolve_draft_lookup_id(self, draft_id: str) -> str:
+        """Map a ``draft_id`` to Mail.app's internal numeric id for the
+        AppleScript ``whose id is`` lookups used by ``delete_draft`` /
+        ``get_draft_state``.
+
+        IMAP-APPEND drafts (#245) are keyed by a bare RFC 5322 Message-ID
+        (contains ``@``); Mail.app's ``id`` property is its own internal id,
+        not the Message-ID, so resolve the Message-ID to that internal id
+        first. Numeric ids pass through unchanged.
+
+        Raises:
+            MailDraftNotFoundError: a Message-ID that matches no message.
+        """
+        if "@" not in draft_id:
+            return draft_id
+        internal = self.find_message_by_message_id(draft_id)
+        if internal is None:
+            raise MailDraftNotFoundError(f"no draft with id {draft_id!r}")
+        return internal
+
     def delete_draft(self, draft_id: str) -> bool:
         """Move a draft to Trash (lifecycle endpoint for cancellation).
 
@@ -3870,6 +3912,7 @@ class AppleMailConnector:
             MailDraftNotFoundError: no draft with that id exists.
         """
         _validate_draft_id(draft_id)
+        lookup_id = self._resolve_draft_lookup_id(draft_id)
 
         script = _wrap_with_timeout(
             f"""tell application "Mail"
@@ -3879,7 +3922,7 @@ class AppleMailConnector:
                     repeat with mb in mailboxes of acc
                         if name of mb contains "Drafts" then
                             try
-                                set m to first message of mb whose id is "{draft_id}"
+                                set m to first message of mb whose id is "{lookup_id}"
                                 delete m
                                 set didDelete to true
                                 exit repeat
@@ -3932,9 +3975,7 @@ class AppleMailConnector:
         """
         if not rfc5322_message_id:
             return None
-        bare = rfc5322_message_id
-        if bare.startswith("<") and bare.endswith(">"):
-            bare = bare[1:-1]
+        bare = _bare_message_id(rfc5322_message_id)
         bracketed = f"<{bare}>"
         safe_bare = escape_applescript_string(sanitize_input(bare))
         safe_bracketed = escape_applescript_string(sanitize_input(bracketed))
@@ -3998,10 +4039,11 @@ class AppleMailConnector:
             MailDraftNotFoundError: no draft with that id exists.
         """
         _validate_draft_id(draft_id)
+        lookup_id = self._resolve_draft_lookup_id(draft_id)
 
         tell_body = f"""
         tell application "Mail"
-            set targetId to "{draft_id}"
+            set targetId to "{lookup_id}"
             set foundDraft to missing value
             repeat with acc in accounts
                 try
@@ -4237,13 +4279,216 @@ class AppleMailConnector:
         imap = ImapConnector(host, port, email, password, pool=self._imap_pool)
         imap.append_draft(raw)
         self._imap_clear_breaker(from_account)
-        return {"draft_id": message_id, "sent_message_id": ""}
+        return {"draft_id": _bare_message_id(message_id), "sent_message_id": ""}
+
+    def _create_reply_forward_draft_via_imap(
+        self,
+        *,
+        seed: str,
+        seed_id: str,
+        seed_mailbox: str,
+        from_account: str,
+        to: list[str] | None,
+        cc: list[str] | None,
+        bcc: list[str] | None,
+        subject: str | None,
+        body: str,
+        reply_all: bool,
+        attachment_paths: list[Path] | None,
+    ) -> dict[str, str]:
+        """Create a clean reply/forward save-as-draft via IMAP APPEND
+        (issue #245 follow-up).
+
+        Fetches the original's raw RFC 822 from ``seed_mailbox`` over IMAP,
+        rebuilds a clean text/plain reply/forward (no Mail.app
+        cite-blockquote) with proper ``In-Reply-To`` / ``References``
+        threading, and APPENDs it to Drafts. For forwards, the original's
+        attachments travel with the draft.
+
+        Raises the standard ``_IMAP_FALLBACK_EXCS`` and
+        ``MailMessageNotFoundError`` (when the original isn't in
+        ``seed_mailbox``) which ``create_draft`` catches to fall back to
+        the AppleScript path — AppleScript resolves the message across all
+        folders, so a folder-guess miss degrades gracefully.
+        """
+        sender = self._resolve_account_to_sender(from_account)
+        host, port, email = self._resolve_imap_config(from_account)
+        password = self._get_imap_password_with_fallback(from_account, email)
+        imap = ImapConnector(host, port, email, password, pool=self._imap_pool)
+
+        raw = imap.fetch_raw_message(seed_id, seed_mailbox)
+        orig = parse_original_message(raw)
+
+        # Threading: In-Reply-To = the original's Message-ID; References =
+        # the original's References chain plus the original's Message-ID.
+        in_reply_to = orig.message_id or None
+        references = list(orig.references)
+        if orig.message_id and orig.message_id not in references:
+            references.append(orig.message_id)
+
+        final_to: list[str]
+        final_cc: list[str] | None
+        if seed == "reply":
+            derived_to, derived_cc = derive_reply_recipients(
+                from_header=orig.from_header,
+                reply_to_header=orig.reply_to_header,
+                to_header=orig.to_header,
+                cc_header=orig.cc_header,
+                self_addresses=[email],
+                reply_all=reply_all,
+            )
+            final_to = to if to is not None else derived_to
+            final_cc = cc if cc is not None else derived_cc
+            final_subject = (
+                subject if subject is not None else reply_subject(orig.subject)
+            )
+            final_body = build_reply_body(
+                new_body=body,
+                original_from=orig.from_header,
+                original_date=orig.date,
+                original_text=orig.text,
+            )
+            forwarded_attachments = None
+        else:  # forward
+            final_to = to if to is not None else []
+            final_cc = cc
+            final_subject = (
+                subject if subject is not None else forward_subject(orig.subject)
+            )
+            final_body = build_forward_body(
+                new_body=body,
+                original_from=orig.from_header,
+                original_date=orig.date,
+                original_subject=orig.subject,
+                original_to=orig.to_header,
+                original_text=orig.text,
+            )
+            forwarded_attachments = orig.attachments or None
+
+        message_id, draft_raw = build_draft_mime(
+            sender=sender,
+            to=final_to,
+            cc=final_cc,
+            bcc=bcc,
+            subject=final_subject or "",
+            body=final_body,
+            attachments=(
+                [Path(p) for p in attachment_paths] if attachment_paths else None
+            ),
+            in_reply_to=in_reply_to,
+            references=references or None,
+            forwarded_attachments=forwarded_attachments,
+        )
+        imap.append_draft(draft_raw)
+        self._imap_clear_breaker(from_account)
+        return {"draft_id": _bare_message_id(message_id), "sent_message_id": ""}
+
+    def _try_imap_compose_draft(
+        self,
+        *,
+        seed: str,
+        send_now: bool,
+        from_account: str | None,
+        to: list[str] | None,
+        cc: list[str] | None,
+        bcc: list[str] | None,
+        subject: str | None,
+        body: str,
+        attachment_paths: list[Path] | None,
+    ) -> dict[str, str] | None:
+        """IMAP-APPEND path for a ``seed="new"`` save-as-draft (issue #245).
+
+        Returns the draft dict when it handles the request, or ``None`` to
+        signal ``create_draft`` to fall through to the AppleScript path.
+        Scoped to ``seed="new"`` save-as-draft with a known account; on the
+        usual IMAP-degradation signals (e.g. no Keychain opt-in) it logs
+        and returns ``None``, preserving prior behavior.
+        """
+        if not (
+            seed == "new"
+            and not send_now
+            and from_account is not None
+            and not self._imap_breaker_open(from_account)
+        ):
+            return None
+        try:
+            return self._create_draft_via_imap(
+                from_account=from_account,
+                to=to or [],
+                cc=cc,
+                bcc=bcc,
+                subject=subject or "",
+                body=body,
+                attachment_paths=attachment_paths,
+            )
+        except _IMAP_FALLBACK_EXCS as exc:
+            self._log_imap_fallback(from_account, exc)
+        return None
+
+    def _try_imap_reply_forward_draft(
+        self,
+        *,
+        seed: str,
+        seed_id: str | None,
+        seed_mailbox: str | None,
+        send_now: bool,
+        from_account: str | None,
+        to: list[str] | None,
+        cc: list[str] | None,
+        bcc: list[str] | None,
+        subject: str | None,
+        body: str,
+        reply_all: bool,
+        attachment_paths: list[Path] | None,
+    ) -> dict[str, str] | None:
+        """IMAP-APPEND path for a reply/forward save-as-draft (issue #245
+        follow-up).
+
+        Same cite-blockquote avoidance as compose, but rebuilds the quoted
+        original + threading from the original's raw RFC 822 (fetched by
+        Message-ID from ``seed_mailbox``). Requires an RFC Message-ID seed
+        (the form read tools emit) and a known account. Returns ``None`` to
+        fall through to AppleScript on IMAP degradation OR a folder-guess
+        miss (``MailMessageNotFoundError``) — AppleScript resolves the seed
+        across all folders.
+        """
+        if not (
+            seed in ("reply", "forward")
+            and not send_now
+            and seed_id is not None
+            and "@" in seed_id
+            and from_account is not None
+            and not self._imap_breaker_open(from_account)
+        ):
+            return None
+        try:
+            return self._create_reply_forward_draft_via_imap(
+                seed=seed,
+                seed_id=seed_id,
+                seed_mailbox=seed_mailbox or "INBOX",
+                from_account=from_account,
+                to=to,
+                cc=cc,
+                bcc=bcc,
+                subject=subject,
+                body=body,
+                reply_all=reply_all,
+                attachment_paths=attachment_paths,
+            )
+        except _IMAP_FALLBACK_EXCS as exc:
+            self._log_imap_fallback(from_account, exc)
+        except MailMessageNotFoundError as exc:
+            # Original not in seed_mailbox (or wrong folder hint) — the
+            # AppleScript path resolves the seed across all folders.
+            self._log_imap_fallback(from_account, exc)
+        return None
 
     def create_draft(
         self,
         *,
         seed: str = "new",
         seed_id: str | None = None,
+        seed_mailbox: str | None = None,
         to: list[str] | None = None,
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
@@ -4261,8 +4506,17 @@ class AppleMailConnector:
         RFC 822 message rather than Mail.app's AppleScript ``content``
         setter, which wraps the body in a cite-blockquote that renders as
         a quote on iOS (Mail.app bug FB11734014, #245). Falls back to the
-        AppleScript path when IMAP isn't configured. Reply/forward and
-        ``send_now=True`` still use AppleScript.
+        AppleScript path when IMAP isn't configured.
+
+        ``seed="reply"`` / ``seed="forward"`` save-as-draft also use the
+        clean IMAP path when ``seed_id`` is an RFC Message-ID and
+        ``from_account`` is known: the original is fetched from
+        ``seed_mailbox`` (default INBOX), and the quoted body + ``Re:``/
+        ``Fwd:`` subject + ``In-Reply-To``/``References`` threading are
+        rebuilt in plain text (forwards carry the original's attachments).
+        Falls back to AppleScript when IMAP isn't configured or the
+        original isn't in ``seed_mailbox``. ``send_now=True`` still uses
+        AppleScript.
 
         Args:
             seed: ``"new"``, ``"reply"``, or ``"forward"``.
@@ -4272,6 +4526,11 @@ class AppleMailConnector:
                 is what read tools (``search_messages`` / ``get_messages``)
                 emit as ``id`` on the IMAP path (#148), so callers can
                 forward those ids verbatim. Required when ``seed != "new"``.
+            seed_mailbox: Folder the seed message lives in, used by the
+                clean reply/forward IMAP path to fetch the original
+                (default INBOX). Supply it for replies to filed mail; a
+                miss falls back to AppleScript (which resolves across all
+                folders). Ignored for ``seed="new"``.
             to/cc/bcc: Recipient lists. For reply/forward, ``None`` keeps
                 Mail's auto-derived recipients; an empty list explicitly
                 clears that group; a populated list replaces.
@@ -4301,32 +4560,37 @@ class AppleMailConnector:
         """
         self._validate_create_draft_args(seed, seed_id, to, subject)
 
-        # IMAP-APPEND path for compose drafts (issue #245): bypasses
-        # Mail.app's AppleScript `content` setter, which wraps the body in
-        # an Apple-Mail-URLShareWrapper <blockquote type="cite"> (Mail.app
-        # bug FB11734014) that renders as a quote on iOS. Scoped to
-        # seed="new" save-as-draft with a known account; on the usual
-        # IMAP-degradation signals (e.g. no Keychain opt-in) we fall back
-        # to the AppleScript path below, preserving prior behavior.
-        if (
-            seed == "new"
-            and not send_now
-            and from_account is not None
-            and not self._imap_breaker_open(from_account)
-        ):
-            try:
-                return self._create_draft_via_imap(
-                    from_account=from_account,
-                    to=to or [],
-                    cc=cc,
-                    bcc=bcc,
-                    subject=subject or "",
-                    body=body,
-                    attachment_paths=attachment_paths,
-                )
-            except _IMAP_FALLBACK_EXCS as exc:
-                self._log_imap_fallback(from_account, exc)
-            # fall through to the AppleScript path
+        # Clean IMAP-APPEND paths (issue #245) — return a draft dict when
+        # they handle the request, or None to fall through to AppleScript.
+        # Both avoid Mail.app's cite-blockquote wrapper (bug FB11734014).
+        imap_result = self._try_imap_compose_draft(
+            seed=seed,
+            send_now=send_now,
+            from_account=from_account,
+            to=to,
+            cc=cc,
+            bcc=bcc,
+            subject=subject,
+            body=body,
+            attachment_paths=attachment_paths,
+        )
+        if imap_result is None:
+            imap_result = self._try_imap_reply_forward_draft(
+                seed=seed,
+                seed_id=seed_id,
+                seed_mailbox=seed_mailbox,
+                send_now=send_now,
+                from_account=from_account,
+                to=to,
+                cc=cc,
+                bcc=bcc,
+                subject=subject,
+                body=body,
+                reply_all=reply_all,
+                attachment_paths=attachment_paths,
+            )
+        if imap_result is not None:
+            return imap_result
 
         # If the caller handed us an RFC 5322 Message-ID (the form read
         # tools emit on the IMAP path per #148), resolve to Mail's

@@ -5055,6 +5055,39 @@ class TestDeleteDraft:
         mock_run.return_value = "OK\n"
         assert connector.delete_draft("160991") is True
 
+    @patch.object(
+        AppleMailConnector, "find_message_by_message_id", return_value="160991"
+    )
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_delete_draft_resolves_rfc_message_id(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        # IMAP-APPEND drafts (#245) are identified by a bare RFC Message-ID.
+        # delete_draft must resolve it to Mail's internal id first, then
+        # delete by that internal id (whose `id` property).
+        mock_run.return_value = "OK"
+        assert connector.delete_draft("abc.123@host") is True
+        mock_find.assert_called_once_with("abc.123@host")
+        script = mock_run.call_args[0][0]
+        assert 'whose id is "160991"' in script
+
+    @patch.object(
+        AppleMailConnector, "find_message_by_message_id", return_value=None
+    )
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_delete_draft_unresolved_rfc_message_id_raises(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        with pytest.raises(MailDraftNotFoundError):
+            connector.delete_draft("missing@host")
+        mock_run.assert_not_called()
+
 
 class TestFindMessageByMessageId:
     """Tests for AppleMailConnector.find_message_by_message_id."""
@@ -5212,6 +5245,44 @@ class TestGetDraftState:
         mock_run.return_value = '{"found":false}'
         with pytest.raises(MailDraftNotFoundError):
             connector.get_draft_state("999999")
+
+    @patch.object(
+        AppleMailConnector, "find_message_by_message_id", return_value="160991"
+    )
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_resolves_rfc_message_id(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        # IMAP-APPEND drafts (#245) are keyed by a bare RFC Message-ID;
+        # update_draft's get_draft_state must resolve it to Mail's internal
+        # id before the AppleScript scan (which matches on `id`, not
+        # `message id`).
+        mock_run.return_value = (
+            '{"found":true,"draft_id":"160991","to":[],"cc":[],"bcc":[],'
+            '"subject":"","body":"","in_reply_to":"","references":"",'
+            '"attachment_names":[]}'
+        )
+        connector.get_draft_state("abc.123@host")
+        mock_find.assert_called_once_with("abc.123@host")
+        script = mock_run.call_args[0][0]
+        assert 'set targetId to "160991"' in script
+
+    @patch.object(
+        AppleMailConnector, "find_message_by_message_id", return_value=None
+    )
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_unresolved_rfc_message_id_raises(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        connector: AppleMailConnector,
+    ) -> None:
+        with pytest.raises(MailDraftNotFoundError):
+            connector.get_draft_state("missing@host")
+        mock_run.assert_not_called()
 
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_strips_internal_found_flag(
@@ -6878,6 +6949,40 @@ class TestCreateDraftImapAppend:
         # draft_id is the generated RFC Message-ID.
         assert "@" in result["draft_id"]
 
+    @patch.object(AppleMailConnector, "_run_applescript")
+    @patch("apple_mail_mcp.mail_connector.ImapConnector")
+    @patch("apple_mail_mcp.mail_connector.get_imap_password", return_value="pw")
+    @patch.object(
+        AppleMailConnector,
+        "_resolve_imap_config",
+        return_value=("imap.host", 993, "appleid@fmasi.eu"),
+    )
+    @patch.object(
+        AppleMailConnector,
+        "_resolve_account_to_sender",
+        return_value="Fred <email@fmasi.eu>",
+    )
+    def test_returned_draft_id_is_bare_and_valid(
+        self, _sender, _cfg, _pw, mock_imap_cls, mock_applescript
+    ):
+        # The returned draft_id must be the BARE Message-ID (no angle
+        # brackets) so it matches what read tools / Mail.app store and so
+        # it round-trips through delete_draft / update_draft validation.
+        from apple_mail_mcp.drafts import _validate_draft_id
+
+        conn = self._conn()
+        result = conn.create_draft(
+            seed="new",
+            to=["lazar@hadleigh.co.uk"],
+            subject="Re: Flat 9 Constable House",
+            body="Hi Lazar,",
+            from_account="iCloud",
+            send_now=False,
+        )
+        draft_id = result["draft_id"]
+        assert "<" not in draft_id and ">" not in draft_id
+        _validate_draft_id(draft_id)  # must not raise
+
     @patch.object(AppleMailConnector, "_run_applescript", return_value="123")
     @patch("apple_mail_mcp.mail_connector.ImapConnector")
     @patch("apple_mail_mcp.mail_connector.get_imap_password", return_value="pw")
@@ -6912,3 +7017,157 @@ class TestCreateDraftImapAppend:
         mock_imap_cls.return_value.append_draft.assert_called_once()
         mock_applescript.assert_called_once()
         assert result["draft_id"] == "123"
+
+
+class TestCreateReplyForwardDraftViaImap:
+    """Issue #245 follow-up: reply/forward save-as-draft via IMAP APPEND of
+    a hand-built clean RFC822 message (no Mail.app cite-blockquote), with
+    threading headers and (for forward) the original's attachments."""
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    @staticmethod
+    def _original(*, with_attachment: bool = False) -> tuple[str, bytes]:
+        from apple_mail_mcp.draft_builder import build_draft_mime
+        fwd = (
+            [("invoice.pdf", "application", "pdf", b"%PDF data")]
+            if with_attachment
+            else None
+        )
+        mid, raw = build_draft_mime(
+            sender="Lazar <lazar@hadleigh.co.uk>",
+            to=["email@fmasi.eu", "Bob <bob@x.com>"],
+            subject="Flat 9 Constable House",
+            body="Hi Frederic,\n\nConfirming the invoice.",
+            cc=["carol@y.com"],
+            forwarded_attachments=fwd,
+        )
+        return mid, raw
+
+    def _patches(self, connector, mock_imap):
+        from unittest.mock import patch
+        return [
+            patch("apple_mail_mcp.mail_connector.ImapConnector",
+                  return_value=mock_imap),
+            patch.object(AppleMailConnector, "_get_imap_password_with_fallback",
+                         return_value="pw"),
+            patch.object(AppleMailConnector, "_resolve_imap_config",
+                         return_value=("h", 993, "email@fmasi.eu")),
+            patch.object(AppleMailConnector, "_resolve_account_to_sender",
+                         return_value="email@fmasi.eu"),
+        ]
+
+    def _run(self, connector, mock_imap, **kw):
+        import contextlib
+        captured: dict = {}
+        mock_imap.append_draft.side_effect = (
+            lambda raw: captured.setdefault("raw", raw)
+        )
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(connector, mock_imap):
+                stack.enter_context(p)
+            result = connector.create_draft(**kw)
+        return result, captured.get("raw")
+
+    def test_reply_builds_clean_threaded_quoted_draft(self, connector):
+        import email as _email
+        from email import policy as _policy
+        orig_mid, orig_raw = self._original()
+        mock_imap = MagicMock()
+        mock_imap.fetch_raw_message.return_value = orig_raw
+
+        result, raw = self._run(
+            connector, mock_imap,
+            seed="reply", seed_id=orig_mid, from_account="iCloud",
+            body="Thanks Lazar.",
+        )
+        assert "blockquote" not in raw.decode().lower()
+        msg = _email.message_from_bytes(raw, policy=_policy.default)
+        assert msg["In-Reply-To"] == orig_mid
+        assert msg["Subject"] == "Re: Flat 9 Constable House"
+        assert msg["To"] == "Lazar <lazar@hadleigh.co.uk>"
+        body = msg.get_content()
+        assert body.startswith("Thanks Lazar.")
+        assert "> Hi Frederic," in body
+        assert result["draft_id"] and result["draft_id"] != orig_mid
+        mock_imap.fetch_raw_message.assert_called_once_with(orig_mid, "INBOX")
+
+    def test_reply_all_ccs_others_minus_self(self, connector):
+        import email as _email
+        from email import policy as _policy
+        orig_mid, orig_raw = self._original()
+        mock_imap = MagicMock()
+        mock_imap.fetch_raw_message.return_value = orig_raw
+        _result, raw = self._run(
+            connector, mock_imap,
+            seed="reply", seed_id=orig_mid, from_account="iCloud",
+            body="Thanks all.", reply_all=True,
+        )
+        msg = _email.message_from_bytes(raw, policy=_policy.default)
+        cc = msg["Cc"] or ""
+        assert "bob@x.com" in cc and "carol@y.com" in cc
+        assert "email@fmasi.eu" not in cc  # self excluded
+
+    def test_forward_carries_attachment_and_seed_mailbox(self, connector):
+        import email as _email
+        from email import policy as _policy
+        orig_mid, orig_raw = self._original(with_attachment=True)
+        mock_imap = MagicMock()
+        mock_imap.fetch_raw_message.return_value = orig_raw
+        _result, raw = self._run(
+            connector, mock_imap,
+            seed="forward", seed_id=orig_mid, seed_mailbox="Finance/Constable House",
+            from_account="iCloud", to=["colleague@firm.com"], body="FYI",
+        )
+        msg = _email.message_from_bytes(raw, policy=_policy.default)
+        assert msg["Subject"] == "Fwd: Flat 9 Constable House"
+        names = [p.get_filename() for p in msg.iter_attachments()]
+        assert "invoice.pdf" in names
+        body_part = msg.get_body(preferencelist=("plain",))
+        assert "---------- Forwarded message ----------" in body_part.get_content()
+        mock_imap.fetch_raw_message.assert_called_once_with(
+            orig_mid, "Finance/Constable House"
+        )
+
+    def test_numeric_seed_id_skips_imap_reply_path(self, connector):
+        from unittest.mock import patch
+
+        class _Stop(Exception):
+            pass
+
+        # A numeric seed_id must NOT take the IMAP reply path; it proceeds
+        # to the AppleScript path, whose first step is
+        # _maybe_resolve_rfc_seed_id (used here as a tripwire).
+        with (
+            patch.object(AppleMailConnector,
+                         "_create_reply_forward_draft_via_imap") as m,
+            patch.object(AppleMailConnector, "_maybe_resolve_rfc_seed_id",
+                         side_effect=_Stop),
+        ):
+            with pytest.raises(_Stop):
+                connector.create_draft(
+                    seed="reply", seed_id="12345", from_account="iCloud", body="x",
+                )
+            m.assert_not_called()
+
+    def test_missing_original_falls_back_to_applescript(self, connector):
+        from unittest.mock import patch
+        with (
+            patch.object(AppleMailConnector,
+                         "_create_reply_forward_draft_via_imap",
+                         side_effect=MailMessageNotFoundError("not here")),
+            patch.object(AppleMailConnector, "_maybe_resolve_rfc_seed_id",
+                         return_value="999"),
+            patch.object(AppleMailConnector, "_run_applescript",
+                         return_value="999"),
+            patch.object(AppleMailConnector, "_resolve_account_to_sender",
+                         return_value="email@fmasi.eu"),
+        ):
+            # Must NOT raise — falls through to the AppleScript path.
+            result = connector.create_draft(
+                seed="reply", seed_id="<x@y.com>", from_account="iCloud",
+                body="hi",
+            )
+            assert "draft_id" in result
