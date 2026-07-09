@@ -55,6 +55,33 @@ class TestBuildInfoFromGit:
         assert info["commit"] == "0ef7dd33b850"
         assert info["dirty"] is False
 
+    def test_untracked_files_do_not_mean_dirty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """uv leaves an untracked `.ok` in the checkout it builds from.
+
+        Counting untracked files flagged every `uvx --from git+…` install as
+        -dirty. `git status --porcelain --untracked-files=no` is the fix, and
+        this asserts we pass that flag.
+        """
+        seen: list[tuple[str, ...]] = []
+
+        def fake_git(*args: str) -> str | None:
+            seen.append(args)
+            if args[0] == "rev-parse":
+                return "9aa07b537411"
+            if args[0] == "status":
+                # only tracked changes are reported when -uno is passed
+                return "" if "--untracked-files=no" in args else "?? .ok"
+            return "2026-07-09T15:57:51-07:00"
+
+        monkeypatch.setattr(version, "_from_build_hook", lambda: None)
+        monkeypatch.setattr(version, "_git", fake_git)
+        assert version.build_info()["dirty"] is False
+        assert any("--untracked-files=no" in a for a in seen), (
+            "status must exclude untracked files"
+        )
+
     def test_dirty_tree_is_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(version, "_from_build_hook", lambda: None)
         monkeypatch.setattr(
