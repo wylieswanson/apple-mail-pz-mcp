@@ -86,6 +86,28 @@ Two consequences drive real code:
   Scalars (`int`/`bool`/`float`) need no alias: Pydantic's lax mode already
   coerces `"50"` → `50`.
 
+## Measuring LLM Efficiency
+
+The thesis is worth nothing unless it is falsifiable. Three instruments:
+
+| Instrument | Measures | Run it |
+|---|---|---|
+| `scripts/schema_budget.py` | Bytes of `tools/list` paid on **every** request | `make schema-budget` |
+| `evals/agent_tool_usability/task_eval.py` | Round-trips + tokens per **completed** task | `make eval-tasks` |
+| `evals/agent_tool_usability/run_eval.py` | Can a model pick the right tool at all? | `make eval-tools` |
+
+`make check-all` ratchets the schema budget against `evals/schema_budget.json`.
+Growth is not forbidden — a new tool costs bytes — but it must be re-recorded
+with `--update` and justified, never allowed to drift.
+
+Measure before optimizing the tool surface. A fatter `search_messages` costs
+schema bytes on every request and saves round-trips on some; which wins is an
+empirical question, and `task_eval.py` is the referee. Each task's `budget` is
+the number of calls a competent agent needs. `batch-mark-read` is the
+discriminating case: `update_message` takes a list of ids, and an agent that
+ignores that still *succeeds* — just expensively. Tool descriptions are part of
+this budget; keep only prose that changes what the model does.
+
 ## Core Principles
 
 - **TDD always** — RED/GREEN/REFACTOR. Tests before implementation.

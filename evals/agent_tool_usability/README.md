@@ -1,22 +1,63 @@
-# Blind Agent Tool Usability Evals
+# Agent Evals
+
+Two harnesses that answer different questions. Both matter; neither substitutes
+for the other.
+
+| | `run_eval.py` (usability) | `task_eval.py` (cost) |
+|---|---|---|
+| Question | Can a model pick the right tool from the description alone? | What does finishing the task actually cost? |
+| Turns | One | Runs to completion |
+| Tools | Described in a prompt, never executed | Executed against the real MCP server |
+| Scored on | The model's prose | The resulting mailbox state |
+| Reports | PASS / PARTIAL / FAIL | round-trips, turns, tokens, over-budget |
+
+A third instrument, [`scripts/schema_budget.py`](../../scripts/schema_budget.py),
+measures the fixed cost the tool schemas impose on *every* request, before the
+model does anything. `make check-all` ratchets it.
+
+## Cost eval (`task_eval.py`)
+
+```bash
+make eval-tasks                              # default model
+make eval-tasks MODEL=openai/gpt-5.5         # or pick one
+```
+
+Each task in [`tasks.py`](tasks.py) declares a `budget` — the number of tool
+calls a competent agent needs. That number is the LLM-efficiency thesis written
+down. The discriminating case is `batch-mark-read`: `update_message` accepts a
+list of ids, so a batching agent finishes in two calls while an agent that
+updates one message at a time takes four and scales with inbox size. Both
+succeed. Only one is affordable, and only this harness can tell them apart.
+
+Tasks are graded by inspecting the mailbox afterwards, never by reading the
+model's summary — an agent that says "Done! I marked them all as read" without
+calling a tool fails. The mailbox is [`fake_mail.py`](fake_mail.py), an
+in-memory fixture; the *server* is real, so schemas, validation, argument
+coercion, and response bounding are all exercised.
+
+The model is injected as a `chat` callable, so
+[`tests/unit/test_task_eval.py`](../../tests/unit/test_task_eval.py) drives the
+same loop with scripted responses and costs nothing in CI.
+
+## Usability eval (`run_eval.py`)
 
 Tests whether LLMs can correctly use Apple Mail MCP tools from descriptions alone.
 
-## How It Works
+### How It Works
 
 1. Each scenario is a natural language user prompt (e.g., "What mailboxes do I have?")
 2. The LLM receives ONLY the server instructions, tool names, descriptions, and parameter schemas — no code, no docs
 3. The LLM plans which tool(s) to call and with what parameters
 4. Automated scoring compares against expected tools and critical parameters
 
-## Scoring Rubric
+### Scoring Rubric
 
 - **PASS (2 pts):** Correct tool(s) with all critical parameters correct
 - **PARTIAL (1 pt):** Correct primary tool(s), at least one required param correct
 - **FAIL (0 pts):** Wrong tool selected or critical parameters entirely wrong
 - **MANUAL:** Requires human judgment (under-specified prompts where the expected behavior is to ask for clarification)
 
-## Files
+### Files
 
 - `scenarios.py` — Eval scenarios with expected tools and key params
 - `run_eval.py` — Runner that sends prompts to LLMs via OpenRouter
@@ -24,7 +65,7 @@ Tests whether LLMs can correctly use Apple Mail MCP tools from descriptions alon
 - `server_instructions.md` — Server instructions fragment (also embedded in tool_descriptions.md)
 - `results/` — Raw JSON results per model (git-ignored; checked in via `.gitkeep`)
 
-## Running
+### Running
 
 `openai` is not a runtime dependency of the MCP server — install it locally before running:
 
