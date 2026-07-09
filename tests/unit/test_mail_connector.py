@@ -4877,6 +4877,21 @@ class TestWhoseIdQuoting:
         assert f'message id is "<{uuid_id}>"' in script
 
     @patch.object(AppleMailConnector, "_run_applescript")
+    def test_spaced_bracketed_message_id_is_canonicalized_in_whose(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.return_value = "[]"
+        uuid_id = "CF7C3761-C190-40BA-B94E-3EBC321980ED@icloud.com"
+
+        connector.get_attachments(f" <{uuid_id}>")
+
+        script = mock_run.call_args[0][0]
+        assert f'message id is "{uuid_id}"' in script
+        assert f'message id is "<{uuid_id}>"' in script
+        assert f'message id is " <{uuid_id}>"' not in script
+        assert f'message id is "< <{uuid_id}>>"' not in script
+
+    @patch.object(AppleMailConnector, "_run_applescript")
     def test_save_attachments_quotes_id_in_whose(
         self, mock_run: MagicMock, connector: AppleMailConnector
     ) -> None:

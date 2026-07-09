@@ -175,6 +175,41 @@ def _attachment_cap_overrides() -> dict[str, Any]:
 _imap_pool = _build_imap_pool()
 _register_pool_atexit(_imap_pool)
 mail = AppleMailConnector(imap_pool=_imap_pool, **_attachment_cap_overrides())
+_local_db_startup_warning_emitted = False
+
+
+def _warn_if_local_db_unavailable() -> None:
+    """Log one startup warning when the opt-in local DB path cannot be used."""
+    global _local_db_startup_warning_emitted
+    if _local_db_startup_warning_emitted:
+        return
+    if getattr(mail, "_local_db_enabled", False) is not True:
+        return
+
+    try:
+        report = mail.diagnose_mail_access()
+    except Exception as exc:  # pragma: no cover - defensive startup logging
+        logger.warning(
+            "Local DB search is enabled, but startup diagnostics failed; "
+            "metadata search will fall back to IMAP/AppleScript. "
+            "Run diagnose_mail_access for details. Error: %s",
+            exc,
+        )
+        _local_db_startup_warning_emitted = True
+        return
+
+    local_db = report.get("local_db", {})
+    if not local_db.get("available"):
+        recommendations = report.get("recommendations") or local_db.get(
+            "recommendations"
+        ) or ["Run diagnose_mail_access for details."]
+        logger.warning(
+            "Local DB search is enabled but unavailable; metadata search "
+            "will fall back to IMAP/AppleScript. %s Recommendation: %s",
+            local_db.get("error") or "Envelope Index is not readable.",
+            recommendations[0],
+        )
+    _local_db_startup_warning_emitted = True
 
 
 async def _elicit_confirmation(
@@ -1056,11 +1091,12 @@ def search_messages(
             searches the account/mailbox normally.
         include_attachments: When True, each row includes an ``attachments``
             field listing per-attachment metadata (name, mime_type, size,
-            downloaded). Default False — opt-in because the AppleScript
-            fallback path can be slow on cold caches (#142). Free on the
-            IMAP fast path. To fetch attachment metadata for a known list
-            of ids cheaply, prefer ``get_messages([ids])`` (default-on
-            attachments, bounded cardinality).
+            downloaded, and ``encoded_size`` on the IMAP path). Default
+            False — opt-in because the AppleScript fallback path can be slow
+            on cold caches (#142). Free on the IMAP fast path. To fetch
+            attachment metadata for a known list of ids cheaply, prefer
+            ``get_messages([ids])`` (default-on attachments, bounded
+            cardinality).
         body_contains: Substring match against message body content. IMAP
             uses ``BODY`` predicate (sub-second); AppleScript reads
             ``content of msg`` per candidate (very slow on large mailboxes
@@ -1295,10 +1331,10 @@ def get_messages(
             Ignored for the ``"SELECTED"`` sentinel (selection is global).
         mailbox: Folder to look in for the IMAP fast path (e.g. "INBOX").
         include_attachments: Include per-attachment metadata (name,
-            mime_type, size, downloaded) on each message (default: True).
-            Bounded cost — id-list cardinality is typically 1-10. Free on
-            the IMAP fast path; cheap-enough on the AppleScript fallback
-            for typical id counts.
+            mime_type, size, downloaded, and ``encoded_size`` on the IMAP
+            path) on each message (default: True). Bounded cost — id-list
+            cardinality is typically 1-10. Free on the IMAP fast path;
+            cheap-enough on the AppleScript fallback for typical id counts.
 
     Returns:
         Dictionary containing the list of messages and count. Each message
@@ -1875,15 +1911,16 @@ def get_attachment_content(
 
     Returns:
         ``{"success": True, "content": <str>, "encoding": "text"|"base64",
-        "name": <filename>, "mime_type": <type>, "size": <bytes>}``. Text-like
-        types (``text/*``, ``application/json``, ``application/xml``, …) are
-        returned as a UTF-8 string (``encoding="text"``); everything else —
-        and any text type that isn't valid UTF-8 — is base64
-        (``encoding="base64"``).
+        "name": <filename>, "mime_type": <type>, "size": <bytes>}``.
+        ``size`` is the decoded byte count. Text-like types (``text/*``,
+        ``application/json``, ``application/xml``, …) are returned as a UTF-8
+        string (``encoding="text"``); everything else — and any text type
+        that isn't valid UTF-8 — is base64 (``encoding="base64"``).
 
     Size limit: attachments over ~25 MB are rejected
     (``error_type: "attachment_too_large"``) — use ``save_attachments`` for
-    large files. Override via ``APPLE_MAIL_MCP_MAX_INLINE_ATTACHMENT_BYTES``.
+    large or binary files. Override via
+    ``APPLE_MAIL_MCP_MAX_INLINE_ATTACHMENT_BYTES``.
     """
     try:
         rate_err = check_rate_limit(
@@ -3590,6 +3627,7 @@ def main(argv: list[str] | None = None) -> int:
             "Read-only mode: 14 mutating tools skipped (--read-only). "
             "Only the 12 read tools are registered."
         )
+    _warn_if_local_db_unavailable()
     logger.info("Starting Apple Mail MCP server")
     mcp.run()
     return 0

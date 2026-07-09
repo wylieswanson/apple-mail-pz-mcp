@@ -738,6 +738,35 @@ class TestEnvelopeTranslation:
         assert msg["id"] == "abc@example.com"
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_strips_leading_space_and_angle_brackets_from_message_id(self, mock_cls):
+        """Outlook/Exchange can surface ENVELOPE Message-ID as the raw header
+        value including the space after ``Message-ID:``. Emit the canonical
+        bare id so search results round-trip into lookup tools."""
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.search.return_value = [1]
+        mock_client.fetch.return_value = {
+            1: {
+                b"ENVELOPE": _fake_envelope(
+                    message_id=(
+                        b" <MW4PR03MB661775AE5733B39D45CE44C5D114A"
+                        b"@MW4PR03MB6617.namprd03.prod.outlook.com>"
+                    )
+                ),
+                b"FLAGS": (),
+            }
+        }
+
+        [msg] = ImapConnector("h", 993, "u@e.com", "pw").search_messages()
+
+        assert (
+            msg["id"]
+            == "MW4PR03MB661775AE5733B39D45CE44C5D114A"
+            "@MW4PR03MB6617.namprd03.prod.outlook.com"
+        )
+        assert msg["rfc_message_id"] == msg["id"]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_emits_both_id_and_rfc_message_id_dual_emit(self, mock_cls):
         """#148: every IMAP-path row carries `rfc_message_id` alongside
         `id`. On this path the two are intentionally identical (both
@@ -1084,6 +1113,22 @@ class TestGetMessage:
         )
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_search_accepts_spaced_bracketed_id(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """A search result id emitted by a prior buggy build should still be
+        accepted verbatim on input."""
+        self._setup_client(mock_cls)
+
+        ImapConnector("h", 993, "u@e.com", "pw").get_message(
+            " <abc@example.com>", mailbox="INBOX",
+        )
+
+        mock_cls.return_value.search.assert_called_once_with(
+            ["HEADER", "Message-ID", "<abc@example.com>"]
+        )
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_select_folder_honors_mailbox_param(
         self, mock_cls: MagicMock
     ) -> None:
@@ -1362,6 +1407,7 @@ class TestGetAttachments:
         assert result[0]["name"] == "04 FS.pdf"
         assert result[0]["mime_type"] == "application/pdf"
         assert result[0]["size"] == 289236
+        assert result[0]["encoded_size"] == 289236
         assert _bodystructure_has_attachment(_BS_REAL_ICLOUD_MIXED_PDF) is True
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
@@ -1419,6 +1465,7 @@ class TestGetAttachments:
             "name": "report.pdf",
             "mime_type": "application/pdf",
             "size": 524288,
+            "encoded_size": 524288,
             "downloaded": False,  # always False on IMAP path; documented divergence
         }]
 

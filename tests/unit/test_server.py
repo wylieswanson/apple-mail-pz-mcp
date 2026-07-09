@@ -28,6 +28,7 @@ from apple_mail_fast_mcp.exceptions import (
 )
 from apple_mail_fast_mcp.server import (
     _elicit_confirmation,
+    _warn_if_local_db_unavailable,
     create_mailbox,
     create_rule,
     delete_messages,
@@ -372,6 +373,46 @@ class TestListRules:
 # ---------------------------------------------------------------------------
 # 0c. diagnose_mail_access
 # ---------------------------------------------------------------------------
+
+
+class TestLocalDbStartupWarning:
+    def test_warns_once_when_enabled_but_unavailable(
+        self, mock_mail: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import apple_mail_fast_mcp.server as server
+
+        server._local_db_startup_warning_emitted = False
+        mock_mail._local_db_enabled = True
+        mock_mail.diagnose_mail_access.return_value = {
+            "local_db_enabled": True,
+            "local_db": {
+                "available": False,
+                "error": "Cannot list /Users/me/Library/Mail",
+            },
+            "recommendations": [
+                "Grant Full Disk Access to the host app launching this MCP server."
+            ],
+        }
+
+        with caplog.at_level("WARNING", logger="apple_mail_fast_mcp.server"):
+            _warn_if_local_db_unavailable()
+            _warn_if_local_db_unavailable()
+
+        assert caplog.text.count("Local DB search is enabled but unavailable") == 1
+        mock_mail.diagnose_mail_access.assert_called_once_with()
+        server._local_db_startup_warning_emitted = False
+
+    def test_skips_diagnostics_when_local_db_disabled(
+        self, mock_mail: MagicMock
+    ) -> None:
+        import apple_mail_fast_mcp.server as server
+
+        server._local_db_startup_warning_emitted = False
+        mock_mail._local_db_enabled = False
+
+        _warn_if_local_db_unavailable()
+
+        mock_mail.diagnose_mail_access.assert_not_called()
 
 
 class TestDiagnoseMailAccess:

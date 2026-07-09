@@ -67,7 +67,7 @@ def _build_envelope_index(path: Path) -> None:
     )
     conn.executemany(
         "INSERT INTO message_global_data(message_id, message_id_header) VALUES (?, ?)",
-        [(111, "<rfc-111@example.com>"), (222, "rfc-222@example.com")],
+        [(111, " <rfc-111@example.com>"), (222, "rfc-222@example.com")],
     )
     conn.executemany(
         """

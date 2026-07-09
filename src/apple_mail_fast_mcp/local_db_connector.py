@@ -148,7 +148,7 @@ def _bare_message_id(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     if stripped.startswith("<") and stripped.endswith(">"):
-        stripped = stripped[1:-1]
+        stripped = stripped[1:-1].strip()
     return stripped or None
 
 

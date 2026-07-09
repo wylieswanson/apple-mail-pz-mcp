@@ -85,7 +85,7 @@ Search for messages matching specified criteria.
 | `has_attachment` | boolean | No | None | Filter messages with (true) or without (false) attachments |
 | `limit` | integer | No | 50 | Maximum number of results to return |
 | `source` | list[string] \| null | No | null | Optional list of message ids (with optional `"SELECTED"` sentinel) to scope the search to. `null` (default) searches the account/mailbox normally. |
-| `include_attachments` | boolean | No | false | When true, each row includes an `attachments` field with per-attachment metadata. Default off — opt-in because the AppleScript fallback path can be slow on cold caches (#142). Free on the IMAP fast path. |
+| `include_attachments` | boolean | No | false | When true, each row includes an `attachments` field with per-attachment metadata. On IMAP rows, `size` is the BODYSTRUCTURE-reported transfer size and `encoded_size` is included explicitly; `get_attachment_content.size` is the decoded byte count. Default off — opt-in because the AppleScript fallback path can be slow on cold caches (#142). Free on the IMAP fast path. |
 | `body_contains` | string | No | None | Substring match against message body content. IMAP: server-side `BODY` predicate (sub-second). AppleScript: per-message body read (very slow — see performance note). Case-insensitive. |
 | `text_contains` | string | No | None | Substring match against headers + body (RFC 3501 `TEXT`). IMAP: server-side `TEXT` predicate. AppleScript: matches `content + subject + sender` (recipients omitted). Same perf characteristics as `body_contains`. |
 
@@ -214,7 +214,7 @@ Retrieve full details of one or more messages, with bodies. Returns a list (alwa
 | `headers_only` | boolean | No | false | IMAP fast-path optimization for explicit ids; ignored on AppleScript fallback |
 | `account` | string | No | None | Mail.app account name. With `mailbox`, activates the IMAP fast path for explicit ids (issue #72) |
 | `mailbox` | string | No | None | Folder for the IMAP fast path (e.g. "INBOX") |
-| `include_attachments` | boolean | No | true | When true, each message gains an `attachments: [{name, mime_type, size, downloaded}]` field. Default on for `get_messages` because id-list cardinality is bounded (typically 1-10) — cost is acceptable on both paths. |
+| `include_attachments` | boolean | No | true | When true, each message gains an `attachments: [{name, mime_type, size, downloaded}]` field. On IMAP rows, `encoded_size` is also included; metadata `size` can be the provider's transfer-encoded BODYSTRUCTURE size, while `get_attachment_content.size` is decoded bytes. Default on for `get_messages` because id-list cardinality is bounded (typically 1-10) — cost is acceptable on both paths. |
 
 **Notes:**
 - Missing ids drop out silently — the response contains whatever was found (partial-results convention).
@@ -725,9 +725,10 @@ Read **one** attachment's content inline, without writing it to disk — for "tr
 ```
 
 - **Encoding:** text-like types (`text/*`, `application/json`, `application/xml`, and `+json`/`+xml` suffixes) are returned as a UTF-8 string with `encoding: "text"`. Everything else — and any text type whose bytes aren't valid UTF-8 — is base64 with `encoding: "base64"`.
+- **Size:** `size` is the decoded byte count of the returned attachment payload. It may differ from attachment metadata reported by `search_messages` / `get_messages` on the IMAP path, where BODYSTRUCTURE exposes a transfer-encoded size; those rows also include `encoded_size`.
 - **No disk:** the IMAP path fetches and decodes the part in memory; the AppleScript fallback saves to a private temp dir, reads, and deletes it (no caller-managed file).
 
-**Size limit:** attachments over ~25 MB are rejected (`error_type: "attachment_too_large"`) — use `save_attachments` for large files. Override with `APPLE_MAIL_MCP_MAX_INLINE_ATTACHMENT_BYTES`.
+**Size limit:** attachments over ~25 MB are rejected (`error_type: "attachment_too_large"`) — use `save_attachments` for large or binary files. Base64 can still be bulky for medium attachments in chat clients. Override with `APPLE_MAIL_MCP_MAX_INLINE_ATTACHMENT_BYTES`.
 
 **Error Codes:**
 

@@ -286,14 +286,13 @@ def _bracket_message_id(message_id: str) -> str:
     """Validate a Message-ID and return it in RFC 5322 bracketed form.
 
     Rejects control characters (see :func:`_reject_control_chars`), then
-    wraps the id in angle brackets unless it already is. Single chokepoint
-    for every ``SEARCH HEADER "Message-ID" "<id>"`` construction so no call
-    site can build a bracketed id without the CRLF-injection guard.
+    strips surrounding whitespace / angle brackets and wraps the canonical
+    bare id. Single chokepoint for every ``SEARCH HEADER "Message-ID"
+    "<id>"`` construction so no call site can build a bracketed id without
+    the CRLF-injection guard.
     """
     _reject_control_chars(message_id, "message_id")
-    if message_id.startswith("<") and message_id.endswith(">"):
-        return message_id
-    return f"<{message_id}>"
+    return f"<{_strip_brackets(message_id)}>"
 
 
 # Max Message-IDs folded into a single OR SEARCH. Keeps the command well
@@ -444,8 +443,9 @@ def _decode_mime_header(raw: bytes | bytearray | str | None) -> str:
 
 
 def _strip_brackets(s: str) -> str:
+    s = s.strip()
     if s.startswith("<") and s.endswith(">"):
-        return s[1:-1]
+        return s[1:-1].strip()
     return s
 
 
@@ -510,10 +510,14 @@ def _bodystructure_extract_attachments(
       AppleScript surface sometimes silently drops).
 
     Returns dicts with keys: ``name``, ``mime_type``, ``size``,
-    ``downloaded``. ``downloaded`` is always False on the IMAP path —
+    ``encoded_size``, ``downloaded``. On the IMAP path, BODYSTRUCTURE's
+    size is the transfer-encoded body size for some providers; keep it as
+    ``size`` for compatibility and also expose it explicitly as
+    ``encoded_size``. ``downloaded`` is always False on the IMAP path —
     BODYSTRUCTURE returns metadata only, not body bytes, and Mail.app's
     local cache state isn't observable from the protocol. Callers that
-    need the bytes invoke ``save_attachments`` (which fetches on demand).
+    need decoded bytes invoke ``get_attachment_content`` or
+    ``save_attachments``.
 
     The byte-fetch path (``get_attachment_content`` / ``save_attachments``)
     indexes into this list by position, so its enumerator
@@ -599,10 +603,12 @@ def _bodystructure_extract_attachments(
         name = disp_filename or _filename_from_params(ct_params, b"name") or ""
         mime_type = f"{_decode(type_)}/{_decode(subtype)}"
 
+        encoded_size = int(size_field) if isinstance(size_field, int) else 0
         out.append({
             "name": name,
             "mime_type": mime_type,
-            "size": int(size_field) if isinstance(size_field, int) else 0,
+            "size": encoded_size,
+            "encoded_size": encoded_size,
             "downloaded": False,
         })
 
@@ -1050,8 +1056,9 @@ class ImapConnector:
 
         Returns:
             List of dicts with keys ``name`` (str), ``mime_type`` (str),
-            ``size`` (int), ``downloaded`` (bool, always False on this
-            path). Empty list when the message has no attachments.
+            ``size`` (int), ``encoded_size`` (int), ``downloaded`` (bool,
+            always False on this path). Empty list when the message has no
+            attachments.
 
         Raises:
             MailMessageNotFoundError: No message in ``mailbox`` matches

@@ -152,13 +152,17 @@ This path requires Full Disk Access for the host app because it reads
 `~/Library/Mail/V*/MailData/Envelope Index`. If the local database is missing,
 unreadable, or has an unexpected schema, the connector falls back to
 AppleScript. The database is opened with `mode=ro`; the connector never writes
-to Mail's store.
+to Mail's store. When `APPLE_MAIL_MCP_LOCAL_DB=1` is set, the server emits a
+one-time startup warning if the Envelope Index is unavailable so you can catch
+Full Disk Access problems without waiting for a slow fallback query.
 
 Run `diagnose_mail_access(account="iCloud", mailbox="INBOX")` from your MCP
 client to see whether the running process can read Mail's store and which
 search backends are configured. `search_messages` responses also include a
 `search_backend` field (`imap`, `local-db`, `applescript`, or `source`) and
-`search_elapsed_ms`.
+`search_elapsed_ms`. If diagnostics report `mail_directory_readable: false`,
+grant Full Disk Access to the exact app that launches the server (Claude
+Desktop, iTerm, Terminal, or your IDE), then fully quit and reopen that app.
 
 ## Optional: faster search via IMAP
 

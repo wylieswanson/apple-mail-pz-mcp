@@ -121,7 +121,7 @@ def _bare_message_id(message_id: str) -> str:
     validation and the ``delete_draft`` / ``update_draft`` lookups (#245)."""
     mid = message_id.strip()
     if mid.startswith("<") and mid.endswith(">"):
-        return mid[1:-1]
+        return mid[1:-1].strip()
     return mid
 
 
@@ -449,8 +449,7 @@ def _message_id_match_clause(message_id: str) -> str:
     a ``whose`` filter and aborts the entire match — the bug that made
     IMAP-sourced ids report "Message not found".
     """
-    raw = sanitize_input(message_id)
-    bare = raw[1:-1] if raw.startswith("<") and raw.endswith(">") else raw
+    bare = _bare_message_id(sanitize_input(message_id))
     bare_safe = escape_applescript_string(bare)
     brk_safe = escape_applescript_string(f"<{bare}>")
     clauses = [
@@ -1936,11 +1935,12 @@ class AppleMailConnector:
 
         When ``include_attachments=True``, every row includes an
         ``attachments`` field with the same shape as ``mail.get_attachments``
-        rows (``name``, ``mime_type``, ``size``, ``downloaded``). On the IMAP
-        path this is essentially free (BODYSTRUCTURE bundles into the same
-        FETCH); on the AppleScript fallback, per-row attachment enumeration
-        can be expensive on cold caches — see the ``include_attachments``
-        notes in TOOLS.md and #142.
+        rows (``name``, ``mime_type``, ``size``, ``downloaded``, and
+        ``encoded_size`` on the IMAP path). On the IMAP path this is
+        essentially free (BODYSTRUCTURE bundles into the same FETCH); on the
+        AppleScript fallback, per-row attachment enumeration can be expensive
+        on cold caches — see the ``include_attachments`` notes in TOOLS.md
+        and #142.
 
         ``body_contains`` and ``text_contains`` filter by message content
         (RFC 3501 ``BODY`` / ``TEXT`` semantics on IMAP; ``content of msg``
@@ -2610,7 +2610,8 @@ class AppleMailConnector:
         thus ordering) stays consistent.
 
         Returns ``{"name", "mime_type", "size", "payload": bytes}``; the
-        server layer encodes ``payload`` as text or base64.
+        ``size`` value is the decoded byte count. The server layer encodes
+        ``payload`` as text or base64.
 
         Raises:
             MailMessageNotFoundError: message not found via either path.
