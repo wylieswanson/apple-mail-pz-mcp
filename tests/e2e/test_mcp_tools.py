@@ -321,6 +321,25 @@ class TestStringifiedParamCoercion:
             mock_mail.delete_messages.call_args
         )
 
+    async def test_stringified_null_optional_means_omitted(
+        self, mock_mail: MagicMock
+    ) -> None:
+        # A host that stringifies *every* arg sends an omitted optional as
+        # the literal "null". It must reach the connector as None, not as the
+        # one-element list ["null"] — that would silently narrow the search
+        # to a source that doesn't exist and return zero hits with
+        # success=True.
+        mock_mail.search_messages.return_value = []
+        result = await server.mcp.call_tool(
+            "search_messages",
+            {"account": "Work", "subject_contains": "invoice", "source": "null"},
+        )
+        assert result.structured_content["success"] is True
+        mock_mail.search_messages.assert_called_once()
+        assert ["null"] not in self._call_values(
+            mock_mail.search_messages.call_args
+        )
+
     async def test_create_draft_stringified_recipients(
         self, mock_mail: MagicMock
     ) -> None:
