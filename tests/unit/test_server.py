@@ -2244,6 +2244,10 @@ class TestGetAttachmentContent:
         mock_mail.get_attachment_content.return_value = {
             "name": "notes.txt", "mime_type": "text/plain",
             "size": 5, "payload": b"hello",
+            "content_offset": 0,
+            "content_bytes_returned": 5,
+            "content_truncated": False,
+            "next_offset": None,
         }
         result = get_attachment_content("1", 0)
         assert result["success"] is True
@@ -2252,7 +2256,42 @@ class TestGetAttachmentContent:
         assert result["name"] == "notes.txt"
         assert result["mime_type"] == "text/plain"
         assert result["size"] == 5
+        assert result["content_offset"] == 0
+        assert result["content_bytes_returned"] == 5
+        assert result["content_truncated"] is False
+        assert result["next_offset"] is None
         mock_logger.log_operation.assert_called_once()
+
+    def test_range_metadata_is_returned_for_bounded_read(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        mock_mail.get_attachment_content.return_value = {
+            "name": "notes.txt",
+            "mime_type": "text/plain",
+            "size": 11,
+            "payload": b"hello",
+            "content_offset": 0,
+            "content_bytes_returned": 5,
+            "content_truncated": True,
+            "next_offset": 5,
+        }
+
+        result = get_attachment_content("1", 0, max_bytes=5)
+
+        assert result["success"] is True
+        assert result["content"] == "hello"
+        assert result["size"] == 11
+        assert result["content_bytes_returned"] == 5
+        assert result["content_truncated"] is True
+        assert result["next_offset"] == 5
+        mock_mail.get_attachment_content.assert_called_once_with(
+            "1",
+            0,
+            account=None,
+            mailbox=None,
+            offset=0,
+            max_bytes=5,
+        )
 
     def test_binary_attachment_returns_base64_encoding(
         self, mock_mail: MagicMock, mock_logger: MagicMock
@@ -2267,6 +2306,18 @@ class TestGetAttachmentContent:
         assert result["success"] is True
         assert result["encoding"] == "base64"
         assert base64.b64decode(result["content"]) == payload
+
+    def test_invalid_range_maps_to_validation_error(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        mock_mail.get_attachment_content.side_effect = ValueError(
+            "max_bytes must be a positive integer when provided"
+        )
+
+        result = get_attachment_content("1", 0, max_bytes=0)
+
+        assert result["success"] is False
+        assert result["error_type"] == "validation_error"
 
     def test_oversize_maps_to_attachment_too_large(
         self, mock_mail: MagicMock, mock_logger: MagicMock

@@ -185,6 +185,8 @@ file, JSON, a small PDF) before deciding what to do with it — instead of
 - `attachment_index` (integer, required): 0-based index into the message's attachments, in the same order ``get_attachments`` / ``get_messages`` (``include_attachments=True``) report them.
 - `account` (string, optional): Mail.app account name or UUID. Supply it (with ``mailbox``) to use the faster IMAP path; pass the same value you read the message with so the attachment ordering matches.
 - `mailbox` (string, optional): Folder the message lives in (for the IMAP path).
+- `offset` (integer, optional) (default: 0): Decoded byte offset to start returning from (default: 0). Use with ``max_bytes`` to preview or page through bulky attachments without returning the entire payload inline.
+- `max_bytes` (integer, optional): Maximum decoded bytes to return. ``None`` returns from ``offset`` to the end, subject to the inline response cap.
 
 ### get_messages
 

@@ -424,6 +424,29 @@ class TestGetAttachmentContent:
         assert result["payload"] == b"hello from a text attachment\n"
         mock_imap.fetch_raw_message.assert_called_once_with("<m@x>", "INBOX")
 
+    def test_imap_path_bounded_read_returns_range_metadata(self, connector, tmp_path):
+        import contextlib
+        raw = self._raw_with_attachments(tmp_path)
+        mock_imap = MagicMock()
+        mock_imap.fetch_raw_message.return_value = raw
+        with contextlib.ExitStack() as stack:
+            for p in self._imap_patches(connector, mock_imap):
+                stack.enter_context(p)
+            result = connector.get_attachment_content(
+                "<m@x>",
+                0,
+                account="iCloud",
+                mailbox="INBOX",
+                offset=6,
+                max_bytes=4,
+            )
+        assert result["size"] == len(b"hello from a text attachment\n")
+        assert result["payload"] == b"from"
+        assert result["content_offset"] == 6
+        assert result["content_bytes_returned"] == 4
+        assert result["content_truncated"] is True
+        assert result["next_offset"] == 10
+
     def test_imap_path_binary_attachment(self, connector, tmp_path):
         import contextlib
         raw = self._raw_with_attachments(tmp_path)
@@ -509,6 +532,32 @@ class TestGetAttachmentContent:
         with pytest.raises(MailAttachmentTooLargeError):
             connector.get_attachment_content("12345", 0)
         assert save_calls == [], "must not save when over the inline cap"
+
+    @patch.object(AppleMailConnector, "_get_attachments_applescript")
+    def test_applescript_bounded_read_can_preview_oversize_attachment(
+        self, mock_meta, monkeypatch
+    ):
+        connector = AppleMailConnector(timeout=30, max_inline_attachment_bytes=10)
+        mock_meta.return_value = [
+            {"name": "big.txt", "mime_type": "text/plain",
+             "size": 100, "downloaded": True},
+        ]
+
+        def fake_save(message_id, one_based_index, dest_path):
+            Path(dest_path).write_bytes(b"0123456789" * 10)
+            return True
+
+        monkeypatch.setattr(
+            connector, "_save_one_attachment_applescript", fake_save
+        )
+
+        result = connector.get_attachment_content("12345", 0, max_bytes=8)
+
+        assert result["size"] == 100
+        assert result["payload"] == b"01234567"
+        assert result["content_bytes_returned"] == 8
+        assert result["content_truncated"] is True
+        assert result["next_offset"] == 8
 
     @patch.object(AppleMailConnector, "_get_attachments_applescript")
     def test_applescript_index_out_of_range_raises(self, mock_meta, connector):

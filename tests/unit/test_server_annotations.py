@@ -233,3 +233,17 @@ class TestReadOnlyFlag:
         parser = server._build_arg_parser()
         help_text = parser.format_help()
         assert "--read-only" in help_text
+
+    def test_root_parser_defaults_to_pz_command_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("sys.argv", ["pytest"])
+        parser = server._build_arg_parser()
+        assert parser.format_help().startswith("usage: apple-mail-pz-mcp")
+
+    def test_root_parser_uses_invoked_command_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("sys.argv", ["/Users/wylie/.local/bin/apple-mail-pz-mcp"])
+        parser = server._build_arg_parser()
+        assert parser.format_help().startswith("usage: apple-mail-pz-mcp")

@@ -125,6 +125,25 @@ def _bare_message_id(message_id: str) -> str:
     return mid
 
 
+def _attachment_range(
+    payload: bytes, *, offset: int = 0, max_bytes: int | None = None
+) -> tuple[bytes, bool, int | None]:
+    """Return the requested payload slice and range metadata."""
+    if offset < 0:
+        raise ValueError("offset must be greater than or equal to 0")
+    if max_bytes is not None and max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer when provided")
+    total = len(payload)
+    if offset > total:
+        raise ValueError(f"offset {offset} is beyond attachment size {total}")
+
+    end = total if max_bytes is None else min(total, offset + max_bytes)
+    sliced = payload[offset:end]
+    truncated = offset != 0 or end < total
+    next_offset = end if end < total else None
+    return sliced, truncated, next_offset
+
+
 def _construct_as_date_var(var: str, year: int, month: int, day: int) -> str:
     """Emit AppleScript that constructs an AS date object at midnight (local
     time) on the given (year, month, day).
@@ -2592,6 +2611,8 @@ class AppleMailConnector:
         *,
         account: str | None = None,
         mailbox: str | None = None,
+        offset: int = 0,
+        max_bytes: int | None = None,
     ) -> dict[str, Any]:
         """Return a single attachment's bytes inline (no caller-facing disk).
 
@@ -2611,7 +2632,9 @@ class AppleMailConnector:
 
         Returns ``{"name", "mime_type", "size", "payload": bytes}``; the
         ``size`` value is the decoded byte count. The server layer encodes
-        ``payload`` as text or base64.
+        ``payload`` as text or base64. When ``offset`` or ``max_bytes`` is
+        supplied, ``payload`` contains only that byte range and ``size`` still
+        reports the full decoded attachment size.
 
         Raises:
             MailMessageNotFoundError: message not found via either path.
@@ -2625,6 +2648,8 @@ class AppleMailConnector:
                     mailbox=mailbox,
                     message_id=message_id,
                     attachment_index=attachment_index,
+                    offset=offset,
+                    max_bytes=max_bytes,
                 )
                 self._imap_clear_breaker(account)
                 return result
@@ -2632,7 +2657,12 @@ class AppleMailConnector:
                 self._log_imap_fallback(account, exc)
                 # fall through to AppleScript
 
-        return self._get_attachment_content_applescript(message_id, attachment_index)
+        return self._get_attachment_content_applescript(
+            message_id,
+            attachment_index,
+            offset=offset,
+            max_bytes=max_bytes,
+        )
 
     def _imap_get_attachment_content(
         self,
@@ -2641,6 +2671,8 @@ class AppleMailConnector:
         mailbox: str,
         message_id: str,
         attachment_index: int,
+        offset: int = 0,
+        max_bytes: int | None = None,
     ) -> dict[str, Any]:
         """IMAP path for get_attachment_content: fetch the raw message and
         decode the selected attachment part. Reuses ``fetch_raw_message`` +
@@ -2664,16 +2696,30 @@ class AppleMailConnector:
                 f"has {len(atts)} attachment(s)."
             )
         filename, maintype, subtype, payload = atts[attachment_index]
-        self._enforce_inline_cap(len(payload), filename)
+        payload_slice, truncated, next_offset = _attachment_range(
+            payload,
+            offset=offset,
+            max_bytes=max_bytes,
+        )
+        self._enforce_inline_cap(len(payload_slice), filename)
         return {
             "name": filename,
             "mime_type": f"{maintype}/{subtype}",
             "size": len(payload),
-            "payload": payload,
+            "payload": payload_slice,
+            "content_offset": offset,
+            "content_bytes_returned": len(payload_slice),
+            "content_truncated": truncated,
+            "next_offset": next_offset,
         }
 
     def _get_attachment_content_applescript(
-        self, message_id: str, attachment_index: int
+        self,
+        message_id: str,
+        attachment_index: int,
+        *,
+        offset: int = 0,
+        max_bytes: int | None = None,
     ) -> dict[str, Any]:
         """AppleScript path: enumerate metadata, validate index + size, then
         save the one attachment to a temp dir and read it back."""
@@ -2688,8 +2734,11 @@ class AppleMailConnector:
         mime_type = str(meta.get("mime_type") or "application/octet-stream")
         # Pre-check the reported size so an oversize attachment is rejected
         # before we spend an AppleScript save. (A post-read recheck below
-        # catches a Mail-under-reported size.)
-        self._enforce_inline_cap(int(meta.get("size") or 0), name)
+        # catches a Mail-under-reported size.) Range reads are allowed to
+        # preview larger attachments because the returned byte slice is still
+        # capped below.
+        if offset == 0 and max_bytes is None:
+            self._enforce_inline_cap(int(meta.get("size") or 0), name)
 
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / (sanitize_filename(name) or "attachment")
@@ -2697,14 +2746,23 @@ class AppleMailConnector:
             if not dest.is_file():
                 raise MailMessageNotFoundError(
                     f"Could not read attachment {attachment_index} of message {message_id!r}."
-                )
+            )
             payload = dest.read_bytes()
-        self._enforce_inline_cap(len(payload), name)
+        payload_slice, truncated, next_offset = _attachment_range(
+            payload,
+            offset=offset,
+            max_bytes=max_bytes,
+        )
+        self._enforce_inline_cap(len(payload_slice), name)
         return {
             "name": name,
             "mime_type": mime_type,
             "size": len(payload),
-            "payload": payload,
+            "payload": payload_slice,
+            "content_offset": offset,
+            "content_bytes_returned": len(payload_slice),
+            "content_truncated": truncated,
+            "next_offset": next_offset,
         }
 
     def _save_one_attachment_applescript(

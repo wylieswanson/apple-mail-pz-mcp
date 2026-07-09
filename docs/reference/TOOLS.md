@@ -710,6 +710,8 @@ Read **one** attachment's content inline, without writing it to disk — for "tr
 | `attachment_index` | integer | Yes | - | **0-based** index into the message's attachments, in the same order `get_attachments` / `get_messages(include_attachments=True)` report. |
 | `account` | string \| null | No | null | Mail.app account name or UUID. Supply it (with `mailbox`) for the faster IMAP path; pass the same value you read the message with so ordering matches. |
 | `mailbox` | string \| null | No | null | Folder the message lives in (for the IMAP path). |
+| `offset` | integer | No | 0 | Decoded byte offset to start returning from. Use with `max_bytes` to preview or page through bulky attachments without returning the whole payload inline. |
+| `max_bytes` | integer \| null | No | null | Maximum decoded bytes to return. `null` returns from `offset` to the end, subject to the inline response cap. Must be positive when provided. |
 
 **Returns:**
 
@@ -720,21 +722,27 @@ Read **one** attachment's content inline, without writing it to disk — for "tr
   "encoding": "text",
   "name": "report.txt",
   "mime_type": "text/plain",
-  "size": 1234
+  "size": 1234,
+  "content_offset": 0,
+  "content_bytes_returned": 1234,
+  "content_truncated": false,
+  "next_offset": null
 }
 ```
 
 - **Encoding:** text-like types (`text/*`, `application/json`, `application/xml`, and `+json`/`+xml` suffixes) are returned as a UTF-8 string with `encoding: "text"`. Everything else — and any text type whose bytes aren't valid UTF-8 — is base64 with `encoding: "base64"`.
-- **Size:** `size` is the decoded byte count of the returned attachment payload. It may differ from attachment metadata reported by `search_messages` / `get_messages` on the IMAP path, where BODYSTRUCTURE exposes a transfer-encoded size; those rows also include `encoded_size`.
+- **Size:** `size` is the full decoded byte count of the attachment. It may differ from attachment metadata reported by `search_messages` / `get_messages` on the IMAP path, where BODYSTRUCTURE exposes a transfer-encoded size; those rows also include `encoded_size`.
+- **Ranges:** pass `max_bytes` to bound the returned decoded byte count, and pass `offset` with the previous `next_offset` to continue reading. `content_truncated: true` means the response is a slice, not the whole attachment. `size` remains the full decoded attachment size.
 - **No disk:** the IMAP path fetches and decodes the part in memory; the AppleScript fallback saves to a private temp dir, reads, and deletes it (no caller-managed file).
 
-**Size limit:** attachments over ~25 MB are rejected (`error_type: "attachment_too_large"`) — use `save_attachments` for large or binary files. Base64 can still be bulky for medium attachments in chat clients. Override with `APPLE_MAIL_MCP_MAX_INLINE_ATTACHMENT_BYTES`.
+**Size limit:** full inline reads over ~25 MB are rejected (`error_type: "attachment_too_large"`) — use `max_bytes` for previews or `save_attachments` for large/binary files. Base64 can still be bulky for medium attachments in chat clients. Override with `APPLE_MAIL_MCP_MAX_INLINE_ATTACHMENT_BYTES`.
 
 **Error Codes:**
 
 - `message_not_found`: no message matches `message_id`.
 - `attachment_index_out_of_range`: the message has no attachment at that index.
 - `attachment_too_large`: exceeds the inline cap (use `save_attachments`).
+- `validation_error`: invalid `offset` / `max_bytes` range.
 - `rate_limited`, `unknown`: standard.
 
 **Example:**
@@ -742,9 +750,14 @@ Read **one** attachment's content inline, without writing it to disk — for "tr
 ```python
 # Peek at the first attachment of a message before routing it
 att = get_attachment_content(message_id="12345", attachment_index=0,
-                             account="Gmail", mailbox="INBOX")
+                             account="Gmail", mailbox="INBOX",
+                             max_bytes=65536)
 if att["encoding"] == "text":
     print(att["content"])      # inspect inline
+if att["next_offset"] is not None:
+    more = get_attachment_content(message_id="12345", attachment_index=0,
+                                  account="Gmail", mailbox="INBOX",
+                                  offset=att["next_offset"], max_bytes=65536)
 ```
 
 ---

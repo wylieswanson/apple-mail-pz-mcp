@@ -1890,6 +1890,8 @@ def get_attachment_content(
     attachment_index: int,
     account: str | None = None,
     mailbox: str | None = None,
+    offset: int = 0,
+    max_bytes: int | None = None,
 ) -> dict[str, Any]:
     """Read one attachment's content inline, without writing it to disk.
 
@@ -1908,18 +1910,26 @@ def get_attachment_content(
             to use the faster IMAP path; pass the same value you read the
             message with so the attachment ordering matches.
         mailbox: Folder the message lives in (for the IMAP path).
+        offset: Decoded byte offset to start returning from (default: 0).
+            Use with ``max_bytes`` to preview or page through bulky
+            attachments without returning the entire payload inline.
+        max_bytes: Maximum decoded bytes to return. ``None`` returns from
+            ``offset`` to the end, subject to the inline response cap.
 
     Returns:
         ``{"success": True, "content": <str>, "encoding": "text"|"base64",
         "name": <filename>, "mime_type": <type>, "size": <bytes>}``.
-        ``size`` is the decoded byte count. Text-like types (``text/*``,
-        ``application/json``, ``application/xml``, …) are returned as a UTF-8
-        string (``encoding="text"``); everything else — and any text type
-        that isn't valid UTF-8 — is base64 (``encoding="base64"``).
+        ``size`` is the full decoded attachment byte count. The response also
+        includes ``content_offset``, ``content_bytes_returned``,
+        ``content_truncated``, and ``next_offset`` range metadata. Text-like
+        types (``text/*``, ``application/json``, ``application/xml``, …) are
+        returned as a UTF-8 string (``encoding="text"``); everything else —
+        and any text type that isn't valid UTF-8 — is base64
+        (``encoding="base64"``).
 
-    Size limit: attachments over ~25 MB are rejected
+    Size limit: full inline reads over ~25 MB are rejected
     (``error_type: "attachment_too_large"``) — use ``save_attachments`` for
-    large or binary files. Override via
+    large/binary files or ``max_bytes`` for previews. Override via
     ``APPLE_MAIL_MCP_MAX_INLINE_ATTACHMENT_BYTES``.
     """
     try:
@@ -1934,6 +1944,8 @@ def get_attachment_content(
             attachment_index,
             account=account,
             mailbox=mailbox,
+            offset=offset,
+            max_bytes=max_bytes,
         )
         content, encoding = attachment_content_encoding(
             result["payload"], result["mime_type"]
@@ -1941,7 +1953,12 @@ def get_attachment_content(
 
         operation_logger.log_operation(
             "get_attachment_content",
-            {"message_id": message_id, "attachment_index": attachment_index},
+            {
+                "message_id": message_id,
+                "attachment_index": attachment_index,
+                "offset": offset,
+                "max_bytes": max_bytes,
+            },
             "success",
         )
         return {
@@ -1951,8 +1968,20 @@ def get_attachment_content(
             "name": result["name"],
             "mime_type": result["mime_type"],
             "size": result["size"],
+            "content_offset": result.get("content_offset", offset),
+            "content_bytes_returned": result.get(
+                "content_bytes_returned", len(result["payload"])
+            ),
+            "content_truncated": result.get("content_truncated", False),
+            "next_offset": result.get("next_offset"),
         }
 
+    except ValueError as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "validation_error",
+        }
     except MailAttachmentIndexError as e:
         return {
             "success": False,
@@ -3552,9 +3581,17 @@ def delete_draft(draft_id: str) -> dict[str, Any]:
         return {"success": False, "error": str(e), "error_type": "unknown"}
 
 
+def _default_cli_prog() -> str:
+    """Return the user-facing console script name for argparse help."""
+    invoked = Path(sys.argv[0]).name
+    if invoked in {"apple-mail-fast-mcp", "apple-mail-pz-mcp"}:
+        return invoked
+    return "apple-mail-pz-mcp"
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="apple-mail-fast-mcp",
+        prog=_default_cli_prog(),
         description=(
             "Apple Mail MCP server. With no subcommand, starts the MCP "
             "server (this is what Claude Desktop / mcp clients invoke)."
