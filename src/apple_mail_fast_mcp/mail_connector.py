@@ -2638,8 +2638,8 @@ class AppleMailConnector:
 
         Dispatch mirrors :meth:`get_attachments`: the IMAP path is used when
         both ``account`` and ``mailbox`` are supplied and the breaker is
-        closed (it fetches the raw message and decodes the part — never
-        touches disk), falling back to AppleScript on any IMAP failure. The
+        closed (it fetches and decodes the selected MIME part — never touches
+        disk), falling back to AppleScript on any IMAP failure. The
         AppleScript path can't read attachment bytes directly, so it saves
         the selected attachment to a private temp dir, reads it, and deletes
         it (the temp file is internal — no caller-managed file). (#250)
@@ -2694,10 +2694,8 @@ class AppleMailConnector:
         offset: int = 0,
         max_bytes: int | None = None,
     ) -> dict[str, Any]:
-        """IMAP path for get_attachment_content: fetch the raw message and
-        decode the selected attachment part. Reuses ``fetch_raw_message`` +
-        ``parse_original_message`` (the same machinery the clean
-        reply/forward draft path uses), so no new IMAP byte-fetch code.
+        """IMAP path for get_attachment_content: fetch the selected MIME part
+        directly via BODYSTRUCTURE section lookup, then decode it in memory.
 
         Propagates ``_IMAP_FALLBACK_EXCS`` unchanged for the caller's
         fallback.
@@ -2705,17 +2703,13 @@ class AppleMailConnector:
         host, port, email = self._resolve_imap_config(account)
         password = self._get_imap_password_with_fallback(account, email)
         imap = ImapConnector(host, port, email, password, pool=self._imap_pool)
-        raw = imap.fetch_raw_message(message_id, mailbox)
-        # Enumerate to match the BODYSTRUCTURE metadata list get_attachments
-        # reports — NOT iter_attachments, which diverges and broke the
-        # 0-based attachment_index contract (wrong/missing part).
-        atts = extract_attachment_payloads(raw)
-        if not 0 <= attachment_index < len(atts):
-            raise MailAttachmentIndexError(
-                f"attachment_index {attachment_index} out of range: message "
-                f"has {len(atts)} attachment(s)."
-            )
-        filename, maintype, subtype, payload = atts[attachment_index]
+        result = imap.fetch_attachment_payload(
+            message_id,
+            attachment_index,
+            mailbox=mailbox,
+        )
+        filename = str(result["name"])
+        payload = bytes(result["payload"])
         payload_slice, truncated, next_offset = _attachment_range(
             payload,
             offset=offset,
@@ -2724,8 +2718,8 @@ class AppleMailConnector:
         self._enforce_inline_cap(len(payload_slice), filename)
         return {
             "name": filename,
-            "mime_type": f"{maintype}/{subtype}",
-            "size": len(payload),
+            "mime_type": result["mime_type"],
+            "size": result["size"],
             "payload": payload_slice,
             "content_offset": offset,
             "content_bytes_returned": len(payload_slice),

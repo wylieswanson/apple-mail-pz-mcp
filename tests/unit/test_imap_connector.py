@@ -8,7 +8,7 @@ import pytest
 from imapclient.exceptions import IMAPClientError
 from imapclient.response_types import Address, Envelope
 
-from apple_mail_fast_mcp.exceptions import MailMessageNotFoundError
+from apple_mail_fast_mcp.exceptions import MailAttachmentIndexError, MailMessageNotFoundError
 from apple_mail_fast_mcp.imap_connector import (
     _MSGID_SEARCH_CHUNK,
     CONNECT_TIMEOUT_S,
@@ -1438,6 +1438,45 @@ class TestGetAttachments:
 
         fetch_keys = mock_cls.return_value.fetch.call_args[0][1]
         assert list(fetch_keys) == [b"BODYSTRUCTURE"]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_fetch_attachment_payload_fetches_selected_body_part(
+        self, mock_cls: MagicMock
+    ) -> None:
+        bs = (_BS_PLAIN_TEXT, _BS_PDF_ATTACHMENT, b"mixed")
+        client = self._setup_client(mock_cls, bodystructure=bs)
+        client.fetch.side_effect = [
+            {42: {b"BODYSTRUCTURE": bs}},
+            {42: {b"BODY[2]": b"aGVsbG8gd29ybGQ="}},
+        ]
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").fetch_attachment_payload(
+            "abc@x", 0, mailbox="INBOX",
+        )
+
+        assert result == {
+            "name": "report.pdf",
+            "mime_type": "application/pdf",
+            "size": 11,
+            "payload": b"hello world",
+        }
+        assert client.fetch.call_args_list[0][0] == ([42], [b"BODYSTRUCTURE"])
+        assert client.fetch.call_args_list[1][0] == ([42], [b"BODY.PEEK[2]"])
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_fetch_attachment_payload_index_out_of_range(
+        self, mock_cls: MagicMock
+    ) -> None:
+        bs = (_BS_PLAIN_TEXT, _BS_PDF_ATTACHMENT, b"mixed")
+        client = self._setup_client(mock_cls, bodystructure=bs)
+        client.fetch.return_value = {42: {b"BODYSTRUCTURE": bs}}
+
+        with pytest.raises(MailAttachmentIndexError):
+            ImapConnector("h", 993, "u@e.com", "pw").fetch_attachment_payload(
+                "abc@x", 3, mailbox="INBOX",
+            )
+
+        assert client.fetch.call_count == 1
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_no_attachments_returns_empty_list(

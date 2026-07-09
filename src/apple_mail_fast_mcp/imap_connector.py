@@ -22,7 +22,10 @@ See ``docs/plans/2026-04-23-imap-connector-design.md``.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
+import quopri
 import re
 import threading
 import time
@@ -40,6 +43,7 @@ from imapclient.exceptions import IMAPClientError, LoginError
 from imapclient.response_types import Envelope
 
 from .exceptions import (
+    MailAttachmentIndexError,
     MailImapMoveUnsupportedError,
     MailImapTrashNotFoundError,
     MailMessageNotFoundError,
@@ -519,13 +523,28 @@ def _bodystructure_extract_attachments(
     observable from the protocol. Callers that need decoded bytes invoke
     ``get_attachment_content`` or ``save_attachments``.
 
-    The byte-fetch path (``get_attachment_content`` / ``save_attachments``)
-    indexes into this list by position, so its enumerator
-    (``draft_builder.extract_attachment_payloads``) MUST apply the SAME
-    inclusion predicate and document order as the ``_walk`` below
-    (attachment-disposition, inline-with-filename, or message/rfc822). Keep
-    the two in sync; the live integration test asserts they agree.
+    The byte-fetch paths index into this list by position.
+    ``get_attachment_content`` uses the section-aware walker below;
+    ``save_attachments`` still uses ``draft_builder.extract_attachment_payloads``
+    for full raw messages. Both MUST apply the SAME inclusion predicate and
+    document order (attachment-disposition, inline-with-filename, or
+    message/rfc822). Keep the two in sync; the live integration test asserts
+    they agree.
     """
+    return [
+        {
+            "name": item["name"],
+            "mime_type": item["mime_type"],
+            "size": item["size"],
+            "encoded_size": item["encoded_size"],
+            "downloaded": item["downloaded"],
+        }
+        for item in _bodystructure_attachment_infos(structure)
+    ]
+
+
+def _bodystructure_attachment_infos(structure: Any) -> list[dict[str, Any]]:
+    """Walk BODYSTRUCTURE and include private IMAP section metadata."""
     out: list[dict[str, Any]] = []
 
     def _filename_from_params(params: Any, key_name: bytes) -> str | None:
@@ -540,7 +559,10 @@ def _bodystructure_extract_attachments(
                     return _decode(v)
         return None
 
-    def _walk(s: Any) -> None:
+    def _child_section(prefix: str, index: int) -> str:
+        return f"{prefix}.{index}" if prefix else str(index)
+
+    def _walk(s: Any, section: str = "") -> None:
         if not isinstance(s, tuple) or not s:
             return
 
@@ -549,14 +571,16 @@ def _bodystructure_extract_attachments(
         # (Real iCloud/Gmail BODYSTRUCTUREs take this shape; missing it
         # silently dropped attachments on every multipart message.)
         if isinstance(s[0], list):
-            for child in s[0]:
-                _walk(child)
+            for index, child in enumerate(s[0], start=1):
+                _walk(child, _child_section(section, index))
             return
         # Defensive: some inputs nest children as direct tuple elements.
         if isinstance(s[0], tuple):
+            index = 1
             for child in s:
                 if isinstance(child, tuple):
-                    _walk(child)
+                    _walk(child, _child_section(section, index))
+                    index += 1
             return
 
         # Leaf. Spec positions: type, subtype, params, id, desc, encoding,
@@ -615,6 +639,8 @@ def _bodystructure_extract_attachments(
             "size": decoded_size,
             "encoded_size": encoded_size,
             "downloaded": False,
+            "section": section or "1",
+            "encoding": _decode(encoding).lower(),
         })
 
     _walk(structure)
@@ -664,6 +690,27 @@ def _decoded_size_from_bodystructure(encoding: Any, encoded_size: int) -> int:
         # while staying within the exact decoded-size range of +/- 1 byte.
         return max(0, (base64_octets // 4) * 3 - 1)
     return encoded_size
+
+
+def _decode_transfer_payload(payload: bytes, encoding: str) -> bytes:
+    enc = encoding.strip().lower()
+    if enc == "base64":
+        try:
+            return base64.b64decode(payload, validate=False)
+        except (ValueError, binascii.Error):
+            cleaned = re.sub(rb"\s+", b"", payload)
+            return base64.b64decode(cleaned, validate=False)
+    if enc in {"quoted-printable", "quotedprintable"}:
+        return quopri.decodestring(payload)
+    return payload
+
+
+def _body_fetch_value(entry: dict[bytes, Any]) -> bytes | None:
+    """Return the first BODY[...] value from a FETCH response entry."""
+    for key, value in entry.items():
+        if isinstance(key, bytes) and key.upper().startswith(b"BODY["):
+            return bytes(value or b"")
+    return None
 
 
 def _disposition_marks_attachment(elem: Any) -> bool:
@@ -1075,6 +1122,65 @@ class ImapConnector:
                     f"empty body on {self._host}."
                 )
             return bytes(raw)
+
+    def fetch_attachment_payload(
+        self,
+        message_id: str,
+        attachment_index: int,
+        mailbox: str = "INBOX",
+    ) -> dict[str, Any]:
+        """Fetch and decode one attachment MIME part by BODYSTRUCTURE index.
+
+        This avoids fetching the full RFC 822 message for
+        ``get_attachment_content``. The attachment ordering and membership
+        match ``get_attachments`` because both use the same BODYSTRUCTURE
+        walker.
+        """
+        bracketed = _bracket_message_id(message_id)
+        _reject_control_chars(mailbox, "mailbox")
+        with self._session() as client:
+            client.select_folder(mailbox, readonly=True)
+            uids = client.search(["HEADER", "Message-ID", bracketed])
+            if not uids:
+                raise MailMessageNotFoundError(
+                    f"Message-ID {message_id!r} not found in mailbox "
+                    f"{mailbox!r} on {self._host}."
+                )
+
+            uid = uids[0]
+            fetched = client.fetch([uid], [b"BODYSTRUCTURE"])
+            entry = fetched.get(uid)
+            infos = _bodystructure_attachment_infos(
+                entry.get(b"BODYSTRUCTURE") if entry else None
+            )
+            if not 0 <= attachment_index < len(infos):
+                raise MailAttachmentIndexError(
+                    f"attachment_index {attachment_index} out of range: "
+                    f"message has {len(infos)} attachment(s)."
+                )
+
+            info = infos[attachment_index]
+            section = str(info["section"])
+            section_key = f"BODY.PEEK[{section}]".encode("ascii")
+            part_fetched = client.fetch([uid], [section_key])
+            part_entry = part_fetched.get(uid) or {}
+            encoded_payload = _body_fetch_value(part_entry)
+            if encoded_payload is None:
+                raise MailMessageNotFoundError(
+                    f"Attachment {attachment_index} of Message-ID "
+                    f"{message_id!r} in {mailbox!r} returned an empty body "
+                    f"on {self._host}."
+                )
+            payload = _decode_transfer_payload(
+                encoded_payload,
+                str(info.get("encoding") or ""),
+            )
+            return {
+                "name": info["name"] or "attachment",
+                "mime_type": info["mime_type"],
+                "size": len(payload),
+                "payload": payload,
+            }
 
     def get_attachments(
         self,
