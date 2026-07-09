@@ -5,12 +5,19 @@ build-backend = "hatchling.build"
 [project]
 name = "apple-mail-pz-mcp"
 version = "0.10.2"
-description = "MCP server for Apple Mail integration"
+description = "MCP server for Apple Mail, tuned for LLM efficiency. Continues apple-mail-fast-mcp by Morgan Jeffries (MIT)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
+# Morgan Jeffries authored apple-mail-fast-mcp, from which this project
+# continues. The placeholder address the upstream metadata carried is omitted
+# rather than guessed at.
 authors = [
-    {name = "Morgan", email = "morgan@example.com"}
+    {name = "Morgan Jeffries"},
+    {name = "Wylie Swanson", email = "wylie@pingzero.net"},
+]
+maintainers = [
+    {name = "Wylie Swanson", email = "wylie@pingzero.net"},
 ]
 keywords = ["mcp", "apple-mail", "email", "automation"]
 classifiers = [
@@ -61,9 +68,9 @@ dev = [
 apple-mail-pz-mcp = "apple_mail_fast_mcp.server:main"
 
 [project.urls]
-Homepage = "https://github.com/s-morgan-jeffries/apple-mail-fast-mcp"
-Repository = "https://github.com/s-morgan-jeffries/apple-mail-fast-mcp"
-Issues = "https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues"
+Homepage = "https://github.com/wylieswanson/apple-mail-pz-mcp"
+Repository = "https://github.com/wylieswanson/apple-mail-pz-mcp"
+Issues = "https://github.com/wylieswanson/apple-mail-pz-mcp/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/apple_mail_fast_mcp"]

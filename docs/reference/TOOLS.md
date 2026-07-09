@@ -954,7 +954,7 @@ Delete messages — always moves them to the account's Trash mailbox.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `message_ids` | list[string] | Yes | - | List of message IDs to delete |
-| `permanent` | boolean | No | False | Reserved; currently a no-op. Passing `True` emits a `DeprecationWarning`. See [issue #111](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/111). |
+| `permanent` | boolean | No | False | Reserved; currently a no-op. Passing `True` emits a `DeprecationWarning`. See [issue #111](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/111). |
 | `account` | string \| null | No | null | Account name (or UUID). Pair with `source_mailbox` to narrow the scan and unlock the IMAP fast path (#150). |
 | `source_mailbox` | string \| null | No | null | Mailbox the messages live in. Required to unlock the IMAP fast path (#150) — without it, the delete runs via AppleScript even when IMAP is configured. Either alone (without `account`) raises `validation_error`. |
 

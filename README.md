@@ -1,10 +1,12 @@
-# Apple Mail MCP Server
+# Apple Mail PingZero MCP Server
 
-[![Tests](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/actions/workflows/test.yml)
+[![Tests](https://github.com/wylieswanson/apple-mail-pz-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/wylieswanson/apple-mail-pz-mcp/actions/workflows/test.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 An MCP server that provides programmatic access to Apple Mail, enabling AI assistants like Claude to read, send, search, and manage emails on macOS.
+
+> **Built on [`apple-mail-fast-mcp`](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp) by Morgan Jeffries**, MIT-licensed, whose architecture this project inherits wholesale. See [Credits and origins](#credits-and-origins).
 
 > ⚠️ **Pre-1.0 — expect breaking changes.** The MCP tool surface (tool names, parameters, return shapes) is still evolving as the project matures. Pin to a specific version (for example, `apple-mail-pz-mcp==0.10.2`) and review the [CHANGELOG](CHANGELOG.md) before upgrading.
 
@@ -31,10 +33,16 @@ Destructive operations (`delete_*`, `create_rule` with move/forward/delete actio
 
 ## Installation
 
+> **Read-only by default.** The `.mcpb` bundle and the Claude Code plugin both launch the
+> server with `--read-only`, exposing the 12 read tools. The 14 mutating tools confirm each
+> destructive action through [MCP elicitation](#enabling-the-write-tools), which not every
+> host implements — on a host without it they fail closed and can never succeed. Enabling
+> them is a deliberate, documented step.
+
 ### Claude Desktop — install from file (`.mcpb`)
 
 The lowest-friction path for Claude Desktop: grab the `apple-mail-pz-mcp-<version>.mcpb`
-bundle from the [Releases](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/releases)
+bundle from the [Releases](https://github.com/wylieswanson/apple-mail-pz-mcp/releases)
 page and open it (or drag it into **Settings → Extensions**). Claude Desktop manages Python
 and dependencies for you via `uv` — no manual venv, no config JSON to hand-edit. macOS only.
 
@@ -46,7 +54,7 @@ To build the bundle yourself: `./scripts/build-mcpb.sh` → `dist/apple-mail-pz-
 One command in Claude Code, no config JSON:
 
 ```
-/plugin marketplace add s-morgan-jeffries/apple-mail-fast-mcp
+/plugin marketplace add wylieswanson/apple-mail-pz-mcp
 /plugin install apple-mail-pz@apple-mail-pz-mcp
 ```
 
@@ -54,6 +62,26 @@ Claude Code launches the server via `uv run` from the plugin directory (resolves
 from the bundled `pyproject.toml`/`uv.lock` — no PyPI needed), so you only need `uv` installed.
 macOS only. See [`docs/reference/TOOLS.md`](docs/reference/TOOLS.md) for IMAP setup and the
 read/write split.
+
+### Codex CLI
+
+Add to `~/.codex/config.toml` (or run `codex mcp add`). Point at the installed console
+script rather than `uv run --directory …`: Codex's `startup_timeout_sec` defaults to **10
+seconds**, and a cold `uv` dependency resolve will exceed it.
+
+```toml
+[mcp_servers.apple-mail]
+command = "apple-mail-pz-mcp"          # or the absolute path from `which apple-mail-pz-mcp`
+args = ["--read-only"]
+env = { APPLE_MAIL_MCP_LOCAL_DB = "1" }
+startup_timeout_sec = 30
+default_tools_approval_mode = "auto"   # safe: every exposed tool is read-only
+```
+
+Two Codex-specific notes. Elicitation landed around **v0.119**; on older builds the write
+tools fail closed exactly as they do on Cowork, so `--read-only` costs you nothing. And
+Codex's per-tool `approval_mode` means you do **not** need the two-connector split below —
+set `approval_mode` per tool instead.
 
 ### pip / uvx (any MCP client)
 
@@ -77,7 +105,7 @@ Then point your MCP client at it — the config is a one-liner (no absolute path
 ### From source (development)
 
 ```bash
-git clone https://github.com/s-morgan-jeffries/apple-mail-fast-mcp.git
+git clone https://github.com/wylieswanson/apple-mail-pz-mcp.git
 cd apple-mail-pz-mcp
 uv sync --dev
 ```
@@ -100,6 +128,21 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 ```
 
 (Equivalent alternative if you prefer driving it through uv: `"command": "uv", "args": ["--directory", "/path/to/apple-mail-pz-mcp", "run", "apple-mail-pz-mcp"]`.)
+
+### Enabling the write tools
+
+Every destructive tool confirms the operation through **MCP elicitation** and *fails closed*: if the client can't prompt the user, the tool returns `error_type: "confirmation_required"` rather than proceeding. That is a deliberate security property — an earlier version silently proceeded, which was a real bypass of the confirmation gate.
+
+The consequence is that the write tools only work on a host that implements elicitation:
+
+| Host | Elicitation | Write tools |
+|---|---|---|
+| Claude Code | Yes | Work |
+| Codex CLI ≥ ~v0.119 | Yes | Work |
+| Codex CLI, older | No | Always fail closed |
+| Claude Desktop / Cowork | No ([`claude-ai-mcp#153`](https://github.com/anthropics/claude-ai-mcp/issues/153)) | Always fail closed |
+
+To enable them on a supporting host, add a server entry **without** `--read-only`. Do not work around the gate by making confirmation pass silently.
 
 ### Optional: split read / write servers
 
@@ -295,6 +338,26 @@ Docs:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow, coding standards, and PR process.
 
+## Credits and origins
+
+This project is a continuation of **[`apple-mail-fast-mcp`](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp)**, created by **Morgan Jeffries** and released under the MIT License. Effectively all of the engineering that makes this server work is theirs:
+
+- the AppleScript connector and its hard-won [gotchas](docs/reference/APPLESCRIPT_GOTCHAS.md) — JSON emission via ASObjC, the `|name|:` record-key quirk, `whose`-clause search;
+- the IMAP fast path, connection pooling, and Gmail `X-GM-THRID` thread strategies;
+- the security model — double sanitization, path-traversal-safe name validation, rate limiting, audit logging, and the fail-closed confirmation gate on every destructive tool;
+- the test discipline: 1521 unit, 32 e2e, and 62 integration tests, and the validation scripts that keep the docs honest.
+
+That project itself succeeded `apple-mail-mcp`; the lineage is preserved in the [CHANGELOG](CHANGELOG.md) and in the Keychain read-through fallbacks, which still resolve credentials written under both earlier names.
+
+**What's different here.** `apple-mail-pz-mcp` (PingZero) evolves the tool surface for **LLM efficiency** rather than for human API aesthetics. The working thesis is that an agent's cost is dominated by round-trips and by tokens spent re-reading things it already fetched, so the areas of divergence are:
+
+- **Fewer round-trips per task** — richer single-call tools over chatty primitives, so a mailbox triage is one call, not twelve.
+- **Tighter payloads** — bounded bodies, bounded attachments, and response shapes that omit what the model won't use.
+- **Predictable degradation across MCP hosts** — the tool surface must behave the same whether the host supports elicitation and sends real JSON types (Claude Code) or supports neither (Cowork, older Codex). See the client-compatibility matrix in [AGENTS.md](AGENTS.md#mcp-client-compatibility).
+- **Read-only by default** — the shipped plugin and `.mcpb` bundle launch with `--read-only`, so the 14 mutating tools are opt-in rather than opt-out.
+
+This is an independent fork, not a staging area for upstream. Nothing here presumes upstream wants any of it back — though anyone, upstream included, is free to take any of it under the MIT License. If you build on this in turn, the same courtesy applies: keep Morgan's copyright notice, because most of this code is theirs.
+
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) — Copyright (c) 2025 Morgan. The original copyright notice is retained unmodified; this project adds no separate copyright claim.
