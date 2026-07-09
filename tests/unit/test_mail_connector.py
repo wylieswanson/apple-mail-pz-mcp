@@ -3005,7 +3005,7 @@ class TestAppleMailConnector:
             result = connector.diagnose_mail_access("iCloud", "INBOX")
 
         assert result["local_db_enabled"] is True
-        assert result["search_backend_order"] == ["imap", "local-db", "applescript"]
+        assert result["search_backend_order"] == ["local-db", "imap", "applescript"]
         assert result["account"] == {
             "input": "iCloud",
             "resolved": True,
@@ -3015,6 +3015,17 @@ class TestAppleMailConnector:
         assert result["mailbox"]["local_db_matches"] == 1
         assert result["mailbox"]["local_db_sample_urls"] == ["imap://ACC-1/INBOX"]
         local_db.matching_mailbox_urls.assert_called_once_with("ACC-1", "INBOX")
+
+    def test_account_uuid_for_local_db_caches_display_name_resolution(self) -> None:
+        connector = AppleMailConnector(local_db_enabled=True)
+        accounts = [{"id": "ACC-1", "name": "iCloud"}]
+
+        with patch.object(connector, "list_accounts", return_value=accounts) as mock_list:
+            assert connector._account_uuid_for_local_db("iCloud") == "ACC-1"
+            assert connector._account_uuid_for_local_db("iCloud") == "ACC-1"
+            assert connector._account_uuid_for_local_db("ACC-1") == "ACC-1"
+
+        mock_list.assert_called_once_with()
 
     # --- search_messages delegation --------------------------------------
 
@@ -3050,14 +3061,13 @@ class TestAppleMailConnector:
     @patch.object(AppleMailConnector, "_search_messages_applescript")
     @patch.object(AppleMailConnector, "_search_messages_local_db")
     @patch.object(AppleMailConnector, "_imap_search")
-    def test_search_messages_uses_local_db_after_imap_fallback_when_enabled(
+    def test_search_messages_prefers_local_db_for_metadata_when_enabled(
         self,
         mock_imap_search: MagicMock,
         mock_local_search: MagicMock,
         mock_as_search: MagicMock,
     ) -> None:
         connector = AppleMailConnector(local_db_enabled=True)
-        mock_imap_search.side_effect = MailKeychainEntryNotFoundError("no entry")
         mock_local_search.return_value = [{"id": "1", "subject": "from local"}]
 
         result = connector.search_messages(
@@ -3081,6 +3091,7 @@ class TestAppleMailConnector:
             5,
         )
         mock_as_search.assert_not_called()
+        mock_imap_search.assert_not_called()
 
     @patch.object(AppleMailConnector, "_search_messages_applescript")
     @patch.object(AppleMailConnector, "_search_messages_local_db")
@@ -3093,12 +3104,12 @@ class TestAppleMailConnector:
     ) -> None:
         seen: list[str] = []
         connector = AppleMailConnector(local_db_enabled=True)
-        mock_imap_search.side_effect = MailKeychainEntryNotFoundError("no entry")
         mock_local_search.return_value = [{"id": "1"}]
 
         connector.search_messages("iCloud", on_backend=seen.append)
 
         assert seen == ["local-db"]
+        mock_imap_search.assert_not_called()
         mock_as_search.assert_not_called()
 
     @patch.object(AppleMailConnector, "_search_messages_applescript")
@@ -3159,6 +3170,26 @@ class TestAppleMailConnector:
         assert result == [{"id": "1", "subject": "from applescript"}]
         mock_local_search.assert_called_once()
         mock_as_search.assert_called_once()
+
+    @patch.object(AppleMailConnector, "_search_messages_applescript")
+    @patch.object(AppleMailConnector, "_search_messages_local_db")
+    @patch.object(AppleMailConnector, "_imap_search")
+    def test_search_messages_falls_back_to_imap_when_local_db_unavailable(
+        self,
+        mock_imap_search: MagicMock,
+        mock_local_search: MagicMock,
+        mock_as_search: MagicMock,
+    ) -> None:
+        connector = AppleMailConnector(local_db_enabled=True)
+        mock_local_search.side_effect = LocalDbUnavailableError("stale permission")
+        mock_imap_search.return_value = [{"id": "1", "subject": "from imap"}]
+
+        result = connector.search_messages(account="iCloud", mailbox="INBOX")
+
+        assert result == [{"id": "1", "subject": "from imap"}]
+        mock_local_search.assert_called_once()
+        mock_imap_search.assert_called_once()
+        mock_as_search.assert_not_called()
 
     @patch.object(AppleMailConnector, "_search_messages_applescript")
     @patch.object(AppleMailConnector, "_imap_search")

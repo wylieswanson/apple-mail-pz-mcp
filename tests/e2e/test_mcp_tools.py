@@ -126,7 +126,7 @@ INVOCATION_CASES: list[tuple[str, dict[str, Any], str, Any]] = [
         {
             "local_db_enabled": True,
             "local_db": {"available": True},
-            "search_backend_order": ["imap", "local-db", "applescript"],
+            "search_backend_order": ["local-db", "imap", "applescript"],
             "recommendations": [],
         },
     ),

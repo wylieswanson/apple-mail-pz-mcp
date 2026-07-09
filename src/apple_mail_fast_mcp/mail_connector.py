@@ -872,6 +872,10 @@ class AppleMailConnector:
         # (the orchestrator goes straight to the AppleScript path without
         # paying the connect/login round trip).
         self._imap_failure_until: dict[str, float] = {}
+        # Local DB mailbox URLs are keyed by Mail's stable account UUID.
+        # Cache display-name resolution so metadata searches can stay on
+        # the local SQLite path after the first account lookup.
+        self._local_db_account_uuid_cache: dict[str, str] = {}
 
     def _imap_breaker_open(self, account: str) -> bool:
         """True if a recent IMAP failure on this account is still cooling
@@ -1792,12 +1796,21 @@ class AppleMailConnector:
         """
         if re.fullmatch(r"[0-9A-Fa-f-]{16,}", account):
             return account
+        cached = self._local_db_account_uuid_cache.get(account)
+        if cached:
+            return cached
 
         for row in self.list_accounts():
             row_id = str(row.get("id") or "")
             row_name = str(row.get("name") or "")
             if account == row_id or account == row_name:
-                return row_id or account
+                resolved = row_id or account
+                self._local_db_account_uuid_cache[account] = resolved
+                if row_id:
+                    self._local_db_account_uuid_cache[row_id] = resolved
+                if row_name:
+                    self._local_db_account_uuid_cache[row_name] = resolved
+                return resolved
 
         raise MailAccountNotFoundError(f"Account not found: {account}")
 
@@ -1901,9 +1914,10 @@ class AppleMailConnector:
         return report
 
     def _diagnostic_backend_order(self) -> list[str]:
-        order = ["imap"]
+        order = []
         if self._local_db_enabled:
             order.append("local-db")
+        order.append("imap")
         order.append("applescript")
         return order
 
@@ -1946,20 +1960,24 @@ class AppleMailConnector:
     ) -> list[dict[str, Any]]:
         """Search for messages matching criteria.
 
-        Tries the IMAP path first (fast, server-side SEARCH). Falls back to
-        AppleScript on any IMAP failure per the graceful-degradation invariants
-        in docs/research/imap-auth-options-decision.md — so a user with no
-        Keychain entry, a revoked password, or a dropped network still gets
-        working search via AppleScript.
+        Metadata-only queries use the opt-in local Envelope Index first when
+        available, then IMAP, then AppleScript. Queries that need body text or
+        attachment predicates skip the local DB and try IMAP first. All paths
+        preserve the graceful-degradation invariants in
+        docs/research/imap-auth-options-decision.md — so a user with no
+        Keychain entry, a revoked password, a dropped network, or no Full Disk
+        Access still gets working search via fallback.
 
         When ``include_attachments=True``, every row includes an
         ``attachments`` field with the same shape as ``mail.get_attachments``
         rows (``name``, ``mime_type``, ``size``, ``downloaded``, and
-        ``encoded_size`` on the IMAP path). On the IMAP path this is
-        essentially free (BODYSTRUCTURE bundles into the same FETCH); on the
-        AppleScript fallback, per-row attachment enumeration can be expensive
-        on cold caches — see the ``include_attachments`` notes in TOOLS.md
-        and #142.
+        ``encoded_size`` on the IMAP path). IMAP metadata ``size`` is the
+        decoded byte count inferred from BODYSTRUCTURE when possible, while
+        ``encoded_size`` preserves the transfer size. On the IMAP path this
+        is essentially free (BODYSTRUCTURE bundles into the same FETCH); on
+        the AppleScript fallback, per-row attachment enumeration can be
+        expensive on cold caches — see the ``include_attachments`` notes in
+        TOOLS.md and #142.
 
         ``body_contains`` and ``text_contains`` filter by message content
         (RFC 3501 ``BODY`` / ``TEXT`` semantics on IMAP; ``content of msg``
@@ -1993,6 +2011,37 @@ class AppleMailConnector:
             if date_from is None or cutoff_date_iso > date_from:
                 date_from = cutoff_date_iso
 
+        local_db_supported = self._local_db_search_supported(
+            include_attachments=include_attachments,
+            has_attachment=has_attachment,
+            body_contains=body_contains,
+            text_contains=text_contains,
+        )
+
+        if local_db_supported:
+            try:
+                result = self._search_messages_local_db(
+                    account,
+                    mailbox,
+                    sender_contains,
+                    subject_contains,
+                    read_status,
+                    is_flagged,
+                    date_from,
+                    date_to,
+                    cutoff_dt,
+                    limit,
+                )
+                if on_backend is not None:
+                    on_backend("local-db")
+                return result
+            except LocalDbUnsupportedQueryError:
+                # Defensive: eligibility should keep these out, but fall back
+                # if a future LocalDbConnector gets stricter.
+                logger.debug("Local DB search does not support this query; falling back")
+            except (LocalDbUnavailableError, sqlite3.Error, PermissionError, OSError) as exc:
+                logger.debug("Local DB search unavailable (%s); falling back", exc)
+
         if not self._imap_breaker_open(account):
             try:
                 result = self._imap_search(
@@ -2019,35 +2068,6 @@ class AppleMailConnector:
             except _IMAP_FALLBACK_EXCS as exc:
                 self._log_imap_fallback(account, exc)
                 # fall through to AppleScript
-
-        if self._local_db_search_supported(
-            include_attachments=include_attachments,
-            has_attachment=has_attachment,
-            body_contains=body_contains,
-            text_contains=text_contains,
-        ):
-            try:
-                result = self._search_messages_local_db(
-                    account,
-                    mailbox,
-                    sender_contains,
-                    subject_contains,
-                    read_status,
-                    is_flagged,
-                    date_from,
-                    date_to,
-                    cutoff_dt,
-                    limit,
-                )
-                if on_backend is not None:
-                    on_backend("local-db")
-                return result
-            except LocalDbUnsupportedQueryError:
-                # Defensive: eligibility should keep these out, but fall back
-                # if a future LocalDbConnector gets stricter.
-                logger.debug("Local DB search does not support this query; falling back")
-            except (LocalDbUnavailableError, sqlite3.Error, PermissionError, OSError) as exc:
-                logger.debug("Local DB search unavailable (%s); falling back to AppleScript", exc)
 
         # We're committed to the AppleScript path. Warn proactively if a
         # body/text search is set — that's the multi-order-of-magnitude

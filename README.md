@@ -145,8 +145,9 @@ reading Apple Mail's local Envelope Index SQLite database in read-only mode:
 
 What it covers today: account/mailbox-scoped `search_messages` filters for
 sender, subject, read/unread, flagged, dates, `received_within_hours`, and
-limit. It intentionally skips body/text search and attachment metadata for
-now; those still use IMAP when configured or AppleScript fallback.
+limit. Supported metadata-only queries prefer the local DB first, then fall
+back to IMAP or AppleScript. Body/text search, `has_attachment`, and
+attachment metadata still use IMAP when configured or AppleScript fallback.
 
 This path requires Full Disk Access for the host app because it reads
 `~/Library/Mail/V*/MailData/Envelope Index`. If the local database is missing,

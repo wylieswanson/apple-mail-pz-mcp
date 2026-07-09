@@ -1091,12 +1091,14 @@ def search_messages(
             searches the account/mailbox normally.
         include_attachments: When True, each row includes an ``attachments``
             field listing per-attachment metadata (name, mime_type, size,
-            downloaded, and ``encoded_size`` on the IMAP path). Default
-            False — opt-in because the AppleScript fallback path can be slow
-            on cold caches (#142). Free on the IMAP fast path. To fetch
-            attachment metadata for a known list of ids cheaply, prefer
-            ``get_messages([ids])`` (default-on attachments, bounded
-            cardinality).
+            downloaded, and ``encoded_size`` on the IMAP path). IMAP
+            metadata ``size`` is the decoded byte count inferred from
+            BODYSTRUCTURE when possible; ``encoded_size`` preserves the
+            transfer size. Default False — opt-in because the AppleScript
+            fallback path can be slow on cold caches (#142). Free on the IMAP
+            fast path. To fetch attachment metadata for a known list of ids
+            cheaply, prefer ``get_messages([ids])`` (default-on attachments,
+            bounded cardinality).
         body_contains: Substring match against message body content. IMAP
             uses ``BODY`` predicate (sub-second); AppleScript reads
             ``content of msg`` per candidate (very slow on large mailboxes
@@ -1332,9 +1334,12 @@ def get_messages(
         mailbox: Folder to look in for the IMAP fast path (e.g. "INBOX").
         include_attachments: Include per-attachment metadata (name,
             mime_type, size, downloaded, and ``encoded_size`` on the IMAP
-            path) on each message (default: True). Bounded cost — id-list
-            cardinality is typically 1-10. Free on the IMAP fast path;
-            cheap-enough on the AppleScript fallback for typical id counts.
+            path) on each message (default: True). IMAP metadata ``size`` is
+            the decoded byte count inferred from BODYSTRUCTURE when possible;
+            ``encoded_size`` preserves the transfer size. Bounded cost —
+            id-list cardinality is typically 1-10. Free on the IMAP fast
+            path; cheap-enough on the AppleScript fallback for typical id
+            counts.
 
     Returns:
         Dictionary containing the list of messages and count. Each message

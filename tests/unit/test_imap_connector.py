@@ -1406,7 +1406,7 @@ class TestGetAttachments:
         assert len(result) == 1
         assert result[0]["name"] == "04 FS.pdf"
         assert result[0]["mime_type"] == "application/pdf"
-        assert result[0]["size"] == 289236
+        assert result[0]["size"] == 211364
         assert result[0]["encoded_size"] == 289236
         assert _bodystructure_has_attachment(_BS_REAL_ICLOUD_MIXED_PDF) is True
 
@@ -1464,10 +1464,32 @@ class TestGetAttachments:
         assert result == [{
             "name": "report.pdf",
             "mime_type": "application/pdf",
-            "size": 524288,
+            "size": 383132,
             "encoded_size": 524288,
             "downloaded": False,  # always False on IMAP path; documented divergence
         }]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_base64_attachment_size_reports_decoded_bytes(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """BODYSTRUCTURE reports transfer octets; metadata ``size`` should be
+        the decoded file-size estimate and ``encoded_size`` should preserve
+        the wire size."""
+        pdf = (
+            b"application", b"pdf", (b"name", b"10684.pdf"),
+            None, None, b"base64", 175304,
+            None, (b"attachment", (b"filename", b"10684.pdf")),
+        )
+        bs = (_BS_PLAIN_TEXT, pdf, b"mixed")
+        self._setup_client(mock_cls, bodystructure=bs)
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").get_attachments(
+            "abc@x", mailbox="INBOX",
+        )
+
+        assert result[0]["size"] == 128105
+        assert result[0]["encoded_size"] == 175304
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_multiple_attachments(

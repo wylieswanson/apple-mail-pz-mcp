@@ -422,7 +422,7 @@ class TestDiagnoseMailAccess:
         mock_mail.diagnose_mail_access.return_value = {
             "local_db_enabled": True,
             "local_db": {"available": True},
-            "search_backend_order": ["imap", "local-db", "applescript"],
+            "search_backend_order": ["local-db", "imap", "applescript"],
             "recommendations": [],
         }
 
@@ -430,7 +430,7 @@ class TestDiagnoseMailAccess:
 
         assert result["success"] is True
         assert result["local_db_enabled"] is True
-        assert result["search_backend_order"] == ["imap", "local-db", "applescript"]
+        assert result["search_backend_order"] == ["local-db", "imap", "applescript"]
         mock_mail.diagnose_mail_access.assert_called_once_with(
             account="iCloud",
             mailbox="INBOX",

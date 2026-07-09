@@ -511,13 +511,13 @@ def _bodystructure_extract_attachments(
 
     Returns dicts with keys: ``name``, ``mime_type``, ``size``,
     ``encoded_size``, ``downloaded``. On the IMAP path, BODYSTRUCTURE's
-    size is the transfer-encoded body size for some providers; keep it as
-    ``size`` for compatibility and also expose it explicitly as
-    ``encoded_size``. ``downloaded`` is always False on the IMAP path —
-    BODYSTRUCTURE returns metadata only, not body bytes, and Mail.app's
-    local cache state isn't observable from the protocol. Callers that
-    need decoded bytes invoke ``get_attachment_content`` or
-    ``save_attachments``.
+    size is the transfer-encoded body size for some providers, so
+    ``encoded_size`` preserves that exact value and ``size`` reports the
+    best decoded byte count available without fetching the part body.
+    ``downloaded`` is always False on the IMAP path — BODYSTRUCTURE returns
+    metadata only, not body bytes, and Mail.app's local cache state isn't
+    observable from the protocol. Callers that need decoded bytes invoke
+    ``get_attachment_content`` or ``save_attachments``.
 
     The byte-fetch path (``get_attachment_content`` / ``save_attachments``)
     indexes into this list by position, so its enumerator
@@ -571,6 +571,7 @@ def _bodystructure_extract_attachments(
             leaf[1] if len(leaf) > 1 and isinstance(leaf[1], bytes) else b""
         )
         ct_params = leaf[2] if len(leaf) > 2 else ()
+        encoding = leaf[5] if len(leaf) > 5 else b""
         size_field = leaf[6] if len(leaf) > 6 else 0
 
         disp_kind: bytes | None = None
@@ -604,16 +605,65 @@ def _bodystructure_extract_attachments(
         mime_type = f"{_decode(type_)}/{_decode(subtype)}"
 
         encoded_size = int(size_field) if isinstance(size_field, int) else 0
+        decoded_size = _decoded_size_from_bodystructure(
+            encoding,
+            encoded_size,
+        )
         out.append({
             "name": name,
             "mime_type": mime_type,
-            "size": encoded_size,
+            "size": decoded_size,
             "encoded_size": encoded_size,
             "downloaded": False,
         })
 
     _walk(structure)
     return out
+
+
+def _base64_body_octets(encoded_size: int) -> int:
+    """Infer base64 character count from MIME transfer octets.
+
+    BODYSTRUCTURE's size field is the transfer-encoded body size. MIME
+    base64 bodies are commonly wrapped at 76 characters with CRLF line
+    endings. Try the standard wrapped forms first, then fall back to an
+    unwrapped multiple-of-four value.
+    """
+    if encoded_size <= 0:
+        return 0
+
+    def valid(n: int, lines: int) -> bool:
+        return n > 0 and n % 4 == 0 and (lines - 1) * 76 < n <= lines * 76
+
+    approx = max(1, encoded_size // 78)
+    for lines in range(max(1, approx - 4), approx + 8):
+        n = encoded_size - (2 * lines)
+        if valid(n, lines):
+            return n
+
+        n = encoded_size - (2 * max(0, lines - 1))
+        if valid(n, lines):
+            return n
+
+    if encoded_size % 4 == 0:
+        return encoded_size
+    return max(0, encoded_size - (encoded_size % 4))
+
+
+def _decoded_size_from_bodystructure(encoding: Any, encoded_size: int) -> int:
+    """Return decoded byte count when BODYSTRUCTURE makes it knowable enough."""
+    if not isinstance(encoded_size, int) or encoded_size <= 0:
+        return 0
+    enc = _decode(encoding).lower()
+    if enc == "base64":
+        base64_octets = _base64_body_octets(encoded_size)
+        if base64_octets <= 0:
+            return 0
+        # Padding is not exposed in BODYSTRUCTURE. One byte is the middle
+        # candidate and matches the common PDF/image cases from Apple Mail
+        # while staying within the exact decoded-size range of +/- 1 byte.
+        return max(0, (base64_octets // 4) * 3 - 1)
+    return encoded_size
 
 
 def _disposition_marks_attachment(elem: Any) -> bool:
