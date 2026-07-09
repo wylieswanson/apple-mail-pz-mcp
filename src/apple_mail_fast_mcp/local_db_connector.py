@@ -8,7 +8,6 @@ metadata-only: full body/attachment search needs a separate private index over
 
 from __future__ import annotations
 
-import glob
 import os
 import sqlite3
 from collections.abc import Mapping
@@ -60,13 +59,43 @@ def local_db_enabled(env: Mapping[str, str] | None = None) -> bool:
 
 
 def _default_envelope_index_path() -> Path:
-    hits = sorted(glob.glob(os.path.expanduser("~/Library/Mail/V*/MailData/Envelope Index")))
-    if not hits:
+    mail_base = Path.home() / "Library" / "Mail"
+    if not mail_base.exists():
         raise LocalDbUnavailableError(
-            "Apple Mail Envelope Index not found; Mail may not be configured "
-            "or the host app may lack Full Disk Access."
+            f"Apple Mail directory not found: {mail_base}. Mail.app may not be configured."
         )
-    return Path(hits[-1])
+
+    try:
+        version_dirs = sorted(
+            (
+                child
+                for child in mail_base.iterdir()
+                if child.is_dir() and child.name.startswith("V") and child.name[1:].isdigit()
+            ),
+            key=lambda path: int(path.name[1:]),
+        )
+    except PermissionError as exc:
+        raise LocalDbUnavailableError(
+            f"Cannot list {mail_base}. Grant Full Disk Access to the parent app "
+            "launching this process, then fully quit and reopen it."
+        ) from exc
+
+    candidates = [version / "MailData" / "Envelope Index" for version in version_dirs]
+    for candidate in reversed(candidates):
+        try:
+            if candidate.exists():
+                return candidate
+        except PermissionError as exc:
+            raise LocalDbUnavailableError(
+                f"Cannot access {candidate}. Grant Full Disk Access to the parent app "
+                "launching this process, then fully quit and reopen it."
+            ) from exc
+
+    scanned = ", ".join(str(candidate) for candidate in candidates) or str(mail_base / "V*")
+    raise LocalDbUnavailableError(
+        "Apple Mail Envelope Index not found. Checked: "
+        f"{scanned}. Mail.app may not have synced mail locally yet."
+    )
 
 
 def _parse_iso_date(value: str, field: str) -> date:
