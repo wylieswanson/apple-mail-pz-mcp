@@ -327,16 +327,6 @@ def list_accounts() -> dict[str, Any]:
     Returns each account's id (UUID), display name, email addresses,
     account type, and enabled state. Account ids are stable across name
     changes; prefer them over names for identifying accounts.
-
-    Returns:
-        Dictionary containing the accounts list.
-
-    Example:
-        >>> list_accounts()
-        {"success": True, "accounts": [
-            {"id": "B21B254B-...", "name": "Gmail", "email_addresses": ["me@gmail.com"],
-             "account_type": "imap", "enabled": True}, ...
-        ]}
     """
     try:
         rate_err = check_rate_limit("list_accounts", {})
@@ -369,22 +359,12 @@ def list_accounts() -> dict[str, Any]:
 )
 def list_rules() -> dict[str, Any]:
     """
-    List all Mail.app rules (read-only).
+    List all Mail.app rules, in order.
 
-    Returns each rule's display name and enabled state. Rule names are NOT
-    guaranteed unique — Mail allows duplicates — and rules have no stable
-    id via AppleScript. This tool is read-only; mutation (enable/disable,
-    create, delete) is tracked as a separate enhancement.
-
-    Returns:
-        Dictionary containing the rules list.
-
-    Example:
-        >>> list_rules()
-        {"success": True, "rules": [
-            {"name": "Junk filter", "enabled": True},
-            {"name": "News From Apple", "enabled": False}, ...
-        ], "count": 2}
+    Returns each rule's display name, enabled state, and 1-based index. Rule
+    names are NOT guaranteed unique — Mail allows duplicates — and rules have
+    no stable id via AppleScript, so update_rule and delete_rule address a
+    rule by the ``index`` returned here.
     """
     try:
         rate_err = check_rate_limit("list_rules", {})
@@ -1631,20 +1611,14 @@ def update_message(
 )
 def get_thread(message_id: str) -> dict[str, Any]:
     """
-    Return all messages in the thread containing the given message.
+    Return all messages in the thread containing the given message,
+    sorted by ``date_received`` ascending.
 
-    Looks up the anchor message by its id, then reconstructs the
-    conversation via the connector's tiered IMAP threading dispatch
-    (Tier 1 X-GM-THRID for Gmail, Tier 3 header-search BFS fallback)
-    or the AppleScript path. Result rows are sorted by ``date_received``
-    ascending.
+    Pipe the returned ids into ``search_messages(source=[ids])`` for filtered
+    metadata, or ``get_messages([ids])`` for full bodies.
 
-    The returned ids can be piped into ``search_messages(source=[ids])``
-    for filtered metadata or ``get_messages([ids])`` for full bodies.
-
-    Known limitation: thread members whose subject was rewritten
-    mid-conversation are missed on the AppleScript fallback path
-    (subject prefilter tradeoff).
+    Known limitation: without IMAP configured, thread members whose subject
+    was rewritten mid-conversation are missed.
 
     Args:
         message_id: Internal id of any message in the thread
@@ -2588,13 +2562,8 @@ def _template_error_response(e: MailTemplateError) -> dict[str, Any]:
 def list_templates() -> dict[str, Any]:
     """List all stored email templates.
 
-    Templates live as files at ~/.apple_mail_mcp/templates/<name>.md.
-    Override the location with the APPLE_MAIL_MCP_HOME environment
-    variable.
-
-    Returns:
-        Dictionary with each template's name and subject (or null if
-        no subject header is set).
+    Returns each template's name and subject (null if the template sets no
+    subject header).
     """
     try:
         rate_err = check_rate_limit("list_templates", {})
