@@ -56,6 +56,7 @@ from .utils import (
     attachment_content_encoding,
     coerce_json_dict,
     coerce_json_list,
+    env_flag,
     make_body_safe,
     rank_senders,
 )
@@ -74,11 +75,18 @@ logger = logging.getLogger(__name__)
 # args, which `main()` parses again with the full schema) so the
 # `@_tool(..., mutating=True)` decorator below can decide registration at
 # decoration time without restructuring the per-tool decoration sites.
+#
+# `APPLE_MAIL_MCP_READ_ONLY` is the env-var equivalent, for hosts that pass
+# environment but not argv — the `.mcpb` bundle surfaces it as an install-time
+# checkbox via a boolean `user_config`. The flag is an explicit narrowing, so
+# it wins over a falsey env value. Writes stay registered by default.
 def _pre_parse_read_only(argv: list[str] | None = None) -> bool:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--read-only", action="store_true")
     args, _ = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
-    return bool(args.read_only)
+    if args.read_only:
+        return True
+    return env_flag("APPLE_MAIL_MCP_READ_ONLY")
 
 
 _READ_ONLY = _pre_parse_read_only()
@@ -3625,7 +3633,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Start the server with only the 12 read-only tools registered "
             "(skips the 14 mutating tools). Pair with a second non-read-only "
             "server entry in your MCP client to batch-approve reads while "
-            "still gating writes per call. See docs/reference/TOOLS.md."
+            "still gating writes per call. Equivalent to setting "
+            "APPLE_MAIL_MCP_READ_ONLY=1. See docs/reference/TOOLS.md."
         ),
     )
     sub = parser.add_subparsers(dest="command")

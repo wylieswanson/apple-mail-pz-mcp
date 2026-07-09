@@ -57,8 +57,10 @@ file together when it changes.
 
 ## MCP Client Compatibility
 
-The shipped artifacts (`.claude-plugin/plugin.json`, `mcpb/manifest.json`) launch
-with `--read-only`. That is deliberate — see the elicitation row below.
+The shipped artifacts register all 26 tools. Read-only mode is opt-in, via
+`--read-only` or `APPLE_MAIL_MCP_READ_ONLY=1` (the `.mcpb` bundle exposes it as
+a boolean `user_config` that lands in the env). Writes are a first-class mode;
+do not narrow the default surface to route around a host limitation.
 
 | Behavior | Claude Code | Claude Desktop / Cowork | Codex CLI |
 |---|---|---|---|
@@ -71,10 +73,11 @@ Two consequences drive real code:
 
 - **Every destructive tool gates on `_elicit_confirmation`, which fails closed
   (#226).** On a host without elicitation the gated tools *can never succeed* —
-  they return `error_type: "confirmation_required"` on every call. That is why
-  the shipped artifacts are read-only: a Cowork user installing the `.mcpb`
-  would otherwise get 6 tools that always fail. Do not "fix" this by letting the
-  gate pass silently; that was the pre-#226 bypass.
+  they return `error_type: "confirmation_required"` on every call. That is a
+  host gap, not a reason to ship fewer tools; users who want them hidden pass
+  `--read-only`. Do not "fix" this by letting the gate pass silently; that was
+  the pre-#226 bypass. A confirm-token second call is the design worth exploring
+  if writes must work on elicitation-less hosts.
 - **Hosts that stringify args** are handled by the `BeforeValidator` aliases at
   the top of `server.py`. Optional params must use the `Opt*` aliases
   (`OptStrList`, not `StrList | None`) — annotating the union is what lets a
@@ -156,6 +159,6 @@ Claude Code loads these from `.claude/skills/`. Other agents should read the
 - `src/apple_mail_fast_mcp/server.py` — FastMCP server wrapping the connector (~3700 lines)
 - `src/apple_mail_fast_mcp/imap_connector.py` — IMAP fast path (~2400 lines)
 - `src/apple_mail_fast_mcp/security.py` — Input validation, audit logging, confirmation flows
-- `src/apple_mail_fast_mcp/utils.py` — Pure functions: escaping, parsing, validation, host-arg coercion
+- `src/apple_mail_fast_mcp/utils.py` — Pure functions: escaping, parsing, validation, host-arg coercion, `env_flag`
 - `src/apple_mail_fast_mcp/exceptions.py` — Custom exception hierarchy
 - `docs/reference/TOOLS.md` — Complete API reference

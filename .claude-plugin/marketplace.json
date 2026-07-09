@@ -10,7 +10,7 @@
     {
       "name": "apple-mail-pz",
       "displayName": "Apple Mail (PingZero MCP)",
-      "description": "Read-only search, read, threads, templates, and inbox stats for Apple Mail \u2014 with an IMAP fast path and a security-first design. Write tools are opt-in. macOS only.",
+      "description": "Search, read, organize, draft, templates, rules, and inbox stats for Apple Mail \u2014 with an IMAP fast path and a security-first design. macOS only.",
       "version": "0.10.2",
       "source": "./",
       "author": {

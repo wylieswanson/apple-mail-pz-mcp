@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-_TRUE_VALUES = {"1", "true", "yes", "on"}
-_FALSE_VALUES = {"0", "false", "no", "off", ""}
+from apple_mail_fast_mcp.utils import env_flag
+
 _DEFAULT_LIMIT = 999_999_999
 _REQUIRED_TABLES = frozenset(
     {"messages", "subjects", "addresses", "mailboxes", "message_global_data"}
@@ -52,13 +52,7 @@ class LocalDbSearch:
 
 def local_db_enabled(env: Mapping[str, str] | None = None) -> bool:
     """Return whether the opt-in local DB accelerator is enabled."""
-    value = (env or os.environ).get("APPLE_MAIL_MCP_LOCAL_DB", "0")
-    normalized = value.strip().lower()
-    if normalized in _TRUE_VALUES:
-        return True
-    if normalized in _FALSE_VALUES:
-        return False
-    return False
+    return env_flag("APPLE_MAIL_MCP_LOCAL_DB", env)
 
 
 def _safe_exists(path: Path) -> tuple[bool, str | None]:
@@ -225,9 +219,7 @@ class LocalDbConnector:
         report["recommendations"] = self._diagnose_recommendations(report)
         return report
 
-    def _diagnose_path(
-        self, env: Mapping[str, str], report: dict[str, Any]
-    ) -> Path | None:
+    def _diagnose_path(self, env: Mapping[str, str], report: dict[str, Any]) -> Path | None:
         override = env.get("APPLE_MAIL_MCP_LOCAL_DB_PATH")
         if override:
             path = Path(override).expanduser()
@@ -252,9 +244,7 @@ class LocalDbConnector:
                 (
                     child
                     for child in mail_base.iterdir()
-                    if child.is_dir()
-                    and child.name.startswith("V")
-                    and child.name[1:].isdigit()
+                    if child.is_dir() and child.name.startswith("V") and child.name[1:].isdigit()
                 ),
                 key=lambda path: int(path.name[1:]),
             )
@@ -286,9 +276,7 @@ class LocalDbConnector:
         report["error"] = f"Apple Mail Envelope Index not found. Checked: {scanned}"
         return None
 
-    def _record_envelope_index_status(
-        self, path: Path, report: dict[str, Any]
-    ) -> None:
+    def _record_envelope_index_status(self, path: Path, report: dict[str, Any]) -> None:
         report["envelope_index_path"] = str(path)
         exists, error = _safe_exists(path)
         report["envelope_index_exists"] = exists
@@ -304,9 +292,7 @@ class LocalDbConnector:
         try:
             with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
                 report["sqlite_openable"] = True
-                rows = conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'table'"
-                )
+                rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
                 tables = {str(row[0]) for row in rows}
         except sqlite3.Error as exc:
             report["error"] = f"Cannot open Envelope Index read-only: {path}: {exc}"
@@ -332,7 +318,9 @@ class LocalDbConnector:
                 "then fully quit and reopen it."
             )
         if report["envelope_index_path"] and not report["envelope_index_exists"]:
-            recommendations.append("Confirm Mail.app has downloaded local mail and rebuilt its index.")
+            recommendations.append(
+                "Confirm Mail.app has downloaded local mail and rebuilt its index."
+            )
         if report["envelope_index_exists"] and not report["sqlite_openable"]:
             recommendations.append(
                 "Confirm the Envelope Index is readable by this process; Full Disk Access "
@@ -377,9 +365,7 @@ class LocalDbConnector:
         caller can fall back to AppleScript when the local schema differs.
         """
         with self._connect() as conn:
-            mailbox_ids = self._matching_mailbox_ids(
-                conn, query.account_uuid, query.mailbox
-            )
+            mailbox_ids = self._matching_mailbox_ids(conn, query.account_uuid, query.mailbox)
             if not mailbox_ids:
                 return []
             return self._search_messages_in_mailboxes(conn, query, mailbox_ids)

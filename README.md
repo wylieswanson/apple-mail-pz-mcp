@@ -33,11 +33,12 @@ Destructive operations (`delete_*`, `create_rule` with move/forward/delete actio
 
 ## Installation
 
-> **Read-only by default.** The `.mcpb` bundle and the Claude Code plugin both launch the
-> server with `--read-only`, exposing the 12 read tools. The 14 mutating tools confirm each
-> destructive action through [MCP elicitation](#enabling-the-write-tools), which not every
-> host implements — on a host without it they fail closed and can never succeed. Enabling
-> them is a deliberate, documented step.
+> **All 26 tools install by default.** Destructive tools confirm each action through
+> [MCP elicitation](#read-only-mode-and-the-elicitation-caveat) and *fail closed* if the
+> host cannot prompt — so on Claude Desktop and Cowork, which don't implement elicitation
+> yet, those tools return a confirmation error instead of acting. If you'd rather not see
+> them at all, run with `--read-only` (or tick **Read-only mode** when installing the
+> `.mcpb`).
 
 ### Claude Desktop — install from file (`.mcpb`)
 
@@ -72,16 +73,18 @@ seconds**, and a cold `uv` dependency resolve will exceed it.
 ```toml
 [mcp_servers.apple-mail]
 command = "apple-mail-pz-mcp"          # or the absolute path from `which apple-mail-pz-mcp`
-args = ["--read-only"]
 env = { APPLE_MAIL_MCP_LOCAL_DB = "1" }
 startup_timeout_sec = 30
-default_tools_approval_mode = "auto"   # safe: every exposed tool is read-only
+
+# Read-only if you want it — then `default_tools_approval_mode = "auto"` is safe,
+# because every exposed tool is read-only.
+# args = ["--read-only"]
+# default_tools_approval_mode = "auto"
 ```
 
 Two Codex-specific notes. Elicitation landed around **v0.119**; on older builds the write
-tools fail closed exactly as they do on Cowork, so `--read-only` costs you nothing. And
-Codex's per-tool `approval_mode` means you do **not** need the two-connector split below —
-set `approval_mode` per tool instead.
+tools fail closed exactly as they do on Cowork. And Codex's per-tool `approval_mode` means
+you do **not** need the two-connector split below — set `approval_mode` per tool instead.
 
 ### pip / uvx (any MCP client)
 
@@ -129,20 +132,27 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 
 (Equivalent alternative if you prefer driving it through uv: `"command": "uv", "args": ["--directory", "/path/to/apple-mail-pz-mcp", "run", "apple-mail-pz-mcp"]`.)
 
-### Enabling the write tools
+### Read-only mode and the elicitation caveat
 
 Every destructive tool confirms the operation through **MCP elicitation** and *fails closed*: if the client can't prompt the user, the tool returns `error_type: "confirmation_required"` rather than proceeding. That is a deliberate security property — an earlier version silently proceeded, which was a real bypass of the confirmation gate.
 
-The consequence is that the write tools only work on a host that implements elicitation:
+The consequence is that the write tools only *function* on a host that implements elicitation:
 
 | Host | Elicitation | Write tools |
 |---|---|---|
 | Claude Code | Yes | Work |
 | Codex CLI ≥ ~v0.119 | Yes | Work |
-| Codex CLI, older | No | Always fail closed |
-| Claude Desktop / Cowork | No ([`claude-ai-mcp#153`](https://github.com/anthropics/claude-ai-mcp/issues/153)) | Always fail closed |
+| Codex CLI, older | No | Fail closed |
+| Claude Desktop / Cowork | No ([`claude-ai-mcp#153`](https://github.com/anthropics/claude-ai-mcp/issues/153)) | Fail closed |
 
-To enable them on a supporting host, add a server entry **without** `--read-only`. Do not work around the gate by making confirmation pass silently.
+They are still installed by default, because that's a host limitation rather than a property of this server, and hosts are fixing it. If you'd rather the model not see tools it cannot use on your host, start the server in read-only mode — it exposes the 12 read tools and skips registering the 14 mutating ones:
+
+```bash
+apple-mail-pz-mcp --read-only            # flag
+APPLE_MAIL_MCP_READ_ONLY=1 apple-mail-pz-mcp   # or env var, for hosts that only pass env
+```
+
+The `.mcpb` bundle surfaces this as a **Read-only mode** checkbox at install time. Whatever you do, don't work around the gate by making confirmation pass silently.
 
 ### Optional: split read / write servers
 

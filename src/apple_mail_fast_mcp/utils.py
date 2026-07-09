@@ -4,12 +4,38 @@ Utility functions for Apple Mail MCP.
 
 import base64
 import json
+import os
 import re
+from collections.abc import Mapping
 from typing import Any
 
 _UUID_RE = re.compile(
     r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
 )
+
+_ENV_TRUE = frozenset({"1", "true", "yes", "on"})
+_ENV_FALSE = frozenset({"0", "false", "no", "off", ""})
+
+
+def env_flag(
+    name: str, env: Mapping[str, str] | None = None, *, default: bool = False
+) -> bool:
+    """Read a boolean env var without the ``bool("false") is True`` trap.
+
+    Unset, empty, and unrecognized values fall back to ``default`` — an env
+    var is a blunt channel (a ``.mcpb`` boolean ``user_config`` arrives here as
+    the string ``"false"``), so guessing wrong silently changes the tool
+    surface.
+    """
+    raw = (env or os.environ).get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in _ENV_TRUE:
+        return True
+    if normalized in _ENV_FALSE:
+        return False
+    return default
 
 # Cap for a single message body returned inline by get_messages (#365).
 # Bodies are returned as part of a possibly multi-message JSON-RPC response;
