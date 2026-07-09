@@ -45,6 +45,7 @@ class CustomBuildHook(BuildHookInterface):
     PLUGIN_NAME = "custom"
 
     def initialize(self, version: str, build_data: dict[str, Any]) -> None:
+        self._wrote_build_info = False
         root = Path(self.root)
         commit = _git(root, "rev-parse", "--short=12", "HEAD")
         if not commit:
@@ -72,10 +73,17 @@ class CustomBuildHook(BuildHookInterface):
         build_data.setdefault("force_include", {})[str(target)] = (
             "apple_mail_fast_mcp/_build_info.py"
         )
+        self._wrote_build_info = True
 
     def finalize(
         self, version: str, build_data: dict[str, Any], artifact_path: str
     ) -> None:
+        # Only remove what initialize() created. The .mcpb bundle stages its own
+        # _build_info.py (its tree has no .git, so initialize() bails early) and
+        # an unconditional unlink here deleted it mid-build — shipping a bundle
+        # whose --version reported "unknown".
+        if not getattr(self, "_wrote_build_info", False):
+            return
         target = Path(self.root) / _TARGET
         if target.exists():
             target.unlink()

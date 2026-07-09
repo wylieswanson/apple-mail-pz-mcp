@@ -2,7 +2,7 @@
   "manifest_version": "0.4",
   "name": "apple-mail-pz-mcp",
   "display_name": "Apple Mail (PingZero MCP)",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "MCP server for Apple Mail \u2014 search, read, organize, draft, templates, rules, and inbox stats, with an IMAP fast path and a security-first design.",
   "long_description": "A local, security-first MCP server for Apple Mail on macOS. Reads and organizes mail via AppleScript with an optional IMAP fast path for large mailboxes. 27 tools across search/read, drafts, mailbox & rule CRUD, attachments, templates, and inbox statistics.\n\nDestructive operations are gated: each one asks you to confirm via MCP elicitation, and fails closed if the host cannot prompt. Hosts without elicitation support (currently Claude Desktop and Cowork) will see those tools return a confirmation error rather than acting \u2014 enable \"Read-only mode\" below to hide them entirely.\n\nNo telemetry.\n\nContinues apple-mail-fast-mcp by Morgan Jeffries (MIT), from which this project inherits its AppleScript connector, IMAP fast path, and security model.",
   "author": {

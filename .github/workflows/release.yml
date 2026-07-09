@@ -18,6 +18,10 @@ jobs:
           fetch-depth: 0
 
       - uses: actions/setup-node@v4
+
+      # build-mcpb.sh smoke-tests the staged bundle with `uv run --directory`,
+      # exactly as the host launches it, so uv must be on the runner.
+      - uses: astral-sh/setup-uv@v7
         with:
           node-version: '20'
 
@@ -39,11 +43,20 @@ jobs:
             echo "Release $VERSION" > release-notes.md
           fi
 
-      - name: Create GitHub Release
+      # Idempotent: re-running this workflow (e.g. after an unrelated job fails)
+      # must not blow up with "Release.tag_name already exists".
+      - name: Create or update GitHub Release
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "Release $GITHUB_REF_NAME" \
-            --notes-file release-notes.md
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME exists; updating notes."
+            gh release edit "$GITHUB_REF_NAME" \
+              --title "Release $GITHUB_REF_NAME" \
+              --notes-file release-notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "Release $GITHUB_REF_NAME" \
+              --notes-file release-notes.md
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -68,23 +81,3 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ github.token }}
-
-  # Publish to PyPI via OIDC trusted publishing (#335) — no API token.
-  # Requires a PyPI trusted publisher registered for this repo with
-  # workflow `release.yml` and environment `pypi`. Runs only on real
-  # version tags (the `v*` / `!v*-rc*` filter above); RC tags go to
-  # release-hygiene.yml and never publish.
-  publish-pypi:
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write  # mint the short-lived OIDC token for PyPI
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: astral-sh/setup-uv@v7
-
-      - run: uv build
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1

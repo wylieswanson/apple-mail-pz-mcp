@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] - 2026-07-09
+
+A packaging patch. **The v0.11.0 `.mcpb` bundle could not start** — install it in Claude Desktop and the server fails to launch. If you installed that bundle, replace it with this one. Nothing else in v0.11.0 is affected: the Claude Code plugin, `uv tool install`, and source installs were all fine.
+
+### Fixed
+
+**The `.mcpb` bundle was missing `hatch_build.py` and could not launch.** v0.11.0 added a Hatch custom build hook to freeze the git commit into the wheel, which made `pyproject.toml` declare `hatch_build.py` a required build input. `build-mcpb.sh` never staged it, so the host's `uv run --directory <bundle>` died with `OSError: Build script does not exist: hatch_build.py`. The bundle installed cleanly and then failed at launch — the worst shape for a bug like this.
+
+**The bundle now proves it works before it ships.** `build-mcpb.sh` smoke-tests the staged directory exactly the way the host launches it (`uv run --directory <bundle> apple-mail-pz-mcp --version`) and fails the build if it doesn't start. That test runs against a *copy*: `uv run --directory` materializes a ~200 MB `.venv` in the directory it is handed, and packing that would have shipped a 70 MB bundle instead of a 308 KB one. A second guard fails the build if `.venv`, `__pycache__`, or `dist` leaks into the staging directory.
+
+**The bundle no longer reports `commit unknown`.** `build-mcpb.sh` freezes provenance into the staged tree, and `hatch_build.py`'s `finalize()` no longer deletes a `_build_info.py` it did not create — it was unlinking the staged file mid-build, because the bundle tree has no `.git` and `initialize()` bails out early there. `--version` from an installed bundle now names the commit it was built from, and the smoke test fails the build if it says "unknown".
+
+**`build-mcpb.sh` no longer copies `__pycache__` into the bundle.** A developer's working tree carries compiled bytecode from the last test run (a fresh CI checkout does not), which more than doubled a locally built bundle.
+
+### Changed
+
+**The release workflow no longer attempts to publish to PyPI.** This fork has no PyPI account and must not publish; the job failed on every tag with `invalid-publisher`, having nothing to publish to. Creating the GitHub Release is now idempotent, so re-running the workflow updates the notes instead of failing with `Release.tag_name already exists`. The release job also installs `uv`, which the new bundle smoke test needs.
+
 ## [0.11.0] - 2026-07-09
 
 The first release under new stewardship. `apple-mail-fast-mcp` continues here as **`apple-mail-pz-mcp`** (Apple Mail PingZero MCP Server) — an independent fork of [Morgan Jeffries' project](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp), whose AppleScript connector, IMAP fast path, security model, and test discipline this release inherits essentially whole. See [Credits and origins](README.md#credits-and-origins).
