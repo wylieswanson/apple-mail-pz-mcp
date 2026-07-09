@@ -19,13 +19,43 @@ Every tool ships with the per-tool annotations the MCP 2025-03 spec defines so h
 
 **Classification:**
 
-- **Read-only (12):** `diagnose_mail_access`, `list_accounts`, `list_mailboxes`, `list_rules`, `list_templates`, `search_messages`, `get_messages`, `get_thread`, `get_statistics`, `get_attachment_content`, `get_template`, `render_template`. All have `readOnlyHint=true`, `destructiveHint=false`, `idempotentHint=true`.
+- **Read-only (13):** `get_server_version`, `diagnose_mail_access`, `list_accounts`, `list_mailboxes`, `list_rules`, `list_templates`, `search_messages`, `get_messages`, `get_thread`, `get_statistics`, `get_attachment_content`, `get_template`, `render_template`. All have `readOnlyHint=true`, `destructiveHint=false`, `idempotentHint=true`.
 - **Mutating destructive (9):** `update_message`, `update_mailbox`, `update_rule`, `update_draft`, `delete_draft`, `delete_mailbox`, `delete_messages`, `delete_rule`, `delete_template`. All have `destructiveHint=true`, `idempotentHint=true`.
 - **Mutating additive (5):** `create_mailbox`, `create_draft`, `create_rule`, `save_template`, `save_attachments`. All have `destructiveHint=false`. Idempotent except `create_draft` and `create_rule` (each call may create a new entity).
 
-**Host doesn't honor annotations?** Use the split-server config in the [README](../../README.md#optional-split-read--write-servers). Pass `--read-only` to one connector entry to expose only the 12 read tools; pair with a second non-read-only entry. Claude Desktop's per-server permission UI then naturally groups them. The two approaches compose: annotations describe the model, the split-server flag enforces it client-side.
+**Host doesn't honor annotations?** Use the split-server config in the [README](../../README.md#optional-split-read--write-servers). Pass `--read-only` to one connector entry to expose only the 13 read tools; pair with a second non-read-only entry. Claude Desktop's per-server permission UI then naturally groups them. The two approaches compose: annotations describe the model, the split-server flag enforces it client-side.
 
 ## Phase 1 Tools (v0.1.0) - Core Foundation
+
+### get_server_version
+
+Report the running server's own version, git commit, and build date. Hosts advertise the version in the MCP handshake, but not all of them pass it through to the model — this tool makes it askable.
+
+**Parameters:** none.
+
+**Returns:**
+
+```json
+{
+  "success": true,
+  "banner": "apple-mail-pz-mcp 0.10.2 | commit 9aa07b537411 | committed 2026-07-09T15:57:51-07:00 | built 2026-07-09T23:03:01+00:00",
+  "version": "0.10.2",
+  "commit": "9aa07b537411",
+  "commit_date": "2026-07-09T15:57:51-07:00",
+  "built_at": "2026-07-09T23:03:01+00:00",
+  "dirty": false,
+  "source": "build",
+  "read_only": false
+}
+```
+
+`banner` is the exact line `apple-mail-pz-mcp --version` prints, so the tool and the CLI can never disagree. `source` reports how the commit was resolved:
+
+| `source` | Meaning | `dirty` |
+|---|---|---|
+| `build` | Frozen into the wheel at build time (any `pip`/`uv tool` install) | State of the tree that was built |
+| `git` | Read live from a source checkout | Tracked modifications only, like `git describe --dirty` |
+| `unknown` | Installed from an sdist built outside a repo; the commit is unrecoverable | `null` |
 
 ### diagnose_mail_access
 

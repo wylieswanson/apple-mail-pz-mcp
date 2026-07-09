@@ -76,8 +76,10 @@ def _from_git() -> dict[str, Any] | None:
         "commit": commit,
         "commit_date": _git("log", "-1", "--format=%cI"),
         "built_at": None,
-        # `git status --porcelain` is empty exactly when the tree is clean.
-        "dirty": bool(_git("status", "--porcelain")),
+        # Tracked modifications only, matching `git describe --dirty`: an
+        # untracked file doesn't stop HEAD from describing the code, and build
+        # tools leave untracked markers behind (see hatch_build.py).
+        "dirty": bool(_git("status", "--porcelain", "--untracked-files=no")),
         "source": "git",
     }
 

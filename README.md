@@ -8,13 +8,13 @@ An MCP server that provides programmatic access to Apple Mail, enabling AI assis
 
 > **Built on [`apple-mail-fast-mcp`](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp) by Morgan Jeffries**, MIT-licensed, whose architecture this project inherits wholesale. See [Credits and origins](#credits-and-origins).
 
-> ⚠️ **Pre-1.0 — expect breaking changes.** The MCP tool surface (tool names, parameters, return shapes) is still evolving as the project matures. Pin to a specific version (for example, `apple-mail-pz-mcp==0.10.2`) and review the [CHANGELOG](CHANGELOG.md) before upgrading.
+> ⚠️ **Pre-1.0 — expect breaking changes.** The MCP tool surface (tool names, parameters, return shapes) is still evolving as the project matures. Pin to a specific commit or tag when installing from git, and review the [CHANGELOG](CHANGELOG.md) before upgrading. `apple-mail-pz-mcp --version` tells you exactly what you are running.
 
-## Tools (26)
+## Tools (27)
 
-Grouped by lifecycle (12 read-only, 14 mutating):
+Grouped by lifecycle (13 read-only, 14 mutating):
 
-- **Discovery** — `diagnose_mail_access`, `list_accounts`, `list_mailboxes`, `list_rules`, `list_templates`: inspect access/search health and enumerate what's configured (no external cache — call per account).
+- **Discovery** — `get_server_version`, `diagnose_mail_access`, `list_accounts`, `list_mailboxes`, `list_rules`, `list_templates`: inspect access/search health and enumerate what's configured (no external cache — call per account).
 - **Read** — `search_messages`, `get_messages`, `get_thread`, `get_statistics`, `get_attachment_content`, `get_template`, `render_template`: read messages/threads, aggregate inbox stats, pull an attachment's content inline, and render templates.
 - **Message actions** — `update_message` (read/flag/move in one pass), `delete_messages` (→ Trash), `save_attachments` (to disk, byte-capped).
 - **Drafts** — `create_draft` (new / reply / forward, optionally `send_now`), `update_draft`, `delete_draft`.
@@ -33,7 +33,7 @@ Destructive operations (`delete_*`, `create_rule` with move/forward/delete actio
 
 ## Installation
 
-> **All 26 tools install by default.** Destructive tools confirm each action through
+> **All 27 tools install by default.** Destructive tools confirm each action through
 > [MCP elicitation](#read-only-mode-and-the-elicitation-caveat) and *fail closed* if the
 > host cannot prompt — so on Claude Desktop and Cowork, which don't implement elicitation
 > yet, those tools return a confirmation error instead of acting. If you'd rather not see
@@ -86,24 +86,31 @@ Two Codex-specific notes. Elicitation landed around **v0.119**; on older builds 
 tools fail closed exactly as they do on Cowork. And Codex's per-tool `approval_mode` means
 you do **not** need the two-connector split below — set `approval_mode` per tool instead.
 
-### pip / uvx (any MCP client)
+### uv tool / uvx (any MCP client)
 
-Published on [PyPI](https://pypi.org/project/apple-mail-pz-mcp/):
+**Not published to PyPI** — install straight from the repo:
 
 ```bash
-uvx apple-mail-pz-mcp          # zero-install, run on demand
-pip install apple-mail-pz-mcp  # or install the console script
+# install the console script onto your PATH (recommended)
+uv tool install git+https://github.com/wylieswanson/apple-mail-pz-mcp
+
+# or run it on demand, no install
+uvx --from git+https://github.com/wylieswanson/apple-mail-pz-mcp apple-mail-pz-mcp
 ```
 
-Then point your MCP client at it — the config is a one-liner (no absolute paths):
+`uv tool install` freezes the git commit into the build, so `apple-mail-pz-mcp --version`
+reports exactly what you installed. Then point your MCP client at the installed script:
 
 ```json
 {
   "mcpServers": {
-    "apple-mail": { "command": "uvx", "args": ["apple-mail-pz-mcp"] }
+    "apple-mail": { "command": "/Users/you/.local/bin/apple-mail-pz-mcp" }
   }
 }
 ```
+
+Use the absolute path from `which apple-mail-pz-mcp`: MCP hosts spawn servers with a
+restricted `PATH`, so a bare command name is a common cause of "server failed to start".
 
 ### From source (development)
 
@@ -145,7 +152,7 @@ The consequence is that the write tools only *function* on a host that implement
 | Codex CLI, older | No | Fail closed |
 | Claude Desktop / Cowork | No ([`claude-ai-mcp#153`](https://github.com/anthropics/claude-ai-mcp/issues/153)) | Fail closed |
 
-They are still installed by default, because that's a host limitation rather than a property of this server, and hosts are fixing it. If you'd rather the model not see tools it cannot use on your host, start the server in read-only mode — it exposes the 12 read tools and skips registering the 14 mutating ones:
+They are still installed by default, because that's a host limitation rather than a property of this server, and hosts are fixing it. If you'd rather the model not see tools it cannot use on your host, start the server in read-only mode — it exposes the 13 read tools and skips registering the 14 mutating ones:
 
 ```bash
 apple-mail-pz-mcp --read-only            # flag
@@ -156,7 +163,7 @@ The `.mcpb` bundle surfaces this as a **Read-only mode** checkbox at install tim
 
 ### Optional: split read / write servers
 
-Claude Desktop prompts per-tool for permission. If you want to **batch-approve the 12 read tools** (diagnose / list / search / get) and still gate the 14 mutating tools per call, run the connector twice — once with `--read-only`, once without — under two separate `mcpServers` entries:
+Claude Desktop prompts per-tool for permission. If you want to **batch-approve the 13 read tools** (version / diagnose / list / search / get) and still gate the 14 mutating tools per call, run the connector twice — once with `--read-only`, once without — under two separate `mcpServers` entries:
 
 ```json
 {
@@ -172,7 +179,7 @@ Claude Desktop prompts per-tool for permission. If you want to **batch-approve t
 }
 ```
 
-The `--read-only` server exposes only the 12 read tools, so Claude Desktop's per-server permission UI naturally groups them. The full server still gates writes individually. Trade-off: 2× connector processes. See [`docs/reference/TOOLS.md`](docs/reference/TOOLS.md) for the per-tool classification and a note on MCP annotation hints (`readOnlyHint` / `destructiveHint` / `idempotentHint`) which forward-compatible hosts may use to provide the same UX without the split.
+The `--read-only` server exposes only the 13 read tools, so Claude Desktop's per-server permission UI naturally groups them. The full server still gates writes individually. Trade-off: 2× connector processes. See [`docs/reference/TOOLS.md`](docs/reference/TOOLS.md) for the per-tool classification and a note on MCP annotation hints (`readOnlyHint` / `destructiveHint` / `idempotentHint`) which forward-compatible hosts may use to provide the same UX without the split.
 
 ## What version am I running?
 
@@ -388,12 +395,28 @@ This project is a continuation of **[`apple-mail-fast-mcp`](https://github.com/s
 
 That project itself succeeded `apple-mail-mcp`; the lineage is preserved in the [CHANGELOG](CHANGELOG.md) and in the Keychain read-through fallbacks, which still resolve credentials written under both earlier names.
 
-**What's different here.** `apple-mail-pz-mcp` (PingZero) evolves the tool surface for **LLM efficiency** rather than for human API aesthetics. The working thesis is that an agent's cost is dominated by round-trips and by tokens spent re-reading things it already fetched, so the areas of divergence are:
+### The direction
 
-- **Fewer round-trips per task** — richer single-call tools over chatty primitives, so a mailbox triage is one call, not twelve.
-- **Tighter payloads** — bounded bodies, bounded attachments, and response shapes that omit what the model won't use.
-- **Predictable degradation across MCP hosts** — the tool surface must behave the same whether the host supports elicitation and sends real JSON types (Claude Code) or supports neither (Cowork, older Codex). See the client-compatibility matrix in [AGENTS.md](AGENTS.md#mcp-client-compatibility).
-- **Read-only by default** — the shipped plugin and `.mcpb` bundle launch with `--read-only`, so the 14 mutating tools are opt-in rather than opt-out.
+`apple-mail-pz-mcp` (PingZero) evolves the tool surface for **LLM efficiency** rather than for human API aesthetics. The working thesis: an agent's cost is dominated by round-trips and by tokens spent re-reading what it already fetched. Two corollaries follow — the tool surface should cost as little as possible to *have*, and as few calls as possible to *use* — and both are measurable, so neither is taken on faith.
+
+### What this fork has changed so far
+
+**Made the thesis falsifiable.** Nothing here gets optimized before it gets measured.
+
+- [`scripts/schema_budget.py`](scripts/schema_budget.py) (`make schema-budget`) measures the `tools/list` payload every request carries before the model does any work: **17,281 bytes** read-only, **40,885 bytes** for all 27 tools. `make check-all` ratchets it against a committed baseline, so growth must be re-recorded deliberately rather than drifting.
+- [`evals/agent_tool_usability/task_eval.py`](evals/agent_tool_usability/task_eval.py) (`make eval-tasks`) drives a real model to completion against the real MCP server and reports **round-trips and tokens per completed task**, grading the resulting mailbox rather than the model's summary. Each task declares the call budget a competent agent needs. Upstream's eval asks whether a model picks the right tool; this one asks what finishing costs.
+- Acting on that: **1,032 bytes trimmed from every request** (~279 tokens, 5.8% of the read-only surface) by deleting tool-description prose that carried no decision the model has to make.
+
+**Behaves predictably across MCP hosts**, rather than only on the one it was developed against.
+
+- Hosts that serialize every tool argument as a string — Cowork, and Codex via schema flattening — no longer break array and object parameters. A stringified `"null"` on an optional parameter now means *omitted*, where it previously became the one-element list `["null"]` and silently filtered a search to nothing while reporting success.
+- Elicitation-less hosts are documented rather than designed around: the destructive-tool gate still fails closed, and users who don't want to see tools their host can't run pass `--read-only`. See the compatibility matrix in [AGENTS.md](AGENTS.md#mcp-client-compatibility).
+- **Read-only is opt-in, not the default** — via `--read-only`, `APPLE_MAIL_MCP_READ_ONLY=1`, or a checkbox when installing the `.mcpb`. Writes are a first-class mode.
+- First-class [Codex CLI](#codex-cli) setup, and a root [`AGENTS.md`](AGENTS.md) so Claude Code, Cowork, and Codex read the same instructions.
+
+**Says what it is.** `--version`, MCP `serverInfo`, and `diagnose_mail_access` all report the release, the git commit it was built from, when that commit was made, and whether writes are registered — including when Mail access is broken, which is when you'd ask. See [What version am I running?](#what-version-am-i-running).
+
+Still inherited, still upstream's: bounded bodies and attachments, the fail-closed confirmation gate, the AppleScript connector, the IMAP fast path.
 
 This is an independent fork, not a staging area for upstream. Nothing here presumes upstream wants any of it back — though anyone, upstream included, is free to take any of it under the MIT License. If you build on this in turn, the same courtesy applies: keep Morgan's copyright notice, because most of this code is theirs.
 

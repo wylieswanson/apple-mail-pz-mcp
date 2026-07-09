@@ -50,7 +50,12 @@ class CustomBuildHook(BuildHookInterface):
         if not commit:
             return
         commit_date = _git(root, "log", "-1", "--format=%cI")
-        dirty = bool(_git(root, "status", "--porcelain"))
+        # Tracked modifications only. Build tools litter their checkouts with
+        # untracked marker files — uv drops a `.ok` into the git checkout it
+        # builds from — and counting those flags every uvx install as "dirty".
+        # `git describe --dirty` ignores untracked files for the same reason:
+        # an untracked file does not make HEAD stop describing the code.
+        dirty = bool(_git(root, "status", "--porcelain", "--untracked-files=no"))
         built_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
         target = root / _TARGET
