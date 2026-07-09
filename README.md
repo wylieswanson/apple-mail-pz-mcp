@@ -126,6 +126,34 @@ The `--read-only` server exposes only the 9 read tools, so Claude Desktop's per-
 On first run, macOS will prompt for Automation access. Grant permission in:
 **System Settings > Privacy & Security > Automation > Terminal (or your IDE)**
 
+## Experimental: local Mail index accelerator
+
+This fork can optionally accelerate `search_messages` metadata queries by
+reading Apple Mail's local Envelope Index SQLite database in read-only mode:
+
+```json
+{
+  "mcpServers": {
+    "apple-mail-read": {
+      "command": "/path/to/apple-mail-fast-mcp/.venv/bin/apple-mail-fast-mcp",
+      "args": ["--read-only"],
+      "env": { "APPLE_MAIL_MCP_LOCAL_DB": "1" }
+    }
+  }
+}
+```
+
+What it covers today: account/mailbox-scoped `search_messages` filters for
+sender, subject, read/unread, flagged, dates, `received_within_hours`, and
+limit. It intentionally skips body/text search and attachment metadata for
+now; those still use IMAP when configured or AppleScript fallback.
+
+This path requires Full Disk Access for the host app because it reads
+`~/Library/Mail/V*/MailData/Envelope Index`. If the local database is missing,
+unreadable, or has an unexpected schema, the connector falls back to
+AppleScript. The database is opened with `mode=ro`; the connector never writes
+to Mail's store.
+
 ## Optional: faster search via IMAP
 
 `search_messages` works out of the box via AppleScript. For large mailboxes (thousands of messages), AppleScript's `whose` clause can take 1–5 seconds per query. If you want faster server-side search, you can enable IMAP delegation per account by adding a Keychain entry.

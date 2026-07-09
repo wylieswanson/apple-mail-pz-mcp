@@ -144,13 +144,13 @@ def _register_pool_atexit(pool: ImapConnectionPool | None) -> None:
         atexit.register(pool.close)
 
 
-def _attachment_cap_overrides() -> dict[str, int]:
+def _attachment_cap_overrides() -> dict[str, Any]:
     """Read optional save_attachments byte-cap overrides from the environment
     (#236), mirroring the APPLE_MAIL_MCP_IMAP_POOL opt-in pattern. Returns
     kwargs for AppleMailConnector; invalid/unset values fall back to the
     connector defaults (100 MB per attachment / 500 MB aggregate)."""
     import os
-    overrides: dict[str, int] = {}
+    overrides: dict[str, Any] = {}
     for env_name, kwarg in (
         ("APPLE_MAIL_MCP_MAX_ATTACHMENT_BYTES", "max_attachment_bytes"),
         ("APPLE_MAIL_MCP_MAX_TOTAL_ATTACHMENT_BYTES", "max_total_attachment_bytes"),

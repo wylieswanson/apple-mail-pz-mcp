@@ -64,6 +64,14 @@ Search for messages matching specified criteria.
 
 On the IMAP path, body search is server-side and sub-second. On the AppleScript fallback, body search is **dramatically slower** — measured 148s for 100 cold-cache messages on a 47k-message INBOX, vs 1s for `subject_contains` on the same slice. This is because Mail.app must read each candidate message's body from disk. To get sub-second body search, run `apple-mail-fast-mcp setup-imap --account <name>` to enable IMAP delegation for that account.
 
+**Experimental local DB path (this fork):** when `APPLE_MAIL_MCP_LOCAL_DB=1`
+is set, non-body, non-attachment metadata searches can fall through from IMAP
+to a read-only query against Apple Mail's local Envelope Index before using
+AppleScript. It supports sender, subject, read/unread, flagged, date,
+`received_within_hours`, and limit filters. It requires Full Disk Access for
+the host app and falls back to AppleScript if the local database is unavailable
+or the schema is unexpected.
+
 When the call commits to the AppleScript path **and** a body/text filter is set, the response includes a `warnings` field describing the cost — see "Warnings" below.
 
 **Warnings field:**
