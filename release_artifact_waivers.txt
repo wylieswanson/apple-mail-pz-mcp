@@ -16,3 +16,5 @@
 
 v0.11.0 benchmark #2 no test Mail.app account on the release machine; v0.11.0 changed no AppleScript timing path (rename, host compatibility, measurement instrumentation, docs), so the numbers are expected to reproduce.
 v0.11.0 eval #3 OPENROUTER_API_KEY unavailable on the release machine. Note the snapshot is stamped v0.10.0 and this release DID change the surface it scores (27th tool; -1,032 bytes of description prose). The generated tool_descriptions.md IS regenerated and in sync (check_docs.sh enforces it); only the scores are stale.
+v0.11.1 benchmark #2 patch release; no AppleScript or timing path changed (packaging fix only). Same constraint as v0.11.0: no test Mail.app account on the release machine.
+v0.11.1 eval #3 patch release; the tool surface is byte-identical to v0.11.0 (packaging fix only). OPENROUTER_API_KEY still unavailable.

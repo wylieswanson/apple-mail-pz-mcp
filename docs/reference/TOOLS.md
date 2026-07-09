@@ -38,8 +38,8 @@ Report the running server's own version, git commit, and build date. Hosts adver
 ```json
 {
   "success": true,
-  "banner": "apple-mail-pz-mcp 0.11.0 | commit 9aa07b537411 | committed 2026-07-09T15:57:51-07:00 | built 2026-07-09T23:03:01+00:00",
-  "version": "0.11.0",
+  "banner": "apple-mail-pz-mcp 0.11.1 | commit 9aa07b537411 | committed 2026-07-09T15:57:51-07:00 | built 2026-07-09T23:03:01+00:00",
+  "version": "0.11.1",
   "commit": "9aa07b537411",
   "commit_date": "2026-07-09T15:57:51-07:00",
   "built_at": "2026-07-09T23:03:01+00:00",

@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "apple-mail-pz-mcp",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "Apple Mail for Claude Code \u2014 security-first email management via MCP, tuned for LLM efficiency (macOS)",
   "owner": {
     "name": "Morgan Jeffries"
@@ -11,7 +11,7 @@
       "name": "apple-mail-pz",
       "displayName": "Apple Mail (PingZero MCP)",
       "description": "Search, read, organize, draft, templates, rules, and inbox stats for Apple Mail \u2014 with an IMAP fast path and a security-first design. macOS only.",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "source": "./",
       "author": {
         "name": "Morgan Jeffries"
