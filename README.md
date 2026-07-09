@@ -189,7 +189,7 @@ From a shell — reports the release, the commit it was built from, when that co
 
 ```console
 $ apple-mail-pz-mcp --version
-apple-mail-pz-mcp 0.10.2 | commit 0ef7dd33b850 | committed 2026-07-09T14:40:02-07:00 | built 2026-07-09T22:29:46+00:00
+apple-mail-pz-mcp 0.11.0 | commit 0ef7dd33b850 | committed 2026-07-09T14:40:02-07:00 | built 2026-07-09T22:29:46+00:00
 ```
 
 From an MCP host — the server reports its version in `serverInfo` at initialize, so hosts that show connector versions will display it without any tool call.
@@ -198,7 +198,7 @@ From an agent mid-conversation — `diagnose_mail_access` returns a `server` blo
 
 ```json
 {
-  "version": "0.10.2",
+  "version": "0.11.0",
   "commit": "0ef7dd33b850",
   "commit_date": "2026-07-09T14:40:02-07:00",
   "built_at": "2026-07-09T22:29:46+00:00",

@@ -14,4 +14,5 @@
 # Entries are per-release; prune old ones freely. See
 # docs/guides/RELEASE_ARTIFACTS.md.
 
-v0.10.2 eval #373 additive tool-surface change (still 24 tools: added optional account/mailbox to save_attachments, content_truncated to get_messages, deprecated gmail_mode); OPENROUTER_API_KEY unavailable on the release runner, scores expected to reproduce, re-run tracked. (Benchmark baseline IS refreshed this release — #364 changed move_messages timing.)
+v0.11.0 benchmark #2 no test Mail.app account on the release machine; v0.11.0 changed no AppleScript timing path (rename, host compatibility, measurement instrumentation, docs), so the numbers are expected to reproduce.
+v0.11.0 eval #3 OPENROUTER_API_KEY unavailable on the release machine. Note the snapshot is stamped v0.10.0 and this release DID change the surface it scores (27th tool; -1,032 bytes of description prose). The generated tool_descriptions.md IS regenerated and in sync (check_docs.sh enforces it); only the scores are stale.

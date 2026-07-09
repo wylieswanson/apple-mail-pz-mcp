@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-07-09
+
+The first release under new stewardship. `apple-mail-fast-mcp` continues here as **`apple-mail-pz-mcp`** (Apple Mail PingZero MCP Server) — an independent fork of [Morgan Jeffries' project](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp), whose AppleScript connector, IMAP fast path, security model, and test discipline this release inherits essentially whole. See [Credits and origins](README.md#credits-and-origins).
+
+The fork's thesis is that an agent's cost is dominated by round-trips and by tokens spent re-reading what it already fetched. This release does not chase that thesis so much as make it **falsifiable**: it lands two measurement instruments, then uses one of them to cut 1,032 bytes off every request. Net, the tool surface shrank by 468 bytes per request *while gaining a tool*.
+
+The other theme is that the server should behave the same wherever it runs. Hosts that stringify tool arguments (Cowork, and Codex via schema flattening) no longer silently corrupt optional array parameters; hosts that don't implement elicitation are documented rather than designed around; and the server can now say exactly which commit it is.
+
+> **Breaking:** the distribution, console script, and Claude Code plugin are renamed. `pip install apple-mail-fast-mcp` and the `apple-mail-fast-mcp` command no longer refer to this project — install `apple-mail-pz-mcp` from git (see the [README](README.md#uv-tool--uvx-any-mcp-client); it is not on PyPI). The Python import package (`apple_mail_fast_mcp`) and the Keychain service prefix (`apple-mail-fast-mcp.imap.`) are deliberately **unchanged**: the first is an implementation detail, and renaming the second would orphan every stored IMAP credential.
+
+### Added
+
+**`get_server_version` (27th tool):** returns the running server's release, git commit, commit date, build date, dirty flag, and whether write tools are registered. Cowork reads the version from the MCP handshake and does not pass it to the model, so a conversation had no way to ask what it was talking to — not even `diagnose_mail_access` reported it. The tool's `banner` field is the exact string `apple-mail-pz-mcp --version` prints, asserted equal in tests so the CLI and the tool cannot drift apart.
+
+**Version provenance everywhere:** `apple-mail-pz-mcp --version`, the MCP `serverInfo` handshake (FastMCP takes a `version` kwarg that was never passed), and a `server` block on `diagnose_mail_access` — reported on the failure path too, because "what am I running?" is asked most often when Mail access is broken. A Hatch build hook freezes the git commit into the wheel, since an installed package has no `.git` beside it. `source` says how the commit was resolved: `build`, `git`, or an honest `unknown` for an sdist built outside a repo.
+
+**Schema budget instrument (`make schema-budget`):** measures the `tools/list` payload every request carries before the model does any work — currently 17,281 bytes read-only, 40,885 bytes for all 27 tools. `make check-all` ratchets it against a committed baseline (`evals/schema_budget.json`), so growth must be re-recorded deliberately with `--update` and justified, rather than drifting a few hundred bytes at a time. Bytes are the metric of record; the token column is an estimate and is never gated on.
+
+**Cost eval (`make eval-tasks`):** drives a real model to completion against the real MCP server — real schemas, validation, coercion, bounding — with only the AppleScript connector swapped for an in-memory mailbox, and reports **round-trips and tokens per completed task**. Scoring inspects the resulting mailbox, never the model's summary: an agent that reports "Done! I marked them all as read" without calling a tool fails. Each task declares the call budget a competent agent needs. The existing blind eval asks whether a model picks the right tool; this one asks what finishing costs. The model is injected as a callable, so the loop runs in CI on scripted responses at zero cost.
+
+**`APPLE_MAIL_MCP_READ_ONLY` env var,** for hosts that pass environment but not argv. The `.mcpb` bundle now surfaces read-only mode (and the local-DB accelerator) as install-time checkboxes via boolean `user_config`.
+
+**Root `AGENTS.md`** as the canonical agent guide — read directly by Codex, imported by `.claude/CLAUDE.md` — so Claude Code, Cowork, and Codex share one set of instructions. It carries an MCP client-compatibility matrix and the rules for keeping the tool surface cheap.
+
+**First-class Codex CLI setup** in the README, including `startup_timeout_sec`: Codex's 10-second default is shorter than a cold `uv` dependency resolve, so the first launch would otherwise time out.
+
+### Changed
+
+**Renamed** the distribution, console script, and plugin to `apple-mail-pz-mcp` / `apple-mail-pz`; the `apple-mail-fast-mcp` console-script alias is dropped. Rebranded as Apple Mail PingZero MCP Server, with upstream credited in the README, in package metadata, and in a LICENSE that retains Morgan's copyright notice verbatim.
+
+**Trimmed 1,032 bytes of tool schema from every request** (~279 tokens, 5.8% of the read-only surface), measured against the budget baseline rather than guessed at. Removed only prose carrying no decision the model has to make — doctest `Example` blocks, `get_thread`'s tiered-dispatch internals, `list_templates`' on-disk storage path — and kept every line that changes what the model does.
+
+**Writes remain the default surface.** Read-only is opt-in via `--read-only`, the env var, or the `.mcpb` checkbox. Destructive tools still gate on MCP elicitation and still fail closed; on hosts that cannot prompt (Claude Desktop, Cowork, Codex < ~v0.119) they return `confirmation_required` rather than acting. That is a host gap, and the remedy for users who don't want to see unusable tools is `--read-only` — not a narrower shipped surface.
+
+**Dev dependencies live only in `[dependency-groups]`.** They were duplicated verbatim under `[project.optional-dependencies]`, two lists that had to agree with nothing checking that they did. The `research` extra pinned `imapclient`, a primary dependency since `imap_connector.py` stopped being a spike. Classifier moved to `Development Status :: 4 - Beta`.
+
+### Fixed
+
+**A stringified `"null"` on an optional list parameter silently returned the wrong answer.** Hosts that serialize every tool argument as a string send an omitted optional as the literal `"null"`; `coerce_json_list` wrapped it into `["null"]`, so `search_messages(source="null")` filtered on a source that does not exist and returned zero hits with `success: true`. Fixing the helper was not enough: spelled `StrList | None`, the validator lives inside the list branch of the union, where the coerced `None` fails `list_type` and then fails the `None` branch because the raw input was a string. New `Opt*` aliases annotate the *union*. Affects Cowork ([claude-code#26094](https://github.com/anthropics/claude-code/issues/26094)) and Codex, which flattens array params to `string` in the schema it shows the model ([codex#15164](https://github.com/openai/codex/issues/15164)).
+
+**`list_rules` told the model, on every request, that rule mutation did not exist** — "tracked as a separate enhancement" — while `create_rule`, `update_rule`, and `delete_rule` sat in the same tool list. It now documents the 1-based `index` those tools address rules by.
+
+**Every `uvx --from git+…` install reported itself as `-dirty`,** from a pristine clone. `uv` drops an untracked marker file into the checkout it builds from, and `git status --porcelain` lists untracked files. Provenance now passes `--untracked-files=no`, which is what `git describe --dirty` has always meant: an untracked file does not stop HEAD from describing the code.
+
+**`make check-all` could not pass.** `check_complexity.sh` piped `radon … -j 2>&1` into `json.load()`, and `uv run` writes advisory warnings to stderr, so the JSON arrived with warning text glued to its front. It reproduces only when `VIRTUAL_ENV` points at another project, which is why CI never caught it.
+
+**`check_readme_claims.sh` reported success while skipping its two real assertions.** Repointed at `AGENTS.md`, it immediately caught stale tool and test counts.
+
+**The README documented a PyPI package that does not exist.** `pip install apple-mail-pz-mcp` and `uvx apple-mail-pz-mcp` both fail — `pypi.org/pypi/apple-mail-pz-mcp/json` returns 404. Replaced with the git install, verified end to end. The `/plugin marketplace add` line and the `git clone` directory were also wrong.
+
+### Notes
+
+The benchmark baseline and the blind-eval snapshot are not refreshed for this release; both are waived in `release_artifact_waivers.txt`. Neither a test Mail.app account nor an OpenRouter key was available on the machine that cut it, and no AppleScript timing paths changed. The blind-eval **descriptions** are regenerated and in sync (`check_docs.sh` enforces it).
+
 ## [0.10.2] - 2026-06-13
 
 A bug-fix patch release for four reliability and data-integrity issues surfaced from real Claude Desktop usage on Gmail and iCloud: a full-body read that could crash the whole server, a Gmail label move that silently trashed the message, an IMAP search that silently dropped matching results, and an attachment save that hung for minutes on Gmail. No new tools (still 24).
