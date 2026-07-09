@@ -61,3 +61,6 @@ dmypy.json
 # Documentation builds
 docs/_build/
 site/
+
+# Generated at build time by hatch_build.py
+src/apple_mail_fast_mcp/_build_info.py

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the Claude Desktop .mcpb bundle (#332).
 #
-# Produces dist/apple-mail-fast-mcp-<version>.mcpb — a uv-type MCP bundle
+# Produces dist/apple-mail-pz-mcp-<version>.mcpb — a uv-type MCP bundle
 # (manifest_version 0.4). Claude Desktop manages Python + uv and resolves
 # dependencies from the bundled pyproject.toml/uv.lock at install time, so we
 # never bundle compiled wheels (the spec warns those aren't portable).
@@ -16,12 +16,12 @@ MANIFEST="mcpb/manifest.json"
 VERSION="$(grep '"version"' "$MANIFEST" | head -1 | sed -E 's/.*"version": *"([^"]+)".*/\1/')"
 BUILD_DIR="$(mktemp -d)"
 OUT_DIR="$ROOT/dist"
-OUT="$OUT_DIR/apple-mail-fast-mcp-${VERSION}.mcpb"
+OUT="$OUT_DIR/apple-mail-pz-mcp-${VERSION}.mcpb"
 
 cleanup() { rm -rf "$BUILD_DIR"; }
 trap cleanup EXIT
 
-echo "Building apple-mail-fast-mcp.mcpb v${VERSION}"
+echo "Building apple-mail-pz-mcp.mcpb v${VERSION}"
 
 # Stage only what `uv run` needs at the bundle root to resolve + launch the
 # server: the manifest, the project metadata/lock, the README referenced by

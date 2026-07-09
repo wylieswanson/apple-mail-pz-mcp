@@ -496,6 +496,6 @@ Security fixes are released as soon as possible:
 
 If you have security questions or concerns:
 
-- **General**: [GitHub Discussions](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/discussions)
+- **General**: [GitHub Discussions](https://github.com/wylieswanson/apple-mail-pz-mcp/discussions)
 - **Vulnerabilities**: security@[domain] (private)
-- **Best Practices**: [GitHub Issues](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues)
+- **Best Practices**: [GitHub Issues](https://github.com/wylieswanson/apple-mail-pz-mcp/issues)

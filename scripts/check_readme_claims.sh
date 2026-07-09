@@ -1,6 +1,6 @@
 #!/bin/bash
 # Validates documentation claims against actual codebase.
-# Checks: tool count, test count in README and CLAUDE.md.
+# Checks: tool count, test count in README and AGENTS.md.
 set -euo pipefail
 
 ERRORS=0
@@ -27,43 +27,43 @@ else
     echo "  SKIP: No tool count found in README."
 fi
 
-# Check 2: CLAUDE.md tool count
+# Check 2: AGENTS.md tool count
 echo ""
-echo "Check 2: CLAUDE.md tool count..."
-CLAUDE_TOOL_CLAIM=$(grep -oE '[0-9]+ MCP tools' .claude/CLAUDE.md 2>/dev/null | grep -oE '[0-9]+' || echo "")
+echo "Check 2: AGENTS.md tool count..."
+CLAUDE_TOOL_CLAIM=$(grep -oE '[0-9]+ MCP tools' AGENTS.md 2>/dev/null | grep -oE '[0-9]+' || echo "")
 
 if [ -n "$CLAUDE_TOOL_CLAIM" ]; then
     if [ "$CLAUDE_TOOL_CLAIM" != "$ACTUAL_TOOLS" ]; then
-        echo "  ERROR: CLAUDE.md claims $CLAUDE_TOOL_CLAIM tools, but server.py has $ACTUAL_TOOLS."
+        echo "  ERROR: AGENTS.md claims $CLAUDE_TOOL_CLAIM tools, but server.py has $ACTUAL_TOOLS."
         ERRORS=$((ERRORS + 1))
     else
-        echo "  OK: CLAUDE.md tool count ($CLAUDE_TOOL_CLAIM) matches server.py."
+        echo "  OK: AGENTS.md tool count ($CLAUDE_TOOL_CLAIM) matches server.py."
     fi
 else
-    echo "  SKIP: No tool count found in CLAUDE.md."
+    echo "  SKIP: No tool count found in AGENTS.md."
 fi
 
-# Check 3: CLAUDE.md test count (if present)
+# Check 3: AGENTS.md test count (if present)
 echo ""
 echo "Check 3: Test counts..."
-CLAUDE_TEST_CLAIM=$(grep -oE '[0-9]+ unit' .claude/CLAUDE.md 2>/dev/null | grep -oE '[0-9]+' || echo "")
+CLAUDE_TEST_CLAIM=$(grep -oE '[0-9]+ unit' AGENTS.md 2>/dev/null | grep -oE '[0-9]+' || echo "")
 
 if [ -n "$CLAUDE_TEST_CLAIM" ]; then
     ACTUAL_TESTS=$(uv run pytest tests/unit/ --collect-only -q --no-header 2>/dev/null | tail -1 | grep -oE '[0-9]+ test' | grep -oE '[0-9]+' || echo "unknown")
     if [ "$ACTUAL_TESTS" != "unknown" ] && [ "$CLAUDE_TEST_CLAIM" != "$ACTUAL_TESTS" ]; then
-        echo "  WARNING: CLAUDE.md claims $CLAUDE_TEST_CLAIM unit tests, actual count is $ACTUAL_TESTS."
+        echo "  WARNING: AGENTS.md claims $CLAUDE_TEST_CLAIM unit tests, actual count is $ACTUAL_TESTS."
     else
         echo "  OK: Test count appears consistent."
     fi
 else
-    echo "  SKIP: No test count found in CLAUDE.md."
+    echo "  SKIP: No test count found in AGENTS.md."
 fi
 
 echo ""
 if [ $ERRORS -gt 0 ]; then
     echo "FAILED: $ERRORS documentation claim(s) are stale."
     echo ""
-    echo "Fix by updating the numbers in README.md and/or .claude/CLAUDE.md."
+    echo "Fix by updating the numbers in README.md and/or AGENTS.md."
     exit 1
 else
     echo "All documentation claims verified."

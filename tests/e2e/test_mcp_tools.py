@@ -286,6 +286,36 @@ class TestToolInvocation:
         getattr(mock_mail, connector_method).assert_called_once()
 
 
+class TestVersionIntrospection:
+    """An agent must be able to ask what it is talking to."""
+
+    async def test_server_advertises_version_at_initialize(self) -> None:
+        from apple_mail_fast_mcp import __version__
+
+        assert server.mcp.version == __version__
+
+    async def test_diagnose_reports_version_commit_and_date(
+        self, mock_mail: MagicMock
+    ) -> None:
+        mock_mail.diagnose_mail_access.return_value = {"local_db": {}}
+        result = await server.mcp.call_tool("diagnose_mail_access", {})
+        info = result.structured_content["server"]
+        assert info["version"]
+        assert set(info) >= {
+            "version", "commit", "commit_date", "built_at", "dirty",
+            "source", "read_only",
+        }
+
+    async def test_diagnose_reports_version_even_when_mail_is_broken(
+        self, mock_mail: MagicMock
+    ) -> None:
+        # The version question matters most when everything else is failing.
+        mock_mail.diagnose_mail_access.side_effect = RuntimeError("no Mail.app")
+        result = await server.mcp.call_tool("diagnose_mail_access", {})
+        assert result.structured_content["success"] is False
+        assert result.structured_content["server"]["version"]
+
+
 class TestStringifiedParamCoercion:
     """#309: some MCP hosts (e.g. Cowork) serialize every tool argument as a
     string, so array/dict params arrive as JSON strings. The tool layer
@@ -319,6 +349,25 @@ class TestStringifiedParamCoercion:
         mock_mail.delete_messages.assert_called_once()
         assert ["msg-1", "msg-2"] in self._call_values(
             mock_mail.delete_messages.call_args
+        )
+
+    async def test_stringified_null_optional_means_omitted(
+        self, mock_mail: MagicMock
+    ) -> None:
+        # A host that stringifies *every* arg sends an omitted optional as
+        # the literal "null". It must reach the connector as None, not as the
+        # one-element list ["null"] — that would silently narrow the search
+        # to a source that doesn't exist and return zero hits with
+        # success=True.
+        mock_mail.search_messages.return_value = []
+        result = await server.mcp.call_tool(
+            "search_messages",
+            {"account": "Work", "subject_contains": "invoice", "source": "null"},
+        )
+        assert result.structured_content["success"] is True
+        mock_mail.search_messages.assert_called_once()
+        assert ["null"] not in self._call_values(
+            mock_mail.search_messages.call_args
         )
 
     async def test_create_draft_stringified_recipients(

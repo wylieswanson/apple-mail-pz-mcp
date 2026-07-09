@@ -16,6 +16,7 @@ from fastmcp import Context, FastMCP
 from fastmcp.server.elicitation import AcceptedElicitation
 from pydantic import BeforeValidator
 
+from . import __version__
 from .drafts import DraftStateStore, SeedRecord
 from .exceptions import (
     MailAccountNotFoundError,
@@ -56,9 +57,11 @@ from .utils import (
     attachment_content_encoding,
     coerce_json_dict,
     coerce_json_list,
+    env_flag,
     make_body_safe,
     rank_senders,
 )
+from .version import build_info, version_banner
 
 # Configure logging
 logging.basicConfig(
@@ -74,28 +77,50 @@ logger = logging.getLogger(__name__)
 # args, which `main()` parses again with the full schema) so the
 # `@_tool(..., mutating=True)` decorator below can decide registration at
 # decoration time without restructuring the per-tool decoration sites.
+#
+# `APPLE_MAIL_MCP_READ_ONLY` is the env-var equivalent, for hosts that pass
+# environment but not argv — the `.mcpb` bundle surfaces it as an install-time
+# checkbox via a boolean `user_config`. The flag is an explicit narrowing, so
+# it wins over a falsey env value. Writes stay registered by default.
 def _pre_parse_read_only(argv: list[str] | None = None) -> bool:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--read-only", action="store_true")
     args, _ = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
-    return bool(args.read_only)
+    if args.read_only:
+        return True
+    return env_flag("APPLE_MAIL_MCP_READ_ONLY")
 
 
 _READ_ONLY = _pre_parse_read_only()
 
 # Create FastMCP server
-mcp = FastMCP("apple-mail")
+mcp = FastMCP("apple-mail", version=__version__)
 
 # Param-coercion aliases for MCP hosts that stringify array/dict arguments
-# (e.g. Cowork — #309). BeforeValidator runs ahead of type validation, so a
-# JSON-encoded list/dict string is parsed back before Pydantic checks it. The
-# advertised JSON schema stays array/object, so well-behaved clients that send
-# real lists/dicts are unaffected (coercion is a no-op for non-strings).
+# (e.g. Cowork — #309; Codex flattens array params to string in the schema it
+# shows the model, openai/codex#15164). BeforeValidator runs ahead of type
+# validation, so a JSON-encoded list/dict string is parsed back before Pydantic
+# checks it. The advertised JSON schema stays array/object, so well-behaved
+# clients that send real lists/dicts are unaffected (coercion is a no-op for
+# non-strings).
 StrList = Annotated[list[str], BeforeValidator(coerce_json_list)]
 IntList = Annotated[list[int], BeforeValidator(coerce_json_list)]
 DictList = Annotated[list[dict[str, Any]], BeforeValidator(coerce_json_list)]
 StrDict = Annotated[dict[str, str], BeforeValidator(coerce_json_dict)]
 AnyDict = Annotated[dict[str, Any], BeforeValidator(coerce_json_dict)]
+
+# Optional variants annotate the *union*, not the list/dict member. Spelling it
+# `OptStrList` puts the validator inside the list branch: a stringified
+# `'null'` coerces to None, fails `list_type` there, then fails the None branch
+# because the raw input was a str. Annotating the union lets the coerced None
+# satisfy it.
+OptStrList = Annotated[list[str] | None, BeforeValidator(coerce_json_list)]
+OptIntList = Annotated[list[int] | None, BeforeValidator(coerce_json_list)]
+OptDictList = Annotated[
+    list[dict[str, Any]] | None, BeforeValidator(coerce_json_list)
+]
+OptStrDict = Annotated[dict[str, str] | None, BeforeValidator(coerce_json_dict)]
+OptAnyDict = Annotated[dict[str, Any] | None, BeforeValidator(coerce_json_dict)]
 
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -610,8 +635,8 @@ async def update_rule(
     rule_index: int,
     name: str | None = None,
     enabled: bool | None = None,
-    conditions: DictList | None = None,
-    actions: AnyDict | None = None,
+    conditions: OptDictList = None,
+    actions: OptAnyDict = None,
     match_logic: str | None = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
@@ -755,10 +780,18 @@ def diagnose_mail_access(
         mailbox: Mailbox path to validate when ``account`` is provided.
 
     Returns:
-        Dictionary containing local DB health, search backend order, and
+        Dictionary containing the running server's version/commit/build date
+        (``server``), local DB health, search backend order, and
         recommendations for fixing permissions/configuration problems.
+
+        Use this to answer "what version of the mail server am I talking to?" —
+        ``server`` reports the release, the git commit it was built from, when
+        that commit was made, and whether write tools are registered.
     """
     params = {"account": account, "mailbox": mailbox}
+    # Provenance is reported on both paths on purpose: "what am I running?" is
+    # asked most often precisely when Mail access is broken.
+    server = {**build_info(), "read_only": _READ_ONLY}
     try:
         rate_err = check_rate_limit("diagnose_mail_access", params)
         if rate_err:
@@ -766,11 +799,12 @@ def diagnose_mail_access(
 
         report = mail.diagnose_mail_access(account=account, mailbox=mailbox)
         operation_logger.log_operation("diagnose_mail_access", params, "success")
-        return {"success": True, **report}
+        return {"success": True, "server": server, **report}
     except Exception as e:
         logger.error(f"Error diagnosing Mail access: {e}")
         return {
             "success": False,
+            "server": server,
             "error": str(e),
             "error_type": "unknown",
         }
@@ -1039,7 +1073,7 @@ def search_messages(
     received_within_hours: int | None = None,
     has_attachment: bool | None = None,
     limit: int = 50,
-    source: StrList | None = None,
+    source: OptStrList = None,
     include_attachments: bool = False,
     body_contains: str | None = None,
     text_contains: str | None = None,
@@ -1456,7 +1490,7 @@ def update_message(
             automatically (IMAP relabel when configured; otherwise a verified
             AppleScript move). A Gmail label move that can't be confirmed
             returns `error_type: "imap_required"` — configure IMAP with
-            `apple-mail-fast-mcp setup-imap --account <name>`. Slated for
+            `apple-mail-pz-mcp setup-imap --account <name>`. Slated for
             removal at v1.0.
 
     Returns:
@@ -1775,7 +1809,7 @@ def get_statistics(
 def save_attachments(
     message_id: str,
     save_directory: str,
-    attachment_indices: IntList | None = None,
+    attachment_indices: OptIntList = None,
     account: str | None = None,
     mailbox: str | None = None,
 ) -> dict[str, Any]:
@@ -2715,7 +2749,7 @@ async def delete_template(
 def render_template(
     name: str,
     message_id: str | None = None,
-    vars: StrDict | None = None,
+    vars: OptStrDict = None,
 ) -> dict[str, Any]:
     """Render a template into ready-to-send subject and body text.
 
@@ -3153,16 +3187,16 @@ async def create_draft(
     reply_to: str | None = None,
     forward_of: str | None = None,
     seed_mailbox: str | None = None,
-    to: StrList | None = None,
-    cc: StrList | None = None,
-    bcc: StrList | None = None,
+    to: OptStrList = None,
+    cc: OptStrList = None,
+    bcc: OptStrList = None,
     subject: str | None = None,
     body: str = "",
     body_html: str | None = None,
-    attachment_paths: StrList | None = None,
+    attachment_paths: OptStrList = None,
     reply_all: bool = False,
     template_name: str | None = None,
-    template_vars: StrDict | None = None,
+    template_vars: OptStrDict = None,
     from_account: str | None = None,
     send_now: bool = False,
     ctx: Context | None = None,
@@ -3364,15 +3398,15 @@ async def create_draft(
 )
 async def update_draft(
     draft_id: str,
-    to: StrList | None = None,
-    cc: StrList | None = None,
-    bcc: StrList | None = None,
+    to: OptStrList = None,
+    cc: OptStrList = None,
+    bcc: OptStrList = None,
     subject: str | None = None,
     body: str | None = None,
     body_html: str | None = None,
-    attachment_paths: StrList | None = None,
+    attachment_paths: OptStrList = None,
     template_name: str | None = None,
-    template_vars: StrDict | None = None,
+    template_vars: OptStrDict = None,
     from_account: str | None = None,
     send_now: bool = False,
     ctx: Context | None = None,
@@ -3587,10 +3621,11 @@ def delete_draft(draft_id: str) -> dict[str, Any]:
 
 
 def _default_cli_prog() -> str:
-    """Return the user-facing console script name for argparse help."""
-    invoked = Path(sys.argv[0]).name
-    if invoked in {"apple-mail-fast-mcp", "apple-mail-pz-mcp"}:
-        return invoked
+    """Return the user-facing console script name for argparse help.
+
+    Constant since the ``apple-mail-fast-mcp`` alias was dropped; keeps
+    ``python -m apple_mail_fast_mcp.server`` from naming the module path.
+    """
     return "apple-mail-pz-mcp"
 
 
@@ -3603,13 +3638,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--version",
+        action="version",
+        version=version_banner(),
+        help="Print version, git commit, and build date, then exit.",
+    )
+    parser.add_argument(
         "--read-only",
         action="store_true",
         help=(
             "Start the server with only the 12 read-only tools registered "
             "(skips the 14 mutating tools). Pair with a second non-read-only "
             "server entry in your MCP client to batch-approve reads while "
-            "still gating writes per call. See docs/reference/TOOLS.md."
+            "still gating writes per call. Equivalent to setting "
+            "APPLE_MAIL_MCP_READ_ONLY=1. See docs/reference/TOOLS.md."
         ),
     )
     sub = parser.add_subparsers(dest="command")

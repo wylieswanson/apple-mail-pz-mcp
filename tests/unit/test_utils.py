@@ -493,6 +493,13 @@ class TestCoerceJsonList:
     def test_none_passes_through(self) -> None:
         assert coerce_json_list(None) is None
 
+    def test_json_null_string_becomes_none(self) -> None:
+        # A host that stringifies an omitted optional param sends "null".
+        # Wrapping it as ["null"] would silently filter on a bogus value
+        # instead of meaning "no filter".
+        assert coerce_json_list("null") is None
+        assert coerce_json_list("  null  ") is None
+
 
 class TestCoerceJsonDict:
     """#309: coerce stringified objects."""
@@ -506,6 +513,9 @@ class TestCoerceJsonDict:
 
     def test_none_passes_through(self) -> None:
         assert coerce_json_dict(None) is None
+
+    def test_json_null_string_becomes_none(self) -> None:
+        assert coerce_json_dict("null") is None
 
     def test_non_object_json_passes_through_to_fail_validation(self) -> None:
         # A JSON array/scalar isn't a dict → leave as-is for Pydantic to reject.

@@ -25,17 +25,17 @@ if [ "$INIT_VERSION" != "$PYPROJECT_VERSION" ]; then
     ERRORS=$((ERRORS + 1))
 fi
 
-# Check CLAUDE.md
-if [ -f ".claude/CLAUDE.md" ]; then
-    CLAUDE_VERSION=$(grep '^\*\*Version:\*\*' .claude/CLAUDE.md | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^v//')
-    if [ -n "$CLAUDE_VERSION" ]; then
-        echo "  CLAUDE.md:      $CLAUDE_VERSION"
-        if [ "$CLAUDE_VERSION" != "$PYPROJECT_VERSION" ]; then
-            echo "  ERROR: CLAUDE.md version mismatch!"
+# Check AGENTS.md (canonical agent guide; .claude/CLAUDE.md imports it)
+if [ -f "AGENTS.md" ]; then
+    AGENTS_VERSION=$(grep '^\*\*Version:\*\*' AGENTS.md | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^v//')
+    if [ -n "$AGENTS_VERSION" ]; then
+        echo "  AGENTS.md:      $AGENTS_VERSION"
+        if [ "$AGENTS_VERSION" != "$PYPROJECT_VERSION" ]; then
+            echo "  ERROR: AGENTS.md version mismatch!"
             ERRORS=$((ERRORS + 1))
         fi
     else
-        echo "  CLAUDE.md:      (no version found - OK if not yet formatted)"
+        echo "  AGENTS.md:      (no version found - OK if not yet formatted)"
     fi
 fi
 

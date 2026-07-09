@@ -1,12 +1,14 @@
-# Apple Mail MCP Server
+# Apple Mail PingZero MCP Server
 
-[![Tests](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/actions/workflows/test.yml)
+[![Tests](https://github.com/wylieswanson/apple-mail-pz-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/wylieswanson/apple-mail-pz-mcp/actions/workflows/test.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 An MCP server that provides programmatic access to Apple Mail, enabling AI assistants like Claude to read, send, search, and manage emails on macOS.
 
-> ⚠️ **Pre-1.0 — expect breaking changes.** The MCP tool surface (tool names, parameters, return shapes) is still evolving as the project matures. Pin to a specific version (for example, `apple-mail-fast-mcp==0.10.2`) and review the [CHANGELOG](CHANGELOG.md) before upgrading.
+> **Built on [`apple-mail-fast-mcp`](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp) by Morgan Jeffries**, MIT-licensed, whose architecture this project inherits wholesale. See [Credits and origins](#credits-and-origins).
+
+> ⚠️ **Pre-1.0 — expect breaking changes.** The MCP tool surface (tool names, parameters, return shapes) is still evolving as the project matures. Pin to a specific version (for example, `apple-mail-pz-mcp==0.10.2`) and review the [CHANGELOG](CHANGELOG.md) before upgrading.
 
 ## Tools (26)
 
@@ -31,14 +33,21 @@ Destructive operations (`delete_*`, `create_rule` with move/forward/delete actio
 
 ## Installation
 
+> **All 26 tools install by default.** Destructive tools confirm each action through
+> [MCP elicitation](#read-only-mode-and-the-elicitation-caveat) and *fail closed* if the
+> host cannot prompt — so on Claude Desktop and Cowork, which don't implement elicitation
+> yet, those tools return a confirmation error instead of acting. If you'd rather not see
+> them at all, run with `--read-only` (or tick **Read-only mode** when installing the
+> `.mcpb`).
+
 ### Claude Desktop — install from file (`.mcpb`)
 
-The lowest-friction path for Claude Desktop: grab the `apple-mail-fast-mcp-<version>.mcpb`
-bundle from the [Releases](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/releases)
+The lowest-friction path for Claude Desktop: grab the `apple-mail-pz-mcp-<version>.mcpb`
+bundle from the [Releases](https://github.com/wylieswanson/apple-mail-pz-mcp/releases)
 page and open it (or drag it into **Settings → Extensions**). Claude Desktop manages Python
 and dependencies for you via `uv` — no manual venv, no config JSON to hand-edit. macOS only.
 
-To build the bundle yourself: `./scripts/build-mcpb.sh` → `dist/apple-mail-fast-mcp-<version>.mcpb`
+To build the bundle yourself: `./scripts/build-mcpb.sh` → `dist/apple-mail-pz-mcp-<version>.mcpb`
 (requires Node for the `mcpb` packer).
 
 ### Claude Code — install as a plugin
@@ -46,8 +55,8 @@ To build the bundle yourself: `./scripts/build-mcpb.sh` → `dist/apple-mail-fas
 One command in Claude Code, no config JSON:
 
 ```
-/plugin marketplace add s-morgan-jeffries/apple-mail-fast-mcp
-/plugin install apple-mail-fast@apple-mail-fast-mcp
+/plugin marketplace add wylieswanson/apple-mail-pz-mcp
+/plugin install apple-mail-pz@apple-mail-pz-mcp
 ```
 
 Claude Code launches the server via `uv run` from the plugin directory (resolves dependencies
@@ -55,13 +64,35 @@ from the bundled `pyproject.toml`/`uv.lock` — no PyPI needed), so you only nee
 macOS only. See [`docs/reference/TOOLS.md`](docs/reference/TOOLS.md) for IMAP setup and the
 read/write split.
 
+### Codex CLI
+
+Add to `~/.codex/config.toml` (or run `codex mcp add`). Point at the installed console
+script rather than `uv run --directory …`: Codex's `startup_timeout_sec` defaults to **10
+seconds**, and a cold `uv` dependency resolve will exceed it.
+
+```toml
+[mcp_servers.apple-mail]
+command = "apple-mail-pz-mcp"          # or the absolute path from `which apple-mail-pz-mcp`
+env = { APPLE_MAIL_MCP_LOCAL_DB = "1" }
+startup_timeout_sec = 30
+
+# Read-only if you want it — then `default_tools_approval_mode = "auto"` is safe,
+# because every exposed tool is read-only.
+# args = ["--read-only"]
+# default_tools_approval_mode = "auto"
+```
+
+Two Codex-specific notes. Elicitation landed around **v0.119**; on older builds the write
+tools fail closed exactly as they do on Cowork. And Codex's per-tool `approval_mode` means
+you do **not** need the two-connector split below — set `approval_mode` per tool instead.
+
 ### pip / uvx (any MCP client)
 
-Published on [PyPI](https://pypi.org/project/apple-mail-fast-mcp/):
+Published on [PyPI](https://pypi.org/project/apple-mail-pz-mcp/):
 
 ```bash
-uvx apple-mail-fast-mcp          # zero-install, run on demand
-pip install apple-mail-fast-mcp  # or install the console script
+uvx apple-mail-pz-mcp          # zero-install, run on demand
+pip install apple-mail-pz-mcp  # or install the console script
 ```
 
 Then point your MCP client at it — the config is a one-liner (no absolute paths):
@@ -69,7 +100,7 @@ Then point your MCP client at it — the config is a one-liner (no absolute path
 ```json
 {
   "mcpServers": {
-    "apple-mail": { "command": "uvx", "args": ["apple-mail-fast-mcp"] }
+    "apple-mail": { "command": "uvx", "args": ["apple-mail-pz-mcp"] }
   }
 }
 ```
@@ -77,8 +108,8 @@ Then point your MCP client at it — the config is a one-liner (no absolute path
 ### From source (development)
 
 ```bash
-git clone https://github.com/s-morgan-jeffries/apple-mail-fast-mcp.git
-cd apple-mail-fast-mcp
+git clone https://github.com/wylieswanson/apple-mail-pz-mcp.git
+cd apple-mail-pz-mcp
 uv sync --dev
 ```
 
@@ -87,19 +118,41 @@ uv sync --dev
 > Skip this section if you installed the `.mcpb` bundle — it wires up Claude Desktop for you.
 > The manual config below is for source installs.
 
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`). `uv sync` installs a console script at `.venv/bin/apple-mail-fast-mcp`; point Claude Desktop at its **absolute path** — it's the most reliable form under Claude Desktop's restricted spawn environment (no reliance on `uv` being on `PATH`):
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`). `uv sync` installs a console script at `.venv/bin/apple-mail-pz-mcp`; point Claude Desktop at its **absolute path** — it's the most reliable form under Claude Desktop's restricted spawn environment (no reliance on `uv` being on `PATH`):
 
 ```json
 {
   "mcpServers": {
     "apple-mail": {
-      "command": "/path/to/apple-mail-fast-mcp/.venv/bin/apple-mail-fast-mcp"
+      "command": "/path/to/apple-mail-pz-mcp/.venv/bin/apple-mail-pz-mcp"
     }
   }
 }
 ```
 
-(Equivalent alternative if you prefer driving it through uv: `"command": "uv", "args": ["--directory", "/path/to/apple-mail-fast-mcp", "run", "apple-mail-fast-mcp"]`.)
+(Equivalent alternative if you prefer driving it through uv: `"command": "uv", "args": ["--directory", "/path/to/apple-mail-pz-mcp", "run", "apple-mail-pz-mcp"]`.)
+
+### Read-only mode and the elicitation caveat
+
+Every destructive tool confirms the operation through **MCP elicitation** and *fails closed*: if the client can't prompt the user, the tool returns `error_type: "confirmation_required"` rather than proceeding. That is a deliberate security property — an earlier version silently proceeded, which was a real bypass of the confirmation gate.
+
+The consequence is that the write tools only *function* on a host that implements elicitation:
+
+| Host | Elicitation | Write tools |
+|---|---|---|
+| Claude Code | Yes | Work |
+| Codex CLI ≥ ~v0.119 | Yes | Work |
+| Codex CLI, older | No | Fail closed |
+| Claude Desktop / Cowork | No ([`claude-ai-mcp#153`](https://github.com/anthropics/claude-ai-mcp/issues/153)) | Fail closed |
+
+They are still installed by default, because that's a host limitation rather than a property of this server, and hosts are fixing it. If you'd rather the model not see tools it cannot use on your host, start the server in read-only mode — it exposes the 12 read tools and skips registering the 14 mutating ones:
+
+```bash
+apple-mail-pz-mcp --read-only            # flag
+APPLE_MAIL_MCP_READ_ONLY=1 apple-mail-pz-mcp   # or env var, for hosts that only pass env
+```
+
+The `.mcpb` bundle surfaces this as a **Read-only mode** checkbox at install time. Whatever you do, don't work around the gate by making confirmation pass silently.
 
 ### Optional: split read / write servers
 
@@ -109,17 +162,46 @@ Claude Desktop prompts per-tool for permission. If you want to **batch-approve t
 {
   "mcpServers": {
     "apple-mail-read": {
-      "command": "/path/to/apple-mail-fast-mcp/.venv/bin/apple-mail-fast-mcp",
+      "command": "/path/to/apple-mail-pz-mcp/.venv/bin/apple-mail-pz-mcp",
       "args": ["--read-only"]
     },
     "apple-mail-write": {
-      "command": "/path/to/apple-mail-fast-mcp/.venv/bin/apple-mail-fast-mcp"
+      "command": "/path/to/apple-mail-pz-mcp/.venv/bin/apple-mail-pz-mcp"
     }
   }
 }
 ```
 
 The `--read-only` server exposes only the 12 read tools, so Claude Desktop's per-server permission UI naturally groups them. The full server still gates writes individually. Trade-off: 2× connector processes. See [`docs/reference/TOOLS.md`](docs/reference/TOOLS.md) for the per-tool classification and a note on MCP annotation hints (`readOnlyHint` / `destructiveHint` / `idempotentHint`) which forward-compatible hosts may use to provide the same UX without the split.
+
+## What version am I running?
+
+Three ways to ask, depending on who's asking.
+
+From a shell — reports the release, the commit it was built from, when that commit was made, and (for an installed build) when the wheel was built:
+
+```console
+$ apple-mail-pz-mcp --version
+apple-mail-pz-mcp 0.10.2 | commit 0ef7dd33b850 | committed 2026-07-09T14:40:02-07:00 | built 2026-07-09T22:29:46+00:00
+```
+
+From an MCP host — the server reports its version in `serverInfo` at initialize, so hosts that show connector versions will display it without any tool call.
+
+From an agent mid-conversation — `diagnose_mail_access` returns a `server` block:
+
+```json
+{
+  "version": "0.10.2",
+  "commit": "0ef7dd33b850",
+  "commit_date": "2026-07-09T14:40:02-07:00",
+  "built_at": "2026-07-09T22:29:46+00:00",
+  "dirty": false,
+  "source": "build",
+  "read_only": false
+}
+```
+
+`source` tells you how much to trust the commit: `build` means it was frozen into the wheel at build time, `git` means it was read live from a source checkout (and `dirty` says whether that tree had uncommitted changes), and `unknown` means the package was installed from an sdist built outside a repo — in which case the commit is genuinely unrecoverable and the server says so rather than guessing.
 
 ## Permissions
 
@@ -135,7 +217,7 @@ reading Apple Mail's local Envelope Index SQLite database in read-only mode:
 {
   "mcpServers": {
     "apple-mail-read": {
-      "command": "/path/to/apple-mail-fast-mcp/.venv/bin/apple-mail-fast-mcp",
+      "command": "/path/to/apple-mail-pz-mcp/.venv/bin/apple-mail-pz-mcp",
       "args": ["--read-only"],
       "env": { "APPLE_MAIL_MCP_LOCAL_DB": "1" }
     }
@@ -174,7 +256,7 @@ Desktop, iTerm, Terminal, or your IDE), then fully quit and reopen that app.
 **One-time setup per account — the `setup-imap` subcommand walks you through it:**
 
 ```bash
-apple-mail-fast-mcp setup-imap --account iCloud
+apple-mail-pz-mcp setup-imap --account iCloud
 ```
 
 Substitute the Mail.app account name exactly — whatever it's labeled in Mail.app (e.g. `iCloud`, `Gmail`, `"Yahoo!"`). The guided flow (#384):
@@ -188,7 +270,7 @@ Substitute the Mail.app account name exactly — whatever it's labeled in Mail.a
 
 If you see a one-time "security wants to use the 'login' keychain" prompt on the next IMAP-backed call, click **Always Allow**.
 
-To remove the entry later: `apple-mail-fast-mcp setup-imap --account iCloud --uninstall`.
+To remove the entry later: `apple-mail-pz-mcp setup-imap --account iCloud --uninstall`.
 
 ### Environment-variable fallback (uvx / headless / CI)
 
@@ -295,6 +377,26 @@ Docs:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow, coding standards, and PR process.
 
+## Credits and origins
+
+This project is a continuation of **[`apple-mail-fast-mcp`](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp)**, created by **Morgan Jeffries** and released under the MIT License. Effectively all of the engineering that makes this server work is theirs:
+
+- the AppleScript connector and its hard-won [gotchas](docs/reference/APPLESCRIPT_GOTCHAS.md) — JSON emission via ASObjC, the `|name|:` record-key quirk, `whose`-clause search;
+- the IMAP fast path, connection pooling, and Gmail `X-GM-THRID` thread strategies;
+- the security model — double sanitization, path-traversal-safe name validation, rate limiting, audit logging, and the fail-closed confirmation gate on every destructive tool;
+- the test discipline: 1544 unit, 35 e2e, and 62 integration tests, and the validation scripts that keep the docs honest.
+
+That project itself succeeded `apple-mail-mcp`; the lineage is preserved in the [CHANGELOG](CHANGELOG.md) and in the Keychain read-through fallbacks, which still resolve credentials written under both earlier names.
+
+**What's different here.** `apple-mail-pz-mcp` (PingZero) evolves the tool surface for **LLM efficiency** rather than for human API aesthetics. The working thesis is that an agent's cost is dominated by round-trips and by tokens spent re-reading things it already fetched, so the areas of divergence are:
+
+- **Fewer round-trips per task** — richer single-call tools over chatty primitives, so a mailbox triage is one call, not twelve.
+- **Tighter payloads** — bounded bodies, bounded attachments, and response shapes that omit what the model won't use.
+- **Predictable degradation across MCP hosts** — the tool surface must behave the same whether the host supports elicitation and sends real JSON types (Claude Code) or supports neither (Cowork, older Codex). See the client-compatibility matrix in [AGENTS.md](AGENTS.md#mcp-client-compatibility).
+- **Read-only by default** — the shipped plugin and `.mcpb` bundle launch with `--read-only`, so the 14 mutating tools are opt-in rather than opt-out.
+
+This is an independent fork, not a staging area for upstream. Nothing here presumes upstream wants any of it back — though anyone, upstream included, is free to take any of it under the MIT License. If you build on this in turn, the same courtesy applies: keep Morgan's copyright notice, because most of this code is theirs.
+
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) — Copyright (c) 2025 Morgan. The original copyright notice is retained unmodified; this project adds no separate copyright claim.

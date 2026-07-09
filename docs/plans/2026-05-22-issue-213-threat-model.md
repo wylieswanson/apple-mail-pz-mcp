@@ -42,7 +42,7 @@ Create `docs/guides/THREAT_MODEL.md` with this exact content (sections will be f
 ```markdown
 # Threat Model
 
-> Reviewer-oriented STRIDE analysis of the trust boundaries crossed by `apple-mail-fast-mcp`. Companion to [`SECURITY_CHECKLIST.md`](SECURITY_CHECKLIST.md) (how to build safely) and [`../SECURITY.md`](../SECURITY.md) (user-facing posture).
+> Reviewer-oriented STRIDE analysis of the trust boundaries crossed by `apple-mail-pz-mcp`. Companion to [`SECURITY_CHECKLIST.md`](SECURITY_CHECKLIST.md) (how to build safely) and [`../SECURITY.md`](../SECURITY.md) (user-facing posture).
 
 ## Overview
 

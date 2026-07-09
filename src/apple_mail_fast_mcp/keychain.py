@@ -2,13 +2,18 @@
 
 Entries live under service name
 ``apple-mail-fast-mcp.imap.<mail_app_account_name>`` keyed by the account's
-email. The ``apple-mail-fast-mcp setup-imap`` CLI is the supported way to
+email. The ``apple-mail-pz-mcp setup-imap`` CLI is the supported way to
 write entries; this module also exposes set/delete helpers that the
 CLI uses, plus the read helper used by the IMAP fallback path at
 runtime.
 
+The service prefix deliberately lags the CLI name. It identifies *stored
+credentials*, not the distribution: renaming it would orphan every existing
+Keychain entry and silently break IMAP until each account re-ran
+``setup-imap``. It is changed only alongside a read-through fallback.
+
 Read-through fallback (#337): the brand was renamed in #335. Reads and
-deletes prefer the new ``apple-mail-fast-mcp.imap.`` prefix and fall back to
+deletes prefer the ``apple-mail-fast-mcp.imap.`` prefix and fall back to
 the pre-rename ``apple-mail-mcp.imap.`` prefix on a NotFound miss, so existing
 entries keep working with zero user action. Writes go to the new prefix only.
 The fallback is dropped at 1.0.0 (documented breaking change — re-run

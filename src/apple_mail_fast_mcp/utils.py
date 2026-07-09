@@ -4,12 +4,38 @@ Utility functions for Apple Mail MCP.
 
 import base64
 import json
+import os
 import re
+from collections.abc import Mapping
 from typing import Any
 
 _UUID_RE = re.compile(
     r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
 )
+
+_ENV_TRUE = frozenset({"1", "true", "yes", "on"})
+_ENV_FALSE = frozenset({"0", "false", "no", "off", ""})
+
+
+def env_flag(
+    name: str, env: Mapping[str, str] | None = None, *, default: bool = False
+) -> bool:
+    """Read a boolean env var without the ``bool("false") is True`` trap.
+
+    Unset, empty, and unrecognized values fall back to ``default`` — an env
+    var is a blunt channel (a ``.mcpb`` boolean ``user_config`` arrives here as
+    the string ``"false"``), so guessing wrong silently changes the tool
+    surface.
+    """
+    raw = (env or os.environ).get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in _ENV_TRUE:
+        return True
+    if normalized in _ENV_FALSE:
+        return False
+    return default
 
 # Cap for a single message body returned inline by get_messages (#365).
 # Bodies are returned as part of a possibly multi-message JSON-RPC response;
@@ -544,14 +570,16 @@ def walk_thread_graph(
 def coerce_json_list(v: Any) -> Any:
     """Coerce a stringified array back to a list (#309).
 
-    Some MCP hosts (e.g. Cowork) serialize every tool argument as a string,
-    so a ``list[...]`` param arrives as ``'["a@b.com"]'`` and Pydantic
-    rejects it with a ``list_type`` error. Used as a Pydantic
+    Some MCP hosts serialize every tool argument as a string, so a
+    ``list[...]`` param arrives as ``'["a@b.com"]'`` and Pydantic rejects it
+    with a ``list_type`` error. Cowork does this at the client layer; Codex
+    does it upstream, by flattening array params to ``string`` in the schema
+    it shows the model (openai/codex#15164). Used as a Pydantic
     ``BeforeValidator`` on list-typed tool params: a JSON-array string
-    becomes the list, a bare non-JSON string becomes a single-element list,
-    an empty string becomes ``[]``. Real lists and ``None`` pass through
-    untouched, so well-behaved clients are unaffected. Element types are
-    still validated by Pydantic afterwards.
+    becomes the list, ``'null'`` becomes ``None``, a bare non-JSON string
+    becomes a single-element list, an empty string becomes ``[]``. Real lists
+    and ``None`` pass through untouched, so well-behaved clients are
+    unaffected. Element types are still validated by Pydantic afterwards.
     """
     if isinstance(v, str):
         s = v.strip()
@@ -561,6 +589,10 @@ def coerce_json_list(v: Any) -> Any:
             parsed = json.loads(s)
         except (ValueError, TypeError):
             return [v]
+        # `null` means "param omitted", not a filter on the literal string
+        # "null" — wrapping it would silently narrow the query to nothing.
+        if parsed is None:
+            return None
         return parsed if isinstance(parsed, list) else [v]
     return v
 
@@ -570,14 +602,17 @@ def coerce_json_dict(v: Any) -> Any:
 
     Companion to :func:`coerce_json_list` for ``dict``-typed tool params
     (e.g. rule ``actions``, template ``vars``). A JSON-object string becomes
-    the dict; anything else (real dict, ``None``, non-object JSON, garbage)
-    passes through to be validated/rejected normally.
+    the dict, ``'null'`` becomes ``None``; anything else (real dict, ``None``,
+    non-object JSON, garbage) passes through to be validated/rejected
+    normally.
     """
     if isinstance(v, str):
         try:
             parsed = json.loads(v)
         except (ValueError, TypeError):
             return v
+        if parsed is None:
+            return None
         return parsed if isinstance(parsed, dict) else v
     return v
 

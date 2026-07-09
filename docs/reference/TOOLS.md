@@ -101,7 +101,7 @@ Search for messages matching specified criteria.
 
 **Performance note for `body_contains` / `text_contains`:**
 
-On the IMAP path, body search is server-side and sub-second. On the AppleScript fallback, body search is **dramatically slower** — measured 148s for 100 cold-cache messages on a 47k-message INBOX, vs 1s for `subject_contains` on the same slice. This is because Mail.app must read each candidate message's body from disk. To get sub-second body search, run `apple-mail-fast-mcp setup-imap --account <name>` to enable IMAP delegation for that account.
+On the IMAP path, body search is server-side and sub-second. On the AppleScript fallback, body search is **dramatically slower** — measured 148s for 100 cold-cache messages on a 47k-message INBOX, vs 1s for `subject_contains` on the same slice. This is because Mail.app must read each candidate message's body from disk. To get sub-second body search, run `apple-mail-pz-mcp setup-imap --account <name>` to enable IMAP delegation for that account.
 
 **Experimental local DB path (this fork):** when `APPLE_MAIL_MCP_LOCAL_DB=1`
 is set, non-body, non-attachment metadata searches prefer a read-only query
@@ -125,7 +125,7 @@ When the call commits to the AppleScript path **and** a body/text filter is set,
   "search_backend": "applescript",
   "search_elapsed_ms": 148203.7,
   "warnings": [
-    "AppleScript body search can take minutes on large mailboxes (measured 148s for 100 cold-cache messages on a 47k-message Gmail INBOX). Run `apple-mail-fast-mcp setup-imap --account 'Gmail'` for sub-second IMAP body search."
+    "AppleScript body search can take minutes on large mailboxes (measured 148s for 100 cold-cache messages on a 47k-message Gmail INBOX). Run `apple-mail-pz-mcp setup-imap --account 'Gmail'` for sub-second IMAP body search."
   ]
 }
 ```
@@ -224,7 +224,7 @@ Retrieve full details of one or more messages, with bodies. Returns a list (alwa
 
 **Performance note (path-dependent cost):**
 
-For accounts configured with IMAP (via `apple-mail-fast-mcp setup-imap --account <name>`), `include_attachments` is essentially free — `BODYSTRUCTURE` bundles into the existing FETCH. For accounts without IMAP, the AppleScript fallback enumerates attachments per message — fine for small id lists (1-10) but can be slow on cold caches for larger lists. If you have a mix of IMAP-configured and non-IMAP accounts, expect variance. To opt out: pass `include_attachments=False`.
+For accounts configured with IMAP (via `apple-mail-pz-mcp setup-imap --account <name>`), `include_attachments` is essentially free — `BODYSTRUCTURE` bundles into the existing FETCH. For accounts without IMAP, the AppleScript fallback enumerates attachments per message — fine for small id lists (1-10) but can be slow on cold caches for larger lists. If you have a mix of IMAP-configured and non-IMAP accounts, expect variance. To opt out: pass `include_attachments=False`.
 
 **Returns:**
 
@@ -449,7 +449,7 @@ Patch one or more messages: change read state, flag color, and/or move to anothe
 | `source_mailbox` | string \| null | No | null | Optional narrow-path hint — narrows the AppleScript scan to one mailbox. Required to unlock the IMAP fast path on move-only patches (#149) — without it, the move runs via AppleScript even when IMAP is configured. |
 | `gmail_mode` | boolean | No | false | **Deprecated and ignored (#364).** The move strategy is chosen automatically; this flag does nothing. Slated for removal at v1.0 (#369). |
 
-> **Gmail label moves (#364).** The old `gmail_mode` copy+delete strategy silently routed Gmail INBOX→label moves through `[Gmail]/Trash` (stripping the destination label) and reported success anyway — data loss. It has been removed. Moves now run via IMAP `UID MOVE` when the account has IMAP configured (the reliable Gmail relabel); otherwise via a **verified** AppleScript `set mailbox`. If a move can't be confirmed (the Gmail silent-no-op), `update_message` returns `error_type: "imap_required"` instead of falsely succeeding — configure IMAP with `apple-mail-fast-mcp setup-imap --account <name>` and pass `source_mailbox`.
+> **Gmail label moves (#364).** The old `gmail_mode` copy+delete strategy silently routed Gmail INBOX→label moves through `[Gmail]/Trash` (stripping the destination label) and reported success anyway — data loss. It has been removed. Moves now run via IMAP `UID MOVE` when the account has IMAP configured (the reliable Gmail relabel); otherwise via a **verified** AppleScript `set mailbox`. If a move can't be confirmed (the Gmail silent-no-op), `update_message` returns `error_type: "imap_required"` instead of falsely succeeding — configure IMAP with `apple-mail-pz-mcp setup-imap --account <name>` and pass `source_mailbox`.
 
 **Patch semantics:** caller specifies only the fields they want changed. At least one field parameter must be set; otherwise returns `validation_error`.
 
@@ -461,7 +461,7 @@ Patch one or more messages: change read state, flag color, and/or move to anothe
 - **Read-status-only patches (#151):** When `read_status` is the only field set and `account` + `source_mailbox` are provided, the read/unread mutation runs server-side via IMAP `UID STORE +/-FLAGS (\Seen)`. `\Seen` is base IMAP (RFC 3501), universal across all servers — no capability check needed.
 - **Flag-only patches (#152):** When `flagged` is the only field set (no `flag_color`) and `account` + `source_mailbox` are provided, the flag/unflag runs server-side via IMAP `UID STORE +/-FLAGS (\Flagged)`. Same base-IMAP universality as `\Seen`. Bare `\Flagged` renders identically in Mail.app to the existing AppleScript default flag (verified empirically, no UI divergence). **Caveat on unflag:** calling `flagged=False` via this path on a message that was previously color-flagged removes `\Flagged` but does NOT remove the `$MailFlagBit*` color keyword Mail.app set — standard IMAP clients show no flag, but Mail.app may resurface the color on next sync. To clean both: omit `source_mailbox` (forces AppleScript, which also clears `flag index`), or use `flag_color="none"` instead.
 
-Combined patches (move + read, read + flag, etc.) and any patch with `flag_color` set currently run via AppleScript regardless — Mail.app's color attributes (`$MailFlagBit*` user keywords) are out of IMAP scope. All fast paths require Keychain credentials per the IMAP setup flow (`apple-mail-fast-mcp setup-imap --account <name>`); they fall back to AppleScript transparently when IMAP isn't configured.
+Combined patches (move + read, read + flag, etc.) and any patch with `flag_color` set currently run via AppleScript regardless — Mail.app's color attributes (`$MailFlagBit*` user keywords) are out of IMAP scope. All fast paths require Keychain credentials per the IMAP setup flow (`apple-mail-pz-mcp setup-imap --account <name>`); they fall back to AppleScript transparently when IMAP isn't configured.
 
 **Returns:**
 
@@ -521,7 +521,7 @@ update_message(
 - `validation_error`: Too many IDs, no fields set, or missing `account` for move
 - `account_not_found`: `account` does not match a configured Mail.app account
 - `not_found`: `destination_mailbox` not found on the account
-- `imap_required`: A move could not be confirmed via AppleScript (the Gmail silent-no-op) and the account has no IMAP configured (#364). Run `apple-mail-fast-mcp setup-imap --account <name>` and pass `source_mailbox`.
+- `imap_required`: A move could not be confirmed via AppleScript (the Gmail silent-no-op) and the account has no IMAP configured (#364). Run `apple-mail-pz-mcp setup-imap --account <name>` and pass `source_mailbox`.
 - `unknown`: Unexpected error occurred
 
 ---
@@ -954,7 +954,7 @@ Delete messages — always moves them to the account's Trash mailbox.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `message_ids` | list[string] | Yes | - | List of message IDs to delete |
-| `permanent` | boolean | No | False | Reserved; currently a no-op. Passing `True` emits a `DeprecationWarning`. See [issue #111](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/111). |
+| `permanent` | boolean | No | False | Reserved; currently a no-op. Passing `True` emits a `DeprecationWarning`. See [issue #111](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/111). |
 | `account` | string \| null | No | null | Account name (or UUID). Pair with `source_mailbox` to narrow the scan and unlock the IMAP fast path (#150). |
 | `source_mailbox` | string \| null | No | null | Mailbox the messages live in. Required to unlock the IMAP fast path (#150) — without it, the delete runs via AppleScript even when IMAP is configured. Either alone (without `account`) raises `validation_error`. |
 
@@ -984,7 +984,7 @@ delete_messages(
 )
 ```
 
-**Performance — IMAP fast path (#150):** When invoked with `account` and `source_mailbox`, the delete runs server-side via IMAP `UID MOVE` to the account's Trash folder. On a 47k-message Gmail INBOX this drops the operation from ~57s to <1s — the AppleScript path uses `whose message id is`, which is a linear scan against RFC 5322 Message-IDs. Trash folder is resolved via RFC 6154 SPECIAL-USE `\Trash`; falls back to conventional names (`Trash`, `[Gmail]/Trash`, `Deleted Messages`, `Deleted Items`). Capability fallback chain: `MOVE` → `UID COPY` + `UID STORE +FLAGS \Deleted` + `UID EXPUNGE` (UIDPLUS only) → AppleScript. Requires Keychain credentials per the IMAP setup flow (`apple-mail-fast-mcp setup-imap --account <name>`); falls back to AppleScript transparently when IMAP isn't configured or the server lacks both `MOVE` and `UIDPLUS`.
+**Performance — IMAP fast path (#150):** When invoked with `account` and `source_mailbox`, the delete runs server-side via IMAP `UID MOVE` to the account's Trash folder. On a 47k-message Gmail INBOX this drops the operation from ~57s to <1s — the AppleScript path uses `whose message id is`, which is a linear scan against RFC 5322 Message-IDs. Trash folder is resolved via RFC 6154 SPECIAL-USE `\Trash`; falls back to conventional names (`Trash`, `[Gmail]/Trash`, `Deleted Messages`, `Deleted Items`). Capability fallback chain: `MOVE` → `UID COPY` + `UID STORE +FLAGS \Deleted` + `UID EXPUNGE` (UIDPLUS only) → AppleScript. Requires Keychain credentials per the IMAP setup flow (`apple-mail-pz-mcp setup-imap --account <name>`); falls back to AppleScript transparently when IMAP isn't configured or the server lacks both `MOVE` and `UIDPLUS`.
 
 **Note on `permanent`:**
 
@@ -1055,7 +1055,7 @@ Mail controls the final UI refresh (#269).
 response includes an optional `warnings: list[str]` field noting the body
 may render as a blockquote on iOS Mail (Mail.app bug FB11734014, #245).
 The field is **omitted** on the clean path. Configure IMAP for the account
-(`apple-mail-fast-mcp setup-imap`) — or pass `from_account` — to avoid it.
+(`apple-mail-pz-mcp setup-imap`) — or pass `from_account` — to avoid it.
 
 **Examples:**
 
