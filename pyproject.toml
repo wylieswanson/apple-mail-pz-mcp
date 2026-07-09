@@ -21,7 +21,7 @@ maintainers = [
 ]
 keywords = ["mcp", "apple-mail", "email", "automation"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: MacOS",
@@ -37,20 +37,12 @@ dependencies = [
     "imapclient>=3.1.0",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=9.0.3",
-    "pytest-asyncio>=1.4.0",
-    "pytest-cov>=7.1.0",
-    "hypothesis>=6.100.0",
-    "radon>=6.0.1",
-    "pip-audit>=2.7.0",
-    "ruff>=0.15.15",
-    "mypy>=1.20.2",
-]
-research = [
-    "imapclient>=3.1.0",
-]
+# Dev dependencies live only in [dependency-groups] (PEP 735) — `uv sync --dev`,
+# which every Makefile target and CI job uses, reads that. They were previously
+# duplicated verbatim under [project.optional-dependencies], where the two lists
+# could drift apart silently. The `research` extra pinned imapclient, which
+# became a primary dependency when imap_connector.py stopped being a spike
+# (docs/plans/2026-04-23-imap-connector-design.md).
 
 [dependency-groups]
 dev = [
