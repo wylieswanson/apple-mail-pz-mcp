@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "apple-mail-fast-mcp"
+name = "apple-mail-pz-mcp"
 version = "0.10.2"
 description = "MCP server for Apple Mail integration"
 readme = "README.md"
@@ -58,7 +58,6 @@ dev = [
 ]
 
 [project.scripts]
-apple-mail-fast-mcp = "apple_mail_fast_mcp.server:main"
 apple-mail-pz-mcp = "apple_mail_fast_mcp.server:main"
 
 [project.urls]

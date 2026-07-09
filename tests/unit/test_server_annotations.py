@@ -210,13 +210,13 @@ class TestReadOnlyFlag:
     def test_pre_parse_returns_false_with_no_args(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr("sys.argv", ["apple-mail-fast-mcp"])
+        monkeypatch.setattr("sys.argv", ["apple-mail-pz-mcp"])
         assert server._pre_parse_read_only() is False
 
     def test_pre_parse_returns_true_with_flag(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr("sys.argv", ["apple-mail-fast-mcp", "--read-only"])
+        monkeypatch.setattr("sys.argv", ["apple-mail-pz-mcp", "--read-only"])
         assert server._pre_parse_read_only() is True
 
     def test_pre_parse_ignores_unknown_args(
@@ -224,7 +224,7 @@ class TestReadOnlyFlag:
     ) -> None:
         """The pre-parse uses parse_known_args; downstream args don't crash it."""
         monkeypatch.setattr(
-            "sys.argv", ["apple-mail-fast-mcp", "setup-imap", "--account", "Gmail"]
+            "sys.argv", ["apple-mail-pz-mcp", "setup-imap", "--account", "Gmail"]
         )
         assert server._pre_parse_read_only() is False
 

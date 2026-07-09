@@ -1,6 +1,6 @@
 {
   "manifest_version": "0.4",
-  "name": "apple-mail-fast-mcp",
+  "name": "apple-mail-pz-mcp",
   "display_name": "Apple Mail (Fast MCP)",
   "version": "0.10.2",
   "description": "MCP server for Apple Mail — search, read, organize, draft, templates, rules, and inbox stats, with an IMAP fast path and a security-first design.",
@@ -21,7 +21,7 @@
     "entry_point": "src/apple_mail_fast_mcp/server.py",
     "mcp_config": {
       "command": "uv",
-      "args": ["run", "--directory", "${__dirname}", "apple-mail-fast-mcp"]
+      "args": ["run", "--directory", "${__dirname}", "apple-mail-pz-mcp"]
     }
   },
   "tools_generated": true,

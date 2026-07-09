@@ -1,5 +1,5 @@
 {
-  "name": "apple-mail-fast",
+  "name": "apple-mail-pz",
   "version": "0.10.2",
   "description": "Apple Mail for Claude Code — search, read, organize, draft, templates, rules, and inbox stats via MCP, with an IMAP fast path. macOS only.",
   "author": {
@@ -12,7 +12,7 @@
   "mcpServers": {
     "apple-mail": {
       "command": "uv",
-      "args": ["run", "--directory", "${CLAUDE_PLUGIN_ROOT}", "apple-mail-fast-mcp"]
+      "args": ["run", "--directory", "${CLAUDE_PLUGIN_ROOT}", "apple-mail-pz-mcp"]
     }
   }
 }

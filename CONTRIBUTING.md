@@ -12,7 +12,7 @@ The process changes shipping in this milestone (#87, #88, #90) — issue-first g
 
 ```bash
 git clone https://github.com/s-morgan-jeffries/apple-mail-fast-mcp.git
-cd apple-mail-fast-mcp
+cd apple-mail-pz-mcp
 uv sync --dev
 ./scripts/install-git-hooks.sh
 ```

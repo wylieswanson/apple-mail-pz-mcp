@@ -6,7 +6,7 @@
 
 An MCP server that provides programmatic access to Apple Mail, enabling AI assistants like Claude to read, send, search, and manage emails on macOS.
 
-> ⚠️ **Pre-1.0 — expect breaking changes.** The MCP tool surface (tool names, parameters, return shapes) is still evolving as the project matures. Pin to a specific version (for example, `apple-mail-fast-mcp==0.10.2`) and review the [CHANGELOG](CHANGELOG.md) before upgrading.
+> ⚠️ **Pre-1.0 — expect breaking changes.** The MCP tool surface (tool names, parameters, return shapes) is still evolving as the project matures. Pin to a specific version (for example, `apple-mail-pz-mcp==0.10.2`) and review the [CHANGELOG](CHANGELOG.md) before upgrading.
 
 ## Tools (26)
 
@@ -33,12 +33,12 @@ Destructive operations (`delete_*`, `create_rule` with move/forward/delete actio
 
 ### Claude Desktop — install from file (`.mcpb`)
 
-The lowest-friction path for Claude Desktop: grab the `apple-mail-fast-mcp-<version>.mcpb`
+The lowest-friction path for Claude Desktop: grab the `apple-mail-pz-mcp-<version>.mcpb`
 bundle from the [Releases](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/releases)
 page and open it (or drag it into **Settings → Extensions**). Claude Desktop manages Python
 and dependencies for you via `uv` — no manual venv, no config JSON to hand-edit. macOS only.
 
-To build the bundle yourself: `./scripts/build-mcpb.sh` → `dist/apple-mail-fast-mcp-<version>.mcpb`
+To build the bundle yourself: `./scripts/build-mcpb.sh` → `dist/apple-mail-pz-mcp-<version>.mcpb`
 (requires Node for the `mcpb` packer).
 
 ### Claude Code — install as a plugin
@@ -47,7 +47,7 @@ One command in Claude Code, no config JSON:
 
 ```
 /plugin marketplace add s-morgan-jeffries/apple-mail-fast-mcp
-/plugin install apple-mail-fast@apple-mail-fast-mcp
+/plugin install apple-mail-pz@apple-mail-pz-mcp
 ```
 
 Claude Code launches the server via `uv run` from the plugin directory (resolves dependencies
@@ -57,11 +57,11 @@ read/write split.
 
 ### pip / uvx (any MCP client)
 
-Published on [PyPI](https://pypi.org/project/apple-mail-fast-mcp/):
+Published on [PyPI](https://pypi.org/project/apple-mail-pz-mcp/):
 
 ```bash
-uvx apple-mail-fast-mcp          # zero-install, run on demand
-pip install apple-mail-fast-mcp  # or install the console script
+uvx apple-mail-pz-mcp          # zero-install, run on demand
+pip install apple-mail-pz-mcp  # or install the console script
 ```
 
 Then point your MCP client at it — the config is a one-liner (no absolute paths):
@@ -69,7 +69,7 @@ Then point your MCP client at it — the config is a one-liner (no absolute path
 ```json
 {
   "mcpServers": {
-    "apple-mail": { "command": "uvx", "args": ["apple-mail-fast-mcp"] }
+    "apple-mail": { "command": "uvx", "args": ["apple-mail-pz-mcp"] }
   }
 }
 ```
@@ -78,7 +78,7 @@ Then point your MCP client at it — the config is a one-liner (no absolute path
 
 ```bash
 git clone https://github.com/s-morgan-jeffries/apple-mail-fast-mcp.git
-cd apple-mail-fast-mcp
+cd apple-mail-pz-mcp
 uv sync --dev
 ```
 
@@ -87,19 +87,19 @@ uv sync --dev
 > Skip this section if you installed the `.mcpb` bundle — it wires up Claude Desktop for you.
 > The manual config below is for source installs.
 
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`). `uv sync` installs a console script at `.venv/bin/apple-mail-fast-mcp`; point Claude Desktop at its **absolute path** — it's the most reliable form under Claude Desktop's restricted spawn environment (no reliance on `uv` being on `PATH`):
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`). `uv sync` installs a console script at `.venv/bin/apple-mail-pz-mcp`; point Claude Desktop at its **absolute path** — it's the most reliable form under Claude Desktop's restricted spawn environment (no reliance on `uv` being on `PATH`):
 
 ```json
 {
   "mcpServers": {
     "apple-mail": {
-      "command": "/path/to/apple-mail-fast-mcp/.venv/bin/apple-mail-fast-mcp"
+      "command": "/path/to/apple-mail-pz-mcp/.venv/bin/apple-mail-pz-mcp"
     }
   }
 }
 ```
 
-(Equivalent alternative if you prefer driving it through uv: `"command": "uv", "args": ["--directory", "/path/to/apple-mail-fast-mcp", "run", "apple-mail-fast-mcp"]`.)
+(Equivalent alternative if you prefer driving it through uv: `"command": "uv", "args": ["--directory", "/path/to/apple-mail-pz-mcp", "run", "apple-mail-pz-mcp"]`.)
 
 ### Optional: split read / write servers
 
@@ -109,11 +109,11 @@ Claude Desktop prompts per-tool for permission. If you want to **batch-approve t
 {
   "mcpServers": {
     "apple-mail-read": {
-      "command": "/path/to/apple-mail-fast-mcp/.venv/bin/apple-mail-fast-mcp",
+      "command": "/path/to/apple-mail-pz-mcp/.venv/bin/apple-mail-pz-mcp",
       "args": ["--read-only"]
     },
     "apple-mail-write": {
-      "command": "/path/to/apple-mail-fast-mcp/.venv/bin/apple-mail-fast-mcp"
+      "command": "/path/to/apple-mail-pz-mcp/.venv/bin/apple-mail-pz-mcp"
     }
   }
 }
@@ -135,7 +135,7 @@ reading Apple Mail's local Envelope Index SQLite database in read-only mode:
 {
   "mcpServers": {
     "apple-mail-read": {
-      "command": "/path/to/apple-mail-fast-mcp/.venv/bin/apple-mail-fast-mcp",
+      "command": "/path/to/apple-mail-pz-mcp/.venv/bin/apple-mail-pz-mcp",
       "args": ["--read-only"],
       "env": { "APPLE_MAIL_MCP_LOCAL_DB": "1" }
     }
@@ -174,7 +174,7 @@ Desktop, iTerm, Terminal, or your IDE), then fully quit and reopen that app.
 **One-time setup per account — the `setup-imap` subcommand walks you through it:**
 
 ```bash
-apple-mail-fast-mcp setup-imap --account iCloud
+apple-mail-pz-mcp setup-imap --account iCloud
 ```
 
 Substitute the Mail.app account name exactly — whatever it's labeled in Mail.app (e.g. `iCloud`, `Gmail`, `"Yahoo!"`). The guided flow (#384):
@@ -188,7 +188,7 @@ Substitute the Mail.app account name exactly — whatever it's labeled in Mail.a
 
 If you see a one-time "security wants to use the 'login' keychain" prompt on the next IMAP-backed call, click **Always Allow**.
 
-To remove the entry later: `apple-mail-fast-mcp setup-imap --account iCloud --uninstall`.
+To remove the entry later: `apple-mail-pz-mcp setup-imap --account iCloud --uninstall`.
 
 ### Environment-variable fallback (uvx / headless / CI)
 

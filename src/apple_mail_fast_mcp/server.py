@@ -1456,7 +1456,7 @@ def update_message(
             automatically (IMAP relabel when configured; otherwise a verified
             AppleScript move). A Gmail label move that can't be confirmed
             returns `error_type: "imap_required"` — configure IMAP with
-            `apple-mail-fast-mcp setup-imap --account <name>`. Slated for
+            `apple-mail-pz-mcp setup-imap --account <name>`. Slated for
             removal at v1.0.
 
     Returns:
@@ -3587,10 +3587,11 @@ def delete_draft(draft_id: str) -> dict[str, Any]:
 
 
 def _default_cli_prog() -> str:
-    """Return the user-facing console script name for argparse help."""
-    invoked = Path(sys.argv[0]).name
-    if invoked in {"apple-mail-fast-mcp", "apple-mail-pz-mcp"}:
-        return invoked
+    """Return the user-facing console script name for argparse help.
+
+    Constant since the ``apple-mail-fast-mcp`` alias was dropped; keeps
+    ``python -m apple_mail_fast_mcp.server`` from naming the module path.
+    """
     return "apple-mail-pz-mcp"
 
 

@@ -955,7 +955,7 @@ class AppleMailConnector:
                 logger.warning(
                     "IMAP login rejected for %r — likely an expired or "
                     "revoked app password. To refresh: "
-                    "`apple-mail-fast-mcp setup-imap --account %s`. The "
+                    "`apple-mail-pz-mcp setup-imap --account %s`. The "
                     "AppleScript fallback is being used in the meantime; "
                     "results will be correct but slower.",
                     account,
@@ -2077,7 +2077,7 @@ class AppleMailConnector:
                 f"AppleScript body search can take minutes on large "
                 f"mailboxes (measured 148s for 100 cold-cache messages on "
                 f"a 47k-message Gmail INBOX). Run "
-                f"`apple-mail-fast-mcp setup-imap --account {account!r}` for "
+                f"`apple-mail-pz-mcp setup-imap --account {account!r}` for "
                 f"sub-second IMAP body search."
             )
 
@@ -3856,7 +3856,7 @@ class AppleMailConnector:
                 f"Move to {destination_mailbox!r} could not be confirmed for "
                 f"{failed} message(s) — they never left {src!r}. On Gmail, "
                 f"label moves only apply reliably over IMAP: run "
-                f"`apple-mail-fast-mcp setup-imap --account <name>` for this "
+                f"`apple-mail-pz-mcp setup-imap --account <name>` for this "
                 f"account and retry. (#364)"
             )
         return moved
@@ -5456,14 +5456,14 @@ class AppleMailConnector:
                 "Draft created via AppleScript: no from_account was given "
                 "and there isn't exactly one enabled account, so the clean "
                 f"IMAP draft path couldn't be auto-selected. {tail} Pass "
-                "from_account, or set up IMAP with `apple-mail-fast-mcp "
+                "from_account, or set up IMAP with `apple-mail-pz-mcp "
                 "setup-imap`."
             )
         return (
             "Draft created via AppleScript fallback: the IMAP draft path is "
             f"unavailable for {effective_account!r} (IMAP not configured, "
             f"unreachable, or a non-RFC reply seed). {tail} Configure or "
-            "repair IMAP for the account with `apple-mail-fast-mcp setup-imap`."
+            "repair IMAP for the account with `apple-mail-pz-mcp setup-imap`."
         )
 
     def _effective_from_account(self, from_account: str | None, send_now: bool) -> str | None:
