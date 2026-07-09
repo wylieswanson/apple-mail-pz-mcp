@@ -22,6 +22,7 @@ from apple_mail_fast_mcp import server
 pytestmark = pytest.mark.e2e
 
 EXPECTED_TOOLS = {
+    "get_server_version",
     # Discovery
     "diagnose_mail_access",
     "list_accounts",
@@ -293,6 +294,28 @@ class TestVersionIntrospection:
         from apple_mail_fast_mcp import __version__
 
         assert server.mcp.version == __version__
+
+    async def test_get_server_version_is_callable(self) -> None:
+        """Hosts that don't surface serverInfo (Cowork) need a real tool."""
+        from apple_mail_fast_mcp.version import version_banner
+
+        result = await server.mcp.call_tool("get_server_version", {})
+        data = result.structured_content
+        assert data["success"] is True
+        # the exact string `--version` prints, so the two can never disagree
+        assert data["banner"] == version_banner()
+        assert set(data) >= {
+            "version", "commit", "commit_date", "built_at", "dirty",
+            "source", "read_only", "banner",
+        }
+
+    async def test_get_server_version_is_discoverable_by_asking_for_a_version(
+        self,
+    ) -> None:
+        """The word a user says must appear in the description a model reads."""
+        tools = await server.mcp.get_tool("get_server_version")
+        assert "version" in (tools.description or "").lower()
+        assert tools.annotations.readOnlyHint is True
 
     async def test_diagnose_reports_version_commit_and_date(
         self, mock_mail: MagicMock

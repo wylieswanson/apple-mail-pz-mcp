@@ -743,6 +743,31 @@ async def update_rule(
 @_tool(
     {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
 )
+def get_server_version() -> dict[str, Any]:
+    """
+    Return this Apple Mail MCP server's own version, git commit, and build date.
+
+    ``banner`` is the exact line ``apple-mail-pz-mcp --version`` prints.
+    ``source`` is "build", "git" (``dirty`` means uncommitted changes), or
+    "unknown". See docs/reference/TOOLS.md.
+    """
+    # This exists because the version the server reports in the MCP handshake
+    # (serverInfo) is read by the host and not always passed to the model —
+    # Cowork, notably. Keep the docstring short: it is billed to every request.
+    #
+    # No rate limit and no audit entry: this touches no mail and returns no
+    # user data, only the server's own provenance.
+    return {
+        "success": True,
+        "banner": version_banner(),
+        **build_info(),
+        "read_only": _READ_ONLY,
+    }
+
+
+@_tool(
+    {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
+)
 def diagnose_mail_access(
     account: str | None = None,
     mailbox: str = "INBOX",

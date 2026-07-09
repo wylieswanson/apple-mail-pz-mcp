@@ -25,6 +25,7 @@ from apple_mail_fast_mcp import server
 # ---------------------------------------------------------------------------
 
 READ_ONLY_TOOLS: set[str] = {
+    "get_server_version",
     "diagnose_mail_access",
     "list_accounts",
     "list_mailboxes",
@@ -173,7 +174,7 @@ class TestProductionAnnotations:
     def test_classifications_partition_correctly(self) -> None:
         """No overlap between read-only and mutating sets; counts are 12 + 14."""
         assert READ_ONLY_TOOLS.isdisjoint(MUTATING_TOOLS)
-        assert len(READ_ONLY_TOOLS) == 12
+        assert len(READ_ONLY_TOOLS) == 13
         assert len(MUTATING_TOOLS) == 14
         assert DESTRUCTIVE_TOOLS.isdisjoint(ADDITIVE_TOOLS)
 

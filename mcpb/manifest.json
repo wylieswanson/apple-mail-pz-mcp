@@ -4,7 +4,7 @@
   "display_name": "Apple Mail (PingZero MCP)",
   "version": "0.10.2",
   "description": "MCP server for Apple Mail \u2014 search, read, organize, draft, templates, rules, and inbox stats, with an IMAP fast path and a security-first design.",
-  "long_description": "A local, security-first MCP server for Apple Mail on macOS. Reads and organizes mail via AppleScript with an optional IMAP fast path for large mailboxes. 26 tools across search/read, drafts, mailbox & rule CRUD, attachments, templates, and inbox statistics.\n\nDestructive operations are gated: each one asks you to confirm via MCP elicitation, and fails closed if the host cannot prompt. Hosts without elicitation support (currently Claude Desktop and Cowork) will see those tools return a confirmation error rather than acting \u2014 enable \"Read-only mode\" below to hide them entirely.\n\nNo telemetry.\n\nContinues apple-mail-fast-mcp by Morgan Jeffries (MIT), from which this project inherits its AppleScript connector, IMAP fast path, and security model.",
+  "long_description": "A local, security-first MCP server for Apple Mail on macOS. Reads and organizes mail via AppleScript with an optional IMAP fast path for large mailboxes. 27 tools across search/read, drafts, mailbox & rule CRUD, attachments, templates, and inbox statistics.\n\nDestructive operations are gated: each one asks you to confirm via MCP elicitation, and fails closed if the host cannot prompt. Hosts without elicitation support (currently Claude Desktop and Cowork) will see those tools return a confirmation error rather than acting \u2014 enable \"Read-only mode\" below to hide them entirely.\n\nNo telemetry.\n\nContinues apple-mail-fast-mcp by Morgan Jeffries (MIT), from which this project inherits its AppleScript connector, IMAP fast path, and security model.",
   "author": {
     "name": "PingZero"
   },
@@ -53,7 +53,7 @@
     "read_only": {
       "type": "boolean",
       "title": "Read-only mode",
-      "description": "Expose only the 12 read tools and hide the 14 that modify mail. Recommended on hosts that cannot show confirmation prompts.",
+      "description": "Expose only the 13 read tools and hide the 14 that modify mail. Recommended on hosts that cannot show confirmation prompts.",
       "default": false,
       "required": false
     },

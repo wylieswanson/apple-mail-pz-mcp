@@ -37,8 +37,8 @@ class TestBaselineIsHonest:
 
     def test_baseline_tool_counts_match_the_server(self) -> None:
         data = json.loads(BASELINE.read_text())
-        assert data["full_tools"] == 26
-        assert data["read_only_tools"] == 12
+        assert data["full_tools"] == 27
+        assert data["read_only_tools"] == 13
 
     def test_check_passes_against_the_committed_baseline(self) -> None:
         result = _run("--check")
