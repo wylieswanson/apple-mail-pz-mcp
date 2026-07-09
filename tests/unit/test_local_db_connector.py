@@ -142,6 +142,41 @@ def test_local_db_enabled_parses_opt_in_values() -> None:
     assert local_db_enabled({}) is False
 
 
+def test_diagnose_reports_openable_schema(envelope_index: Path) -> None:
+    connector = LocalDbConnector(envelope_index)
+
+    report = connector.diagnose({"APPLE_MAIL_MCP_LOCAL_DB": "1"})
+
+    assert report["enabled"] is True
+    assert report["envelope_index_path"] == str(envelope_index)
+    assert report["envelope_index_exists"] is True
+    assert report["sqlite_openable"] is True
+    assert report["schema_ok"] is True
+    assert report["missing_tables"] == []
+    assert report["available"] is True
+
+
+def test_diagnose_reports_missing_schema_table(tmp_path: Path) -> None:
+    path = tmp_path / "Envelope Index"
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE messages(message_id INTEGER)")
+
+    report = LocalDbConnector(path).diagnose({"APPLE_MAIL_MCP_LOCAL_DB": "1"})
+
+    assert report["sqlite_openable"] is True
+    assert report["schema_ok"] is False
+    assert "mailboxes" in report["missing_tables"]
+    assert report["available"] is False
+
+
+def test_matching_mailbox_urls(envelope_index: Path) -> None:
+    connector = LocalDbConnector(envelope_index)
+
+    assert connector.matching_mailbox_urls("ACC-1", "Sent Messages") == [
+        "imap://ACC-1/Sent%20Messages"
+    ]
+
+
 def test_search_messages_filters_and_matches_common_shape(envelope_index: Path) -> None:
     connector = LocalDbConnector(envelope_index)
 

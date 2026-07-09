@@ -7,7 +7,7 @@ Claude Desktop / MCP client
         |  (MCP JSON-RPC over stdio)
         v
 server.py (FastMCP)
-  |-- 23 tools (@_tool / @mcp.tool)        9 read-only, 14 mutating
+  |-- 26 tools (@_tool / @mcp.tool)        12 read-only, 14 mutating
   |-- input validation + sanitization
   |-- elicitation (confirmation) gates on destructive ops
   |-- structured responses ({"success": bool, ...})

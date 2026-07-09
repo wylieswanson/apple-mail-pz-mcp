@@ -4,7 +4,7 @@ Complete reference for all MCP tools provided by the Apple Mail MCP server.
 
 ## Overview
 
-**Total Tools:** 25 (11 read-only, 14 mutating — see Classification below). See the [CHANGELOG](../../CHANGELOG.md) for the version history.
+**Total Tools:** 26 (12 read-only, 14 mutating — see Classification below). See the [CHANGELOG](../../CHANGELOG.md) for the version history.
 
 ## Tool annotations (`readOnlyHint` / `destructiveHint` / `idempotentHint`)
 
@@ -19,13 +19,51 @@ Every tool ships with the per-tool annotations the MCP 2025-03 spec defines so h
 
 **Classification:**
 
-- **Read-only (9):** `list_accounts`, `list_mailboxes`, `list_rules`, `list_templates`, `search_messages`, `get_messages`, `get_thread`, `get_template`, `render_template`. All have `readOnlyHint=true`, `destructiveHint=false`, `idempotentHint=true`.
+- **Read-only (12):** `diagnose_mail_access`, `list_accounts`, `list_mailboxes`, `list_rules`, `list_templates`, `search_messages`, `get_messages`, `get_thread`, `get_statistics`, `get_attachment_content`, `get_template`, `render_template`. All have `readOnlyHint=true`, `destructiveHint=false`, `idempotentHint=true`.
 - **Mutating destructive (9):** `update_message`, `update_mailbox`, `update_rule`, `update_draft`, `delete_draft`, `delete_mailbox`, `delete_messages`, `delete_rule`, `delete_template`. All have `destructiveHint=true`, `idempotentHint=true`.
 - **Mutating additive (5):** `create_mailbox`, `create_draft`, `create_rule`, `save_template`, `save_attachments`. All have `destructiveHint=false`. Idempotent except `create_draft` and `create_rule` (each call may create a new entity).
 
-**Host doesn't honor annotations?** Use the split-server config in the [README](../../README.md#optional-split-read--write-servers). Pass `--read-only` to one connector entry to expose only the 9 read tools; pair with a second non-read-only entry. Claude Desktop's per-server permission UI then naturally groups them. The two approaches compose: annotations describe the model, the split-server flag enforces it client-side.
+**Host doesn't honor annotations?** Use the split-server config in the [README](../../README.md#optional-split-read--write-servers). Pass `--read-only` to one connector entry to expose only the 12 read tools; pair with a second non-read-only entry. Claude Desktop's per-server permission UI then naturally groups them. The two approaches compose: annotations describe the model, the split-server flag enforces it client-side.
 
 ## Phase 1 Tools (v0.1.0) - Core Foundation
+
+### diagnose_mail_access
+
+Diagnose Mail.app access and local search acceleration from inside the MCP client.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `account` | string | No | None | Optional Mail.app account name or UUID to resolve. |
+| `mailbox` | string | No | "INBOX" | Mailbox path to check when `account` is provided. |
+
+**Returns:**
+
+```json
+{
+  "success": true,
+  "local_db_enabled": true,
+  "local_db": {
+    "available": true,
+    "mail_directory_readable": true,
+    "envelope_index_path": "/Users/me/Library/Mail/V10/MailData/Envelope Index",
+    "sqlite_openable": true,
+    "schema_ok": true
+  },
+  "search_backend_order": ["imap", "local-db", "applescript"],
+  "recommendations": [
+    "Local DB metadata search is available for non-body, non-attachment queries."
+  ]
+}
+```
+
+**Notes:**
+- Read-only. It never writes Mail.app state or the Envelope Index.
+- Use this after changing Full Disk Access or `APPLE_MAIL_MCP_LOCAL_DB` to confirm what the running MCP process can actually see.
+- If `account` is provided, the tool also attempts account UUID resolution and checks whether the local DB contains matching mailbox URLs.
+
+---
 
 ### search_messages
 
@@ -59,6 +97,7 @@ Search for messages matching specified criteria.
 - For thread retrieval, call `get_thread(message_id)` to expand an anchor into thread member ids; pipe those ids into `source=[ids]` for filtered metadata.
 - Omitting both `account` and `source` returns `error_type: validation_error`.
 - `include_attachments` defaults to **false** for `search_messages` (unlike `get_messages` which defaults to true). Reason: search results can span 50+ rows, and the AppleScript fallback path enumerates attachments per row — measured 1s for 50 messages but 97s for 100 cold-cache messages on a 47k-message Gmail INBOX (#142). To get attachment metadata for a small known set, prefer the two-step: `search_messages(...)` to get ids → `get_messages([those_ids])` (default-on attachments, bounded cardinality).
+- Responses include `search_backend`, one of `imap`, `local-db`, `applescript`, `source`, or `unknown`. Use it to confirm whether the fast path actually handled the request.
 
 **Performance note for `body_contains` / `text_contains`:**
 
@@ -96,6 +135,7 @@ When the call commits to the AppleScript path **and** a body/text filter is set,
   "success": true,
   "account": "Gmail",
   "mailbox": "INBOX",
+  "search_backend": "local-db",
   "messages": [
     {
       "id": "12345",

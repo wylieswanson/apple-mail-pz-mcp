@@ -23,6 +23,7 @@ pytestmark = pytest.mark.e2e
 
 EXPECTED_TOOLS = {
     # Discovery
+    "diagnose_mail_access",
     "list_accounts",
     "list_mailboxes",
     "list_rules",
@@ -118,6 +119,17 @@ _TMP_FILE = "__TMP_FILE__"
 
 # (tool_name, call_args, connector_method, connector_return_value)
 INVOCATION_CASES: list[tuple[str, dict[str, Any], str, Any]] = [
+    (
+        "diagnose_mail_access",
+        {},
+        "diagnose_mail_access",
+        {
+            "local_db_enabled": True,
+            "local_db": {"available": True},
+            "search_backend_order": ["imap", "local-db", "applescript"],
+            "recommendations": [],
+        },
+    ),
     (
         "list_accounts",
         {},

@@ -26,6 +26,7 @@ pytestmark = pytest.mark.e2e
 
 EXPECTED_TOOLS = {
     # Discovery
+    "diagnose_mail_access",
     "list_accounts",
     "list_mailboxes",
     "list_rules",

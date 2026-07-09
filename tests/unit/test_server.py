@@ -33,6 +33,7 @@ from apple_mail_fast_mcp.server import (
     delete_messages,
     delete_rule,
     delete_template,
+    diagnose_mail_access,
     get_attachment_content,
     get_messages,
     get_statistics,
@@ -369,7 +370,51 @@ class TestListRules:
 
 
 # ---------------------------------------------------------------------------
-# 0c. Rule mutations: delete_rule, create_rule, update_rule
+# 0c. diagnose_mail_access
+# ---------------------------------------------------------------------------
+
+
+class TestDiagnoseMailAccess:
+    def test_success_returns_report_and_logs(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        mock_mail.diagnose_mail_access.return_value = {
+            "local_db_enabled": True,
+            "local_db": {"available": True},
+            "search_backend_order": ["imap", "local-db", "applescript"],
+            "recommendations": [],
+        }
+
+        result = diagnose_mail_access(account="iCloud", mailbox="INBOX")
+
+        assert result["success"] is True
+        assert result["local_db_enabled"] is True
+        assert result["search_backend_order"] == ["imap", "local-db", "applescript"]
+        mock_mail.diagnose_mail_access.assert_called_once_with(
+            account="iCloud",
+            mailbox="INBOX",
+        )
+        mock_logger.log_operation.assert_called_once_with(
+            "diagnose_mail_access",
+            {"account": "iCloud", "mailbox": "INBOX"},
+            "success",
+        )
+
+    def test_unexpected_exception_maps_to_unknown(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        mock_mail.diagnose_mail_access.side_effect = RuntimeError("boom")
+
+        result = diagnose_mail_access()
+
+        assert result["success"] is False
+        assert result["error_type"] == "unknown"
+        assert "boom" in result["error"]
+        mock_logger.log_operation.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 0d. Rule mutations: delete_rule, create_rule, update_rule
 # ---------------------------------------------------------------------------
 
 
@@ -806,6 +851,7 @@ class TestSearchMessages:
             body_contains=None,
             text_contains=None,
             on_warning=ANY,
+            on_backend=ANY,
         )
         mock_logger.log_operation.assert_called_once()
         logged_op, logged_params, logged_status = mock_logger.log_operation.call_args.args
@@ -868,6 +914,7 @@ class TestSearchMessages:
             body_contains=None,
             text_contains=None,
             on_warning=ANY,
+            on_backend=ANY,
         )
         logged_params = mock_logger.log_operation.call_args.args[1]
         assert logged_params["filters"] == {
@@ -1373,6 +1420,35 @@ class TestSearchMessages:
 
         kwargs = mock_mail.search_messages.call_args.kwargs
         assert callable(kwargs.get("on_warning"))
+
+    def test_search_backend_field_reflects_connector_callback(
+        self, mock_mail: MagicMock
+    ) -> None:
+        def fake_search(**kwargs: Any) -> list[dict[str, Any]]:
+            kwargs["on_backend"]("local-db")
+            return [{"id": "1"}]
+
+        mock_mail.search_messages.side_effect = fake_search
+
+        result = search_messages("Gmail")
+
+        assert result["success"] is True
+        assert result["search_backend"] == "local-db"
+
+    def test_source_search_reports_source_backend(self, mock_mail: MagicMock) -> None:
+        mock_mail.get_message.return_value = {
+            "id": "1",
+            "subject": "x",
+            "sender": "a@example.com",
+            "date_received": "2026-04-01",
+            "read_status": True,
+            "flagged": False,
+        }
+
+        result = search_messages(source=["1"])
+
+        assert result["success"] is True
+        assert result["search_backend"] == "source"
 
 
 # ---------------------------------------------------------------------------

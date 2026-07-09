@@ -8,11 +8,11 @@ An MCP server that provides programmatic access to Apple Mail, enabling AI assis
 
 > ⚠️ **Pre-1.0 — expect breaking changes.** The MCP tool surface (tool names, parameters, return shapes) is still evolving as the project matures. Pin to a specific version (for example, `apple-mail-fast-mcp==0.10.2`) and review the [CHANGELOG](CHANGELOG.md) before upgrading.
 
-## Tools (25)
+## Tools (26)
 
-Grouped by lifecycle (11 read-only, 14 mutating):
+Grouped by lifecycle (12 read-only, 14 mutating):
 
-- **Discovery** — `list_accounts`, `list_mailboxes`, `list_rules`, `list_templates`: enumerate what's configured (no external cache — call per account).
+- **Discovery** — `diagnose_mail_access`, `list_accounts`, `list_mailboxes`, `list_rules`, `list_templates`: inspect access/search health and enumerate what's configured (no external cache — call per account).
 - **Read** — `search_messages`, `get_messages`, `get_thread`, `get_statistics`, `get_attachment_content`, `get_template`, `render_template`: read messages/threads, aggregate inbox stats, pull an attachment's content inline, and render templates.
 - **Message actions** — `update_message` (read/flag/move in one pass), `delete_messages` (→ Trash), `save_attachments` (to disk, byte-capped).
 - **Drafts** — `create_draft` (new / reply / forward, optionally `send_now`), `update_draft`, `delete_draft`.
@@ -103,7 +103,7 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 
 ### Optional: split read / write servers
 
-Claude Desktop prompts per-tool for permission. If you want to **batch-approve the 9 read tools** (list / search / get) and still gate the 14 mutating tools per call, run the connector twice — once with `--read-only`, once without — under two separate `mcpServers` entries:
+Claude Desktop prompts per-tool for permission. If you want to **batch-approve the 12 read tools** (diagnose / list / search / get) and still gate the 14 mutating tools per call, run the connector twice — once with `--read-only`, once without — under two separate `mcpServers` entries:
 
 ```json
 {
@@ -119,7 +119,7 @@ Claude Desktop prompts per-tool for permission. If you want to **batch-approve t
 }
 ```
 
-The `--read-only` server exposes only the 9 read tools, so Claude Desktop's per-server permission UI naturally groups them. The full server still gates writes individually. Trade-off: 2× connector processes. See [`docs/reference/TOOLS.md`](docs/reference/TOOLS.md) for the per-tool classification and a note on MCP annotation hints (`readOnlyHint` / `destructiveHint` / `idempotentHint`) which forward-compatible hosts may use to provide the same UX without the split.
+The `--read-only` server exposes only the 12 read tools, so Claude Desktop's per-server permission UI naturally groups them. The full server still gates writes individually. Trade-off: 2× connector processes. See [`docs/reference/TOOLS.md`](docs/reference/TOOLS.md) for the per-tool classification and a note on MCP annotation hints (`readOnlyHint` / `destructiveHint` / `idempotentHint`) which forward-compatible hosts may use to provide the same UX without the split.
 
 ## Permissions
 
@@ -153,6 +153,11 @@ This path requires Full Disk Access for the host app because it reads
 unreadable, or has an unexpected schema, the connector falls back to
 AppleScript. The database is opened with `mode=ro`; the connector never writes
 to Mail's store.
+
+Run `diagnose_mail_access(account="iCloud", mailbox="INBOX")` from your MCP
+client to see whether the running process can read Mail's store and which
+search backends are configured. `search_messages` responses also include a
+`search_backend` field (`imap`, `local-db`, `applescript`, or `source`).
 
 ## Optional: faster search via IMAP
 

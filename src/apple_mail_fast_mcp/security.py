@@ -122,6 +122,7 @@ TIER_LIMITS: dict[str, tuple[int, float]] = {
 
 OPERATION_TIERS: dict[str, str] = {
     "list_accounts": "cheap_reads",
+    "diagnose_mail_access": "cheap_reads",
     "list_rules": "cheap_reads",
     "list_mailboxes": "cheap_reads",
     "get_messages": "cheap_reads",

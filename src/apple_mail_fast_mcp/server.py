@@ -702,6 +702,47 @@ async def update_rule(
 @_tool(
     {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
 )
+def diagnose_mail_access(
+    account: str | None = None,
+    mailbox: str = "INBOX",
+) -> dict[str, Any]:
+    """
+    Diagnose Mail.app access, local Envelope Index availability, and search paths.
+
+    This read-only tool is intended for setup/debugging. It checks whether the
+    host process can read Mail's local store, whether the optional local DB
+    accelerator is enabled and openable, and optionally whether an
+    account/mailbox can be resolved for local DB metadata search.
+
+    Args:
+        account: Optional Mail.app account display name or UUID to validate.
+        mailbox: Mailbox path to validate when ``account`` is provided.
+
+    Returns:
+        Dictionary containing local DB health, search backend order, and
+        recommendations for fixing permissions/configuration problems.
+    """
+    params = {"account": account, "mailbox": mailbox}
+    try:
+        rate_err = check_rate_limit("diagnose_mail_access", params)
+        if rate_err:
+            return rate_err
+
+        report = mail.diagnose_mail_access(account=account, mailbox=mailbox)
+        operation_logger.log_operation("diagnose_mail_access", params, "success")
+        return {"success": True, **report}
+    except Exception as e:
+        logger.error(f"Error diagnosing Mail access: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "unknown",
+        }
+
+
+@_tool(
+    {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
+)
 def list_mailboxes(account: str) -> dict[str, Any]:
     """
     List all mailboxes for an account.
@@ -1100,6 +1141,7 @@ def search_messages(
                 "mailbox": None,
                 "messages": filtered,
                 "count": len(filtered),
+                "search_backend": "source",
             }
             if warnings:
                 response["warnings"] = warnings
@@ -1127,6 +1169,12 @@ def search_messages(
             f"has_attachment={has_attachment}"
         )
 
+        search_backend = "unknown"
+
+        def record_backend(value: str) -> None:
+            nonlocal search_backend
+            search_backend = value
+
         messages = mail.search_messages(
             account=account,
             mailbox=mailbox,
@@ -1143,6 +1191,7 @@ def search_messages(
             body_contains=body_contains,
             text_contains=text_contains,
             on_warning=warnings.append,
+            on_backend=record_backend,
         )
 
         operation_logger.log_operation(
@@ -1171,6 +1220,7 @@ def search_messages(
             "mailbox": mailbox,
             "messages": _annotate_injection(messages),
             "count": len(messages),
+            "search_backend": search_backend,
         }
         if warnings:
             response["warnings"] = warnings
@@ -3466,7 +3516,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--read-only",
         action="store_true",
         help=(
-            "Start the server with only the 9 read-only tools registered "
+            "Start the server with only the 12 read-only tools registered "
             "(skips the 14 mutating tools). Pair with a second non-read-only "
             "server entry in your MCP client to batch-approve reads while "
             "still gating writes per call. See docs/reference/TOOLS.md."
@@ -3527,7 +3577,7 @@ def main(argv: list[str] | None = None) -> int:
     if _READ_ONLY:
         logger.info(
             "Read-only mode: 14 mutating tools skipped (--read-only). "
-            "Only the 9 read tools are registered."
+            "Only the 12 read tools are registered."
         )
     logger.info("Starting Apple Mail MCP server")
     mcp.run()

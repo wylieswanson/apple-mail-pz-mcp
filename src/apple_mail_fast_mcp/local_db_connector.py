@@ -21,6 +21,9 @@ from urllib.parse import quote
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off", ""}
 _DEFAULT_LIMIT = 999_999_999
+_REQUIRED_TABLES = frozenset(
+    {"messages", "subjects", "addresses", "mailboxes", "message_global_data"}
+)
 
 
 class LocalDbUnavailableError(RuntimeError):
@@ -56,6 +59,22 @@ def local_db_enabled(env: Mapping[str, str] | None = None) -> bool:
     if normalized in _FALSE_VALUES:
         return False
     return False
+
+
+def _safe_exists(path: Path) -> tuple[bool, str | None]:
+    try:
+        return path.exists(), None
+    except PermissionError as exc:
+        return False, f"Permission denied: {exc}"
+    except OSError as exc:
+        return False, str(exc)
+
+
+def _safe_readable(path: Path) -> bool:
+    try:
+        return os.access(path, os.R_OK)
+    except OSError:
+        return False
 
 
 def _default_envelope_index_path() -> Path:
@@ -169,6 +188,177 @@ class LocalDbConnector:
             raise LocalDbUnavailableError(f"Cannot open Envelope Index read-only: {path}") from exc
         conn.row_factory = sqlite3.Row
         return conn
+
+    def diagnose(self, env: Mapping[str, str] | None = None) -> dict[str, Any]:
+        """Return a read-only health report for the local Envelope Index path."""
+        env_map = env or os.environ
+        report: dict[str, Any] = {
+            "enabled": local_db_enabled(env_map),
+            "env_value": env_map.get("APPLE_MAIL_MCP_LOCAL_DB"),
+            "path_override": env_map.get("APPLE_MAIL_MCP_LOCAL_DB_PATH"),
+            "mail_directory": str(Path.home() / "Library" / "Mail"),
+            "mail_directory_exists": False,
+            "mail_directory_readable": False,
+            "mail_versions": [],
+            "active_mail_version": None,
+            "envelope_index_path": None,
+            "envelope_index_exists": False,
+            "envelope_index_readable": False,
+            "sqlite_openable": False,
+            "schema_ok": False,
+            "missing_tables": sorted(_REQUIRED_TABLES),
+            "available": False,
+            "error": None,
+            "recommendations": [],
+        }
+
+        path = self._diagnose_path(env_map, report)
+        if path is not None:
+            self._diagnose_sqlite(path, report)
+        report["available"] = bool(report["sqlite_openable"] and report["schema_ok"])
+        report["recommendations"] = self._diagnose_recommendations(report)
+        return report
+
+    def _diagnose_path(
+        self, env: Mapping[str, str], report: dict[str, Any]
+    ) -> Path | None:
+        override = env.get("APPLE_MAIL_MCP_LOCAL_DB_PATH")
+        if override:
+            path = Path(override).expanduser()
+            self._record_envelope_index_status(path, report)
+            return path
+        if self._envelope_index_path is not None:
+            self._record_envelope_index_status(self._envelope_index_path, report)
+            return self._envelope_index_path
+
+        mail_base = Path.home() / "Library" / "Mail"
+        exists, error = _safe_exists(mail_base)
+        report["mail_directory_exists"] = exists
+        if error is not None:
+            report["error"] = error
+            return None
+        if not exists:
+            report["error"] = f"Apple Mail directory not found: {mail_base}"
+            return None
+
+        try:
+            version_dirs = sorted(
+                (
+                    child
+                    for child in mail_base.iterdir()
+                    if child.is_dir()
+                    and child.name.startswith("V")
+                    and child.name[1:].isdigit()
+                ),
+                key=lambda path: int(path.name[1:]),
+            )
+        except PermissionError as exc:
+            report["error"] = (
+                f"Cannot list {mail_base}. Grant Full Disk Access to the host app "
+                "launching this process."
+            )
+            report["permission_error"] = str(exc)
+            return None
+        except OSError as exc:
+            report["error"] = str(exc)
+            return None
+
+        report["mail_directory_readable"] = True
+        report["mail_versions"] = [path.name for path in version_dirs]
+        candidates = [version / "MailData" / "Envelope Index" for version in version_dirs]
+        for candidate in reversed(candidates):
+            exists, error = _safe_exists(candidate)
+            if error is not None:
+                report["error"] = error
+                return None
+            if exists:
+                report["active_mail_version"] = candidate.parent.parent.name
+                self._record_envelope_index_status(candidate, report)
+                return candidate
+
+        scanned = ", ".join(str(candidate) for candidate in candidates) or str(mail_base / "V*")
+        report["error"] = f"Apple Mail Envelope Index not found. Checked: {scanned}"
+        return None
+
+    def _record_envelope_index_status(
+        self, path: Path, report: dict[str, Any]
+    ) -> None:
+        report["envelope_index_path"] = str(path)
+        exists, error = _safe_exists(path)
+        report["envelope_index_exists"] = exists
+        if error is not None:
+            report["error"] = error
+            return
+        if exists:
+            report["envelope_index_readable"] = _safe_readable(path)
+
+    def _diagnose_sqlite(self, path: Path, report: dict[str, Any]) -> None:
+        if not report["envelope_index_exists"]:
+            return
+        try:
+            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+                report["sqlite_openable"] = True
+                rows = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+                tables = {str(row[0]) for row in rows}
+        except sqlite3.Error as exc:
+            report["error"] = f"Cannot open Envelope Index read-only: {path}: {exc}"
+            return
+        missing = sorted(_REQUIRED_TABLES - tables)
+        report["missing_tables"] = missing
+        report["schema_ok"] = not missing
+
+    @staticmethod
+    def _diagnose_recommendations(report: dict[str, Any]) -> list[str]:
+        recommendations: list[str] = []
+        if not report["enabled"]:
+            recommendations.append("Set APPLE_MAIL_MCP_LOCAL_DB=1 to enable local DB search.")
+        if (
+            not report["mail_directory_exists"]
+            and report["path_override"] is None
+            and report["envelope_index_path"] is None
+        ):
+            recommendations.append("Open Mail.app and confirm at least one account is configured.")
+        if report["mail_directory_exists"] and not report["mail_directory_readable"]:
+            recommendations.append(
+                "Grant Full Disk Access to the host app launching this MCP server, "
+                "then fully quit and reopen it."
+            )
+        if report["envelope_index_path"] and not report["envelope_index_exists"]:
+            recommendations.append("Confirm Mail.app has downloaded local mail and rebuilt its index.")
+        if report["envelope_index_exists"] and not report["sqlite_openable"]:
+            recommendations.append(
+                "Confirm the Envelope Index is readable by this process; Full Disk Access "
+                "is the usual fix."
+            )
+        if report["sqlite_openable"] and not report["schema_ok"]:
+            recommendations.append(
+                "Apple Mail's Envelope Index schema differed from expectations; "
+                "search will fall back to AppleScript."
+            )
+        if report["available"] and report["enabled"]:
+            recommendations.append(
+                "Local DB metadata search is available for non-body, non-attachment queries."
+            )
+        return recommendations
+
+    def matching_mailbox_urls(
+        self, account_uuid: str, mailbox: str, *, limit: int = 5
+    ) -> list[str]:
+        """Return matching mailbox URLs from the Envelope Index for diagnostics."""
+        patterns = _mailbox_patterns(account_uuid, mailbox)
+        sql = "SELECT url FROM mailboxes WHERE "
+        if len(patterns) == 1:
+            sql += "url LIKE ?"
+            params: list[Any] = [patterns[0]]
+        else:
+            sql += "(url LIKE ? OR url LIKE ?)"
+            params = [patterns[0], patterns[1]]
+        sql += " ORDER BY url LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            return [str(row["url"]) for row in conn.execute(sql, params)]
 
     def search_messages(self, query: LocalDbSearch) -> list[dict[str, Any]]:
         """Search metadata rows in the Envelope Index.

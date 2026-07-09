@@ -1815,6 +1815,98 @@ class AppleMailConnector:
             )
         )
 
+    def diagnose_mail_access(
+        self, account: str | None = None, mailbox: str = "INBOX"
+    ) -> dict[str, Any]:
+        """Return a read-only diagnostics report for Mail access paths."""
+        local_db = self._local_db.diagnose()
+        local_db["enabled"] = self._local_db_enabled
+        recommendations = [
+            str(item)
+            for item in local_db.get("recommendations", [])
+            if self._local_db_enabled
+            or not str(item).startswith("Set APPLE_MAIL_MCP_LOCAL_DB")
+        ]
+        if not self._local_db_enabled:
+            recommendations.insert(
+                0, "Set APPLE_MAIL_MCP_LOCAL_DB=1 to enable local DB metadata search."
+            )
+
+        report: dict[str, Any] = {
+            "local_db_enabled": self._local_db_enabled,
+            "local_db": local_db,
+            "imap_pool_enabled": self._imap_pool is not None,
+            "search_backend_order": self._diagnostic_backend_order(),
+            "account": None,
+            "mailbox": None,
+            "recommendations": recommendations,
+        }
+
+        if account is None:
+            return report
+
+        account_report: dict[str, Any] = {
+            "input": account,
+            "resolved": False,
+            "uuid": None,
+            "error": None,
+        }
+        report["account"] = account_report
+        try:
+            account_uuid = self._account_uuid_for_local_db(account)
+        except MailAccountNotFoundError as exc:
+            account_report["error"] = str(exc)
+            account_report["error_type"] = "account_not_found"
+            report["recommendations"].append(
+                "Run list_accounts and pass the exact account name or stable account id."
+            )
+            return report
+        except Exception as exc:
+            account_report["error"] = str(exc)
+            account_report["error_type"] = "account_resolution_failed"
+            report["recommendations"].append(
+                "Mail.app account resolution failed; confirm Automation permission "
+                "for the host app."
+            )
+            return report
+
+        account_report["resolved"] = True
+        account_report["uuid"] = account_uuid
+        report["mailbox"] = self._diagnose_mailbox(account_uuid, mailbox)
+        if report["mailbox"].get("local_db_checked") and not report["mailbox"].get(
+            "local_db_matches"
+        ):
+            report["recommendations"].append(
+                "The local DB opened, but this mailbox was not found there; run "
+                "list_mailboxes for the account and use the exact mailbox path."
+            )
+        return report
+
+    def _diagnostic_backend_order(self) -> list[str]:
+        order = ["imap"]
+        if self._local_db_enabled:
+            order.append("local-db")
+        order.append("applescript")
+        return order
+
+    def _diagnose_mailbox(self, account_uuid: str, mailbox: str) -> dict[str, Any]:
+        mailbox_report: dict[str, Any] = {
+            "input": mailbox,
+            "local_db_checked": False,
+            "local_db_matches": None,
+            "local_db_sample_urls": [],
+            "error": None,
+        }
+        try:
+            urls = self._local_db.matching_mailbox_urls(account_uuid, mailbox)
+        except (LocalDbUnavailableError, sqlite3.Error, PermissionError, OSError) as exc:
+            mailbox_report["error"] = str(exc)
+            return mailbox_report
+        mailbox_report["local_db_checked"] = True
+        mailbox_report["local_db_matches"] = len(urls)
+        mailbox_report["local_db_sample_urls"] = urls
+        return mailbox_report
+
     def search_messages(
         self,
         account: str,
@@ -1832,6 +1924,7 @@ class AppleMailConnector:
         body_contains: str | None = None,
         text_contains: str | None = None,
         on_warning: Callable[[str], None] | None = None,
+        on_backend: Callable[[str], None] | None = None,
     ) -> list[dict[str, Any]]:
         """Search for messages matching criteria.
 
@@ -1856,6 +1949,10 @@ class AppleMailConnector:
         call commits to AppleScript and a body/text filter is set,
         ``on_warning`` (if provided) is invoked with a human-readable string
         describing the cost. See #145 / #146.
+
+        ``on_backend`` (if provided) receives one of ``"imap"``,
+        ``"local-db"``, or ``"applescript"`` once a backend successfully
+        answers the query.
         """
         body_search = bool(body_contains or text_contains)
 
@@ -1897,6 +1994,8 @@ class AppleMailConnector:
                 if cutoff_dt is not None:
                     result = _filter_imap_results_to_cutoff(result, cutoff_dt)
                 self._imap_clear_breaker(account)
+                if on_backend is not None:
+                    on_backend("imap")
                 return result
             except _IMAP_FALLBACK_EXCS as exc:
                 self._log_imap_fallback(account, exc)
@@ -1909,7 +2008,7 @@ class AppleMailConnector:
             text_contains=text_contains,
         ):
             try:
-                return self._search_messages_local_db(
+                result = self._search_messages_local_db(
                     account,
                     mailbox,
                     sender_contains,
@@ -1921,6 +2020,9 @@ class AppleMailConnector:
                     cutoff_dt,
                     limit,
                 )
+                if on_backend is not None:
+                    on_backend("local-db")
+                return result
             except LocalDbUnsupportedQueryError:
                 # Defensive: eligibility should keep these out, but fall back
                 # if a future LocalDbConnector gets stricter.
@@ -1942,7 +2044,7 @@ class AppleMailConnector:
 
         start = time.perf_counter()
         try:
-            return self._search_messages_applescript(
+            result = self._search_messages_applescript(
                 account,
                 mailbox,
                 sender_contains,
@@ -1958,6 +2060,9 @@ class AppleMailConnector:
                 text_contains,
                 received_within_hours=received_within_hours,
             )
+            if on_backend is not None:
+                on_backend("applescript")
+            return result
         finally:
             elapsed = time.perf_counter() - start
             if elapsed > _SLOW_SEARCH_THRESHOLD_SEC:
