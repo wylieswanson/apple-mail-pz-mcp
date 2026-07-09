@@ -166,6 +166,12 @@ def _mailbox_patterns(account_uuid: str, mailbox: str) -> list[str]:
     return [raw, encoded]
 
 
+def _mailbox_url_where_clause(patterns: list[str]) -> tuple[str, list[Any]]:
+    if len(patterns) == 1:
+        return "url LIKE ?", [patterns[0]]
+    return "(url LIKE ? OR url LIKE ?)", [patterns[0], patterns[1]]
+
+
 class LocalDbConnector:
     """Read Apple Mail's Envelope Index without touching Mail.app state."""
 
@@ -348,17 +354,20 @@ class LocalDbConnector:
     ) -> list[str]:
         """Return matching mailbox URLs from the Envelope Index for diagnostics."""
         patterns = _mailbox_patterns(account_uuid, mailbox)
-        sql = "SELECT url FROM mailboxes WHERE "
-        if len(patterns) == 1:
-            sql += "url LIKE ?"
-            params: list[Any] = [patterns[0]]
-        else:
-            sql += "(url LIKE ? OR url LIKE ?)"
-            params = [patterns[0], patterns[1]]
+        where_clause, params = _mailbox_url_where_clause(patterns)
+        sql = f"SELECT url FROM mailboxes WHERE {where_clause}"
         sql += " ORDER BY url LIMIT ?"
         params.append(limit)
         with self._connect() as conn:
             return [str(row["url"]) for row in conn.execute(sql, params)]
+
+    def _matching_mailbox_ids(
+        self, conn: sqlite3.Connection, account_uuid: str, mailbox: str
+    ) -> list[int]:
+        patterns = _mailbox_patterns(account_uuid, mailbox)
+        where_clause, params = _mailbox_url_where_clause(patterns)
+        sql = f"SELECT ROWID FROM mailboxes WHERE {where_clause}"
+        return [int(row["ROWID"]) for row in conn.execute(sql, params)]
 
     def search_messages(self, query: LocalDbSearch) -> list[dict[str, Any]]:
         """Search metadata rows in the Envelope Index.
@@ -367,6 +376,20 @@ class LocalDbConnector:
         connector contract. Operational SQLite failures are left as-is so the
         caller can fall back to AppleScript when the local schema differs.
         """
+        with self._connect() as conn:
+            mailbox_ids = self._matching_mailbox_ids(
+                conn, query.account_uuid, query.mailbox
+            )
+            if not mailbox_ids:
+                return []
+            return self._search_messages_in_mailboxes(conn, query, mailbox_ids)
+
+    def _search_messages_in_mailboxes(
+        self,
+        conn: sqlite3.Connection,
+        query: LocalDbSearch,
+        mailbox_ids: list[int],
+    ) -> list[dict[str, Any]]:
         sql = """
             SELECT
                 m.message_id AS id,
@@ -377,23 +400,16 @@ class LocalDbConnector:
                 m.date_received AS date_received,
                 m.read AS read_status,
                 m.flagged AS flagged,
-                mb.url AS mailbox_url
+                m.mailbox AS mailbox_id
             FROM messages m
             LEFT JOIN subjects s ON s.ROWID = m.subject
             LEFT JOIN addresses a ON a.ROWID = m.sender
-            LEFT JOIN mailboxes mb ON mb.ROWID = m.mailbox
             LEFT JOIN message_global_data g ON g.message_id = m.message_id
             WHERE m.deleted = 0
         """
-        params: list[Any] = []
-
-        mailbox_patterns = _mailbox_patterns(query.account_uuid, query.mailbox)
-        if len(mailbox_patterns) == 1:
-            sql += " AND mb.url LIKE ?"
-            params.append(mailbox_patterns[0])
-        else:
-            sql += " AND (mb.url LIKE ? OR mb.url LIKE ?)"
-            params.extend(mailbox_patterns)
+        mailbox_placeholders = ", ".join("?" for _ in mailbox_ids)
+        sql += f" AND m.mailbox IN ({mailbox_placeholders})"
+        params: list[Any] = list(mailbox_ids)
 
         if query.sender_contains:
             pattern = _like_pattern(query.sender_contains)
@@ -432,8 +448,7 @@ class LocalDbConnector:
         sql += " ORDER BY m.date_received DESC LIMIT ?"
         params.append(int(query.limit) if query.limit is not None else _DEFAULT_LIMIT)
 
-        with self._connect() as conn:
-            return [self._row_to_message(row) for row in conn.execute(sql, params)]
+        return [self._row_to_message(row) for row in conn.execute(sql, params)]
 
     @staticmethod
     def _row_to_message(row: sqlite3.Row) -> dict[str, Any]:

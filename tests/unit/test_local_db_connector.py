@@ -216,6 +216,16 @@ def test_search_messages_filters_encoded_mailbox_names(envelope_index: Path) -> 
     assert [row["id"] for row in rows] == ["333"]
 
 
+def test_search_messages_returns_empty_for_unknown_mailbox(envelope_index: Path) -> None:
+    connector = LocalDbConnector(envelope_index)
+
+    rows = connector.search_messages(
+        LocalDbSearch(account_uuid="ACC-1", mailbox="Missing", limit=10)
+    )
+
+    assert rows == []
+
+
 def test_search_messages_rejects_bad_dates(envelope_index: Path) -> None:
     connector = LocalDbConnector(envelope_index)
 
