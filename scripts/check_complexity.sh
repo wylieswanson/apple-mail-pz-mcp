@@ -25,8 +25,21 @@ fi
 echo "Checking cyclomatic complexity (threshold: CC <= $THRESHOLD)..."
 echo ""
 
+# Keep radon's stderr off the pipes below. `uv run` writes advisory warnings
+# there (e.g. "VIRTUAL_ENV does not match the project environment path"), and
+# folding them into stdout with 2>&1 corrupts the JSON that feeds the gate:
+# json.load() dies on the warning text prepended to the object. It only
+# reproduces when VIRTUAL_ENV points at another project, which is why CI
+# never caught it and `make check-all` could not pass locally.
+ERR_LOG=$(mktemp)
+trap 'rm -f "$ERR_LOG"' EXIT
+
 # Get complexity report
-REPORT=$("${RADON[@]}" cc "$SRC_DIR" -n C -s 2>&1) || true
+REPORT=$("${RADON[@]}" cc "$SRC_DIR" -n C -s 2>"$ERR_LOG") || {
+    echo "Error: radon failed to produce a complexity report." >&2
+    cat "$ERR_LOG" >&2
+    exit 1
+}
 
 if [ -z "$REPORT" ]; then
     echo "All functions have complexity <= B (acceptable)."
@@ -42,7 +55,13 @@ echo ""
 # every function in the dangerous range. Until #174, this was -n F (CC
 # ≥ 41), meaning anything from CC 21 to 40 silently passed the
 # `> THRESHOLD` check below.
-FAILURES=$("${RADON[@]}" cc "$SRC_DIR" -n D -j 2>&1 | python3 -c "
+CC_JSON=$("${RADON[@]}" cc "$SRC_DIR" -n D -j 2>"$ERR_LOG") || {
+    echo "Error: radon failed to produce JSON." >&2
+    cat "$ERR_LOG" >&2
+    exit 1
+}
+
+FAILURES=$(printf '%s' "$CC_JSON" | python3 -c "
 import json, sys
 
 THRESHOLD = $THRESHOLD
