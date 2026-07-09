@@ -75,6 +75,11 @@ Issues = "https://github.com/wylieswanson/apple-mail-pz-mcp/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/apple_mail_fast_mcp"]
 
+# Freezes the git commit into _build_info.py so `--version` still knows the
+# provenance after `uv tool install`, where no .git survives. See hatch_build.py.
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

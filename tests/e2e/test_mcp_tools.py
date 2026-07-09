@@ -286,6 +286,36 @@ class TestToolInvocation:
         getattr(mock_mail, connector_method).assert_called_once()
 
 
+class TestVersionIntrospection:
+    """An agent must be able to ask what it is talking to."""
+
+    async def test_server_advertises_version_at_initialize(self) -> None:
+        from apple_mail_fast_mcp import __version__
+
+        assert server.mcp.version == __version__
+
+    async def test_diagnose_reports_version_commit_and_date(
+        self, mock_mail: MagicMock
+    ) -> None:
+        mock_mail.diagnose_mail_access.return_value = {"local_db": {}}
+        result = await server.mcp.call_tool("diagnose_mail_access", {})
+        info = result.structured_content["server"]
+        assert info["version"]
+        assert set(info) >= {
+            "version", "commit", "commit_date", "built_at", "dirty",
+            "source", "read_only",
+        }
+
+    async def test_diagnose_reports_version_even_when_mail_is_broken(
+        self, mock_mail: MagicMock
+    ) -> None:
+        # The version question matters most when everything else is failing.
+        mock_mail.diagnose_mail_access.side_effect = RuntimeError("no Mail.app")
+        result = await server.mcp.call_tool("diagnose_mail_access", {})
+        assert result.structured_content["success"] is False
+        assert result.structured_content["server"]["version"]
+
+
 class TestStringifiedParamCoercion:
     """#309: some MCP hosts (e.g. Cowork) serialize every tool argument as a
     string, so array/dict params arrive as JSON strings. The tool layer

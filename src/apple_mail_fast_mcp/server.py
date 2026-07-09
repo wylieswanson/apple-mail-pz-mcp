@@ -16,6 +16,7 @@ from fastmcp import Context, FastMCP
 from fastmcp.server.elicitation import AcceptedElicitation
 from pydantic import BeforeValidator
 
+from . import __version__
 from .drafts import DraftStateStore, SeedRecord
 from .exceptions import (
     MailAccountNotFoundError,
@@ -60,6 +61,7 @@ from .utils import (
     make_body_safe,
     rank_senders,
 )
+from .version import build_info, version_banner
 
 # Configure logging
 logging.basicConfig(
@@ -92,7 +94,7 @@ def _pre_parse_read_only(argv: list[str] | None = None) -> bool:
 _READ_ONLY = _pre_parse_read_only()
 
 # Create FastMCP server
-mcp = FastMCP("apple-mail")
+mcp = FastMCP("apple-mail", version=__version__)
 
 # Param-coercion aliases for MCP hosts that stringify array/dict arguments
 # (e.g. Cowork — #309; Codex flattens array params to string in the schema it
@@ -778,10 +780,18 @@ def diagnose_mail_access(
         mailbox: Mailbox path to validate when ``account`` is provided.
 
     Returns:
-        Dictionary containing local DB health, search backend order, and
+        Dictionary containing the running server's version/commit/build date
+        (``server``), local DB health, search backend order, and
         recommendations for fixing permissions/configuration problems.
+
+        Use this to answer "what version of the mail server am I talking to?" —
+        ``server`` reports the release, the git commit it was built from, when
+        that commit was made, and whether write tools are registered.
     """
     params = {"account": account, "mailbox": mailbox}
+    # Provenance is reported on both paths on purpose: "what am I running?" is
+    # asked most often precisely when Mail access is broken.
+    server = {**build_info(), "read_only": _READ_ONLY}
     try:
         rate_err = check_rate_limit("diagnose_mail_access", params)
         if rate_err:
@@ -789,11 +799,12 @@ def diagnose_mail_access(
 
         report = mail.diagnose_mail_access(account=account, mailbox=mailbox)
         operation_logger.log_operation("diagnose_mail_access", params, "success")
-        return {"success": True, **report}
+        return {"success": True, "server": server, **report}
     except Exception as e:
         logger.error(f"Error diagnosing Mail access: {e}")
         return {
             "success": False,
+            "server": server,
             "error": str(e),
             "error_type": "unknown",
         }
@@ -3625,6 +3636,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Apple Mail MCP server. With no subcommand, starts the MCP "
             "server (this is what Claude Desktop / mcp clients invoke)."
         ),
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=version_banner(),
+        help="Print version, git commit, and build date, then exit.",
     )
     parser.add_argument(
         "--read-only",

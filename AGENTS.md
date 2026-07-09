@@ -3,7 +3,7 @@
 An MCP server bridging AI agents and Apple Mail via AppleScript on macOS.
 
 **Stack:** Python 3.10+, FastMCP, AppleScript (via `osascript`)
-**Version:** v0.10.2 | **Tests:** 1521 unit / 32 e2e / 62 integration | **Coverage:** 92%
+**Version:** v0.10.2 | **Tests:** 1544 unit / 35 e2e / 62 integration | **Coverage:** 92%
 
 This file is the canonical agent guide. Codex reads it directly; Claude Code
 reaches it via [`.claude/CLAUDE.md`](.claude/CLAUDE.md). Edit it here.
@@ -160,5 +160,16 @@ Claude Code loads these from `.claude/skills/`. Other agents should read the
 - `src/apple_mail_fast_mcp/imap_connector.py` — IMAP fast path (~2400 lines)
 - `src/apple_mail_fast_mcp/security.py` — Input validation, audit logging, confirmation flows
 - `src/apple_mail_fast_mcp/utils.py` — Pure functions: escaping, parsing, validation, host-arg coercion, `env_flag`
+- `src/apple_mail_fast_mcp/version.py` — Version/commit/build-date provenance (`--version`, `serverInfo`, `diagnose_mail_access`)
 - `src/apple_mail_fast_mcp/exceptions.py` — Custom exception hierarchy
+- `hatch_build.py` — Freezes the git commit into `_build_info.py` at wheel-build time
 - `docs/reference/TOOLS.md` — Complete API reference
+
+## Version Provenance
+
+`version.build_info()` resolves in descending order of trust: the build-hook
+generated `_build_info.py`, then live `git` in a source checkout, then
+`unknown`. An installed wheel has no `.git`, which is why `hatch_build.py`
+exists — and why it must `force_include` the generated file, since `_build_info.py`
+is gitignored and hatchling drops VCS-ignored paths from the wheel by default.
+Never let this raise: a version banner must not be able to take the server down.

@@ -174,6 +174,35 @@ Claude Desktop prompts per-tool for permission. If you want to **batch-approve t
 
 The `--read-only` server exposes only the 12 read tools, so Claude Desktop's per-server permission UI naturally groups them. The full server still gates writes individually. Trade-off: 2× connector processes. See [`docs/reference/TOOLS.md`](docs/reference/TOOLS.md) for the per-tool classification and a note on MCP annotation hints (`readOnlyHint` / `destructiveHint` / `idempotentHint`) which forward-compatible hosts may use to provide the same UX without the split.
 
+## What version am I running?
+
+Three ways to ask, depending on who's asking.
+
+From a shell — reports the release, the commit it was built from, when that commit was made, and (for an installed build) when the wheel was built:
+
+```console
+$ apple-mail-pz-mcp --version
+apple-mail-pz-mcp 0.10.2 | commit 0ef7dd33b850 | committed 2026-07-09T14:40:02-07:00 | built 2026-07-09T22:29:46+00:00
+```
+
+From an MCP host — the server reports its version in `serverInfo` at initialize, so hosts that show connector versions will display it without any tool call.
+
+From an agent mid-conversation — `diagnose_mail_access` returns a `server` block:
+
+```json
+{
+  "version": "0.10.2",
+  "commit": "0ef7dd33b850",
+  "commit_date": "2026-07-09T14:40:02-07:00",
+  "built_at": "2026-07-09T22:29:46+00:00",
+  "dirty": false,
+  "source": "build",
+  "read_only": false
+}
+```
+
+`source` tells you how much to trust the commit: `build` means it was frozen into the wheel at build time, `git` means it was read live from a source checkout (and `dirty` says whether that tree had uncommitted changes), and `unknown` means the package was installed from an sdist built outside a repo — in which case the commit is genuinely unrecoverable and the server says so rather than guessing.
+
 ## Permissions
 
 On first run, macOS will prompt for Automation access. Grant permission in:
@@ -355,7 +384,7 @@ This project is a continuation of **[`apple-mail-fast-mcp`](https://github.com/s
 - the AppleScript connector and its hard-won [gotchas](docs/reference/APPLESCRIPT_GOTCHAS.md) — JSON emission via ASObjC, the `|name|:` record-key quirk, `whose`-clause search;
 - the IMAP fast path, connection pooling, and Gmail `X-GM-THRID` thread strategies;
 - the security model — double sanitization, path-traversal-safe name validation, rate limiting, audit logging, and the fail-closed confirmation gate on every destructive tool;
-- the test discipline: 1521 unit, 32 e2e, and 62 integration tests, and the validation scripts that keep the docs honest.
+- the test discipline: 1544 unit, 35 e2e, and 62 integration tests, and the validation scripts that keep the docs honest.
 
 That project itself succeeded `apple-mail-mcp`; the lineage is preserved in the [CHANGELOG](CHANGELOG.md) and in the Keychain read-through fallbacks, which still resolve credentials written under both earlier names.
 
