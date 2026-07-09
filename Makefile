@@ -1,4 +1,4 @@
-.PHONY: help install dev test test-unit test-integration test-e2e test-verbose lint format typecheck complexity audit check-all coverage clean eval-descriptions eval-tools
+.PHONY: help install dev test test-unit test-integration test-e2e test-verbose lint format typecheck complexity audit check-all coverage clean eval-descriptions eval-tools schema-budget
 
 help:
 	@echo "Available targets:"
@@ -13,6 +13,7 @@ help:
 	@echo "  make format           - Run ruff formatter"
 	@echo "  make typecheck        - Run mypy type checker"
 	@echo "  make complexity       - Check cyclomatic complexity"
+	@echo "  make schema-budget    - Report the tools/list token cost per request"
 	@echo "  make audit            - Run all audit scripts"
 	@echo "  make check-all        - Run all checks"
 	@echo "  make coverage         - Run tests with coverage report"
@@ -66,10 +67,14 @@ audit:
 coverage:
 	uv run pytest tests/ -m "not integration and not e2e and not benchmark" --cov=apple_mail_fast_mcp --cov-report=term-missing -q
 
+schema-budget:
+	@uv run python scripts/schema_budget.py
+
 check-all: lint typecheck test complexity
 	@./scripts/check_version_sync.sh
 	@./scripts/check_client_server_parity.sh
 	@./scripts/check_docs.sh
+	@uv run python scripts/schema_budget.py --check
 	@echo ""
 	@echo "All checks passed."
 
