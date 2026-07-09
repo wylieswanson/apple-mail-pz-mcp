@@ -428,7 +428,7 @@ class TestGetAttachmentContent:
         assert result["mime_type"] == "text/plain"
         assert result["payload"] == payload
         mock_imap.fetch_attachment_payload.assert_called_once_with(
-            "<m@x>", 0, mailbox="INBOX",
+            "<m@x>", 0, mailbox="INBOX", offset=0, max_bytes=None,
         )
         mock_imap.fetch_raw_message.assert_not_called()
 
@@ -440,7 +440,11 @@ class TestGetAttachmentContent:
             "name": "notes.txt",
             "mime_type": "text/plain",
             "size": len(payload),
-            "payload": payload,
+            "payload": b"from",
+            "content_offset": 6,
+            "content_bytes_returned": 4,
+            "content_truncated": True,
+            "next_offset": 10,
         }
         with contextlib.ExitStack() as stack:
             for p in self._imap_patches(connector, mock_imap):
@@ -459,6 +463,9 @@ class TestGetAttachmentContent:
         assert result["content_bytes_returned"] == 4
         assert result["content_truncated"] is True
         assert result["next_offset"] == 10
+        mock_imap.fetch_attachment_payload.assert_called_once_with(
+            "<m@x>", 0, mailbox="INBOX", offset=6, max_bytes=4,
+        )
 
     def test_imap_path_binary_attachment(self, connector, tmp_path):
         import contextlib

@@ -705,6 +705,102 @@ def _decode_transfer_payload(payload: bytes, encoding: str) -> bytes:
     return payload
 
 
+def _validate_payload_range(offset: int, max_bytes: int | None) -> None:
+    if offset < 0:
+        raise ValueError("offset must be greater than or equal to 0")
+    if max_bytes is not None and max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer when provided")
+
+
+def _range_end(
+    total_size: int, *, offset: int, max_bytes: int | None
+) -> int:
+    if offset > total_size:
+        raise ValueError(f"offset {offset} is beyond attachment size {total_size}")
+    if max_bytes is None:
+        return total_size
+    return min(total_size, offset + max_bytes)
+
+
+def _slice_decoded_payload(
+    payload: bytes,
+    *,
+    offset: int,
+    max_bytes: int | None,
+) -> tuple[bytes, bool, int | None]:
+    total_size = len(payload)
+    end = _range_end(total_size, offset=offset, max_bytes=max_bytes)
+    sliced = payload[offset:end]
+    truncated = offset != 0 or end < total_size
+    next_offset = end if end < total_size else None
+    return sliced, truncated, next_offset
+
+
+def _section_fetch_key(
+    section: str,
+    *,
+    transfer_start: int | None = None,
+    transfer_count: int | None = None,
+) -> bytes:
+    key = f"BODY.PEEK[{section}]"
+    if transfer_start is not None and transfer_count is not None:
+        key += f"<{transfer_start}.{transfer_count}>"
+    return key.encode("ascii")
+
+
+def _base64_transfer_offset(char_offset: int, base64_chars: int, encoded_size: int) -> int:
+    """Map a base64 character offset to a MIME transfer-body octet offset.
+
+    BODYSTRUCTURE exposes the transfer-encoded byte count. Apple Mail and
+    common IMAP servers wrap MIME base64 at 76 chars with CRLF. For unwrapped
+    bodies, or tiny one-line bodies with only a trailing CRLF, this collapses
+    to the character offset.
+    """
+    if encoded_size == base64_chars:
+        return char_offset
+    return char_offset + 2 * (char_offset // 76)
+
+
+def _base64_transfer_window(
+    *,
+    decoded_offset: int,
+    decoded_count: int,
+    encoded_size: int,
+) -> tuple[int, int, int]:
+    """Return ``(transfer_start, transfer_count, decoded_skip)`` for base64.
+
+    The server can only slice transfer bytes. Align to a base64 quantum before
+    the requested decoded offset, decode that small window, then discard
+    ``decoded_skip`` bytes locally.
+    """
+    base64_chars = _base64_body_octets(encoded_size)
+    start_group = decoded_offset // 3
+    decoded_anchor = start_group * 3
+    char_start = start_group * 4
+    decoded_skip = decoded_offset - decoded_anchor
+    decoded_needed = decoded_skip + decoded_count
+    chars_needed = ((decoded_needed + 2) // 3) * 4
+    char_end = min(base64_chars, char_start + chars_needed)
+
+    transfer_start = _base64_transfer_offset(char_start, base64_chars, encoded_size)
+    transfer_end = _base64_transfer_offset(char_end, base64_chars, encoded_size)
+    transfer_count = max(0, min(encoded_size, transfer_end) - transfer_start)
+    return transfer_start, transfer_count, decoded_skip
+
+
+def _base64_decoded_size_from_tail(
+    tail_payload: bytes,
+    *,
+    base64_chars: int,
+    fallback: int,
+) -> int:
+    cleaned = re.sub(rb"\s+", b"", tail_payload)
+    if not cleaned or base64_chars <= 0:
+        return fallback
+    padding = 2 if cleaned.endswith(b"==") else 1 if cleaned.endswith(b"=") else 0
+    return max(0, (base64_chars // 4) * 3 - padding)
+
+
 def _body_fetch_value(entry: dict[bytes, Any]) -> bytes | None:
     """Return the first BODY[...] value from a FETCH response entry."""
     for key, value in entry.items():
@@ -1128,14 +1224,20 @@ class ImapConnector:
         message_id: str,
         attachment_index: int,
         mailbox: str = "INBOX",
+        *,
+        offset: int = 0,
+        max_bytes: int | None = None,
     ) -> dict[str, Any]:
         """Fetch and decode one attachment MIME part by BODYSTRUCTURE index.
 
         This avoids fetching the full RFC 822 message for
         ``get_attachment_content``. The attachment ordering and membership
         match ``get_attachments`` because both use the same BODYSTRUCTURE
-        walker.
+        walker. When ``offset`` / ``max_bytes`` are supplied, base64 and
+        raw-transfer parts use IMAP partial fetches so previews do not
+        download the whole attachment body.
         """
+        _validate_payload_range(offset, max_bytes)
         bracketed = _bracket_message_id(message_id)
         _reject_control_chars(mailbox, "mailbox")
         with self._session() as client:
@@ -1161,25 +1263,117 @@ class ImapConnector:
 
             info = infos[attachment_index]
             section = str(info["section"])
-            section_key = f"BODY.PEEK[{section}]".encode("ascii")
-            part_fetched = client.fetch([uid], [section_key])
-            part_entry = part_fetched.get(uid) or {}
-            encoded_payload = _body_fetch_value(part_entry)
-            if encoded_payload is None:
-                raise MailMessageNotFoundError(
-                    f"Attachment {attachment_index} of Message-ID "
-                    f"{message_id!r} in {mailbox!r} returned an empty body "
-                    f"on {self._host}."
+            encoding = str(info.get("encoding") or "")
+            encoded_size = int(info.get("encoded_size") or 0)
+            size_hint = int(info.get("size") or 0)
+
+            def fetch_encoded(fetch_key: bytes) -> bytes:
+                part_fetched = client.fetch([uid], [fetch_key])
+                part_entry = part_fetched.get(uid) or {}
+                encoded_payload = _body_fetch_value(part_entry)
+                if encoded_payload is None:
+                    raise MailMessageNotFoundError(
+                        f"Attachment {attachment_index} of Message-ID "
+                        f"{message_id!r} in {mailbox!r} returned an empty "
+                        f"body on {self._host}."
+                    )
+                return encoded_payload
+
+            def fetch_full_decoded() -> tuple[bytes, int]:
+                payload = _decode_transfer_payload(
+                    fetch_encoded(_section_fetch_key(section)),
+                    encoding,
                 )
-            payload = _decode_transfer_payload(
-                encoded_payload,
-                str(info.get("encoding") or ""),
-            )
+                return payload, len(payload)
+
+            enc = encoding.strip().lower()
+            requested_range = offset != 0 or max_bytes is not None
+            payload: bytes
+            total_size: int
+            if requested_range and enc == "base64" and encoded_size > 0:
+                base64_chars = _base64_body_octets(encoded_size)
+                tail_count = min(encoded_size, 96)
+                tail_start = max(0, encoded_size - tail_count)
+                tail_payload = fetch_encoded(
+                    _section_fetch_key(
+                        section,
+                        transfer_start=tail_start,
+                        transfer_count=tail_count,
+                    )
+                )
+                total_size = _base64_decoded_size_from_tail(
+                    tail_payload,
+                    base64_chars=base64_chars,
+                    fallback=size_hint,
+                )
+                end = _range_end(total_size, offset=offset, max_bytes=max_bytes)
+                wanted = end - offset
+                if wanted == 0:
+                    payload = b""
+                else:
+                    transfer_start, transfer_count, decoded_skip = (
+                        _base64_transfer_window(
+                            decoded_offset=offset,
+                            decoded_count=wanted,
+                            encoded_size=encoded_size,
+                        )
+                    )
+                    encoded_payload = fetch_encoded(
+                        _section_fetch_key(
+                            section,
+                            transfer_start=transfer_start,
+                            transfer_count=transfer_count,
+                        )
+                    )
+                    decoded = _decode_transfer_payload(encoded_payload, encoding)
+                    payload = decoded[decoded_skip : decoded_skip + wanted]
+                    if len(payload) < wanted:
+                        full_payload, total_size = fetch_full_decoded()
+                        end = _range_end(
+                            total_size, offset=offset, max_bytes=max_bytes
+                        )
+                        payload = full_payload[offset:end]
+            elif (
+                requested_range
+                and enc in {"", "7bit", "8bit", "binary"}
+                and size_hint > 0
+            ):
+                total_size = size_hint
+                end = _range_end(total_size, offset=offset, max_bytes=max_bytes)
+                wanted = end - offset
+                if wanted == 0:
+                    payload = b""
+                else:
+                    payload = _decode_transfer_payload(
+                        fetch_encoded(
+                            _section_fetch_key(
+                                section,
+                                transfer_start=offset,
+                                transfer_count=wanted,
+                            )
+                        ),
+                        encoding,
+                    )
+            else:
+                full_payload, total_size = fetch_full_decoded()
+                payload, _truncated, _next_offset = _slice_decoded_payload(
+                    full_payload,
+                    offset=offset,
+                    max_bytes=max_bytes,
+                )
+
+            returned_end = offset + len(payload)
+            truncated = offset != 0 or returned_end < total_size
+            next_offset = returned_end if returned_end < total_size else None
             return {
                 "name": info["name"] or "attachment",
                 "mime_type": info["mime_type"],
-                "size": len(payload),
+                "size": total_size,
                 "payload": payload,
+                "content_offset": offset,
+                "content_bytes_returned": len(payload),
+                "content_truncated": truncated,
+                "next_offset": next_offset,
             }
 
     def get_attachments(

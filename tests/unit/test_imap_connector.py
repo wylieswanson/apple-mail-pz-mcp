@@ -1,5 +1,6 @@
 """Tests for ImapConnector."""
 
+import base64
 from datetime import datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -1459,9 +1460,100 @@ class TestGetAttachments:
             "mime_type": "application/pdf",
             "size": 11,
             "payload": b"hello world",
+            "content_offset": 0,
+            "content_bytes_returned": 11,
+            "content_truncated": False,
+            "next_offset": None,
         }
         assert client.fetch.call_args_list[0][0] == ([42], [b"BODYSTRUCTURE"])
         assert client.fetch.call_args_list[1][0] == ([42], [b"BODY.PEEK[2]"])
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_fetch_attachment_payload_base64_range_uses_partial_fetch(
+        self, mock_cls: MagicMock
+    ) -> None:
+        raw = b"0123456789" * 9
+        encoded = base64.b64encode(raw)
+        transfer = encoded[:76] + b"\r\n" + encoded[76:]
+        attachment = (
+            b"application", b"octet-stream",
+            (b"name", b"blob.bin"),
+            None, None, b"base64", len(transfer),
+            (b"attachment", (b"filename", b"blob.bin")),
+        )
+        bs = (_BS_PLAIN_TEXT, attachment, b"mixed")
+        client = self._setup_client(mock_cls, bodystructure=bs)
+        client.fetch.side_effect = [
+            {42: {b"BODYSTRUCTURE": bs}},
+            {42: {b"BODY[2]<26>": transfer[26:]}},
+            {42: {b"BODY[2]<8>": transfer[8:16]}},
+        ]
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").fetch_attachment_payload(
+            "abc@x",
+            0,
+            mailbox="INBOX",
+            offset=6,
+            max_bytes=5,
+        )
+
+        assert result == {
+            "name": "blob.bin",
+            "mime_type": "application/octet-stream",
+            "size": len(raw),
+            "payload": b"67890",
+            "content_offset": 6,
+            "content_bytes_returned": 5,
+            "content_truncated": True,
+            "next_offset": 11,
+        }
+        assert client.fetch.call_args_list[0][0] == ([42], [b"BODYSTRUCTURE"])
+        assert client.fetch.call_args_list[1][0] == (
+            [42], [b"BODY.PEEK[2]<26.96>"],
+        )
+        assert client.fetch.call_args_list[2][0] == (
+            [42], [b"BODY.PEEK[2]<8.8>"],
+        )
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_fetch_attachment_payload_raw_range_uses_partial_fetch(
+        self, mock_cls: MagicMock
+    ) -> None:
+        payload = b"hello world"
+        attachment = (
+            b"text", b"plain",
+            (b"name", b"notes.txt"),
+            None, None, b"7bit", len(payload), 1,
+            (b"attachment", (b"filename", b"notes.txt")),
+        )
+        bs = (_BS_PLAIN_TEXT, attachment, b"mixed")
+        client = self._setup_client(mock_cls, bodystructure=bs)
+        client.fetch.side_effect = [
+            {42: {b"BODYSTRUCTURE": bs}},
+            {42: {b"BODY[2]<6>": b"world"}},
+        ]
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").fetch_attachment_payload(
+            "abc@x",
+            0,
+            mailbox="INBOX",
+            offset=6,
+            max_bytes=5,
+        )
+
+        assert result == {
+            "name": "notes.txt",
+            "mime_type": "text/plain",
+            "size": len(payload),
+            "payload": b"world",
+            "content_offset": 6,
+            "content_bytes_returned": 5,
+            "content_truncated": True,
+            "next_offset": None,
+        }
+        assert client.fetch.call_args_list[1][0] == (
+            [42], [b"BODY.PEEK[2]<6.5>"],
+        )
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_fetch_attachment_payload_index_out_of_range(

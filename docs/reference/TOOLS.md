@@ -733,7 +733,7 @@ Read **one** attachment's content inline, without writing it to disk — for "tr
 - **Encoding:** text-like types (`text/*`, `application/json`, `application/xml`, and `+json`/`+xml` suffixes) are returned as a UTF-8 string with `encoding: "text"`. Everything else — and any text type whose bytes aren't valid UTF-8 — is base64 with `encoding: "base64"`.
 - **Size:** `size` is the full decoded byte count of the fetched attachment. It may differ by a byte or two from IMAP metadata rows when BODYSTRUCTURE only exposed a transfer-encoded size; those rows also include exact `encoded_size`.
 - **Ranges:** pass `max_bytes` to bound the returned decoded byte count, and pass `offset` with the previous `next_offset` to continue reading. `content_truncated: true` means the response is a slice, not the whole attachment. `size` remains the full decoded attachment size.
-- **No disk:** the IMAP path fetches and decodes only the selected MIME part in memory; the AppleScript fallback saves to a private temp dir, reads, and deletes it (no caller-managed file).
+- **No disk:** the IMAP path fetches and decodes only the selected MIME part in memory; bounded reads of base64/plain parts use IMAP partial fetches so large previews avoid downloading the whole part. The AppleScript fallback saves to a private temp dir, reads, and deletes it (no caller-managed file).
 
 **Size limit:** full inline reads over ~25 MB are rejected (`error_type: "attachment_too_large"`) — use `max_bytes` for previews or `save_attachments` for large/binary files. Base64 can still be bulky for medium attachments in chat clients. Override with `APPLE_MAIL_MCP_MAX_INLINE_ATTACHMENT_BYTES`.
 

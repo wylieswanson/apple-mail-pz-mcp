@@ -2707,24 +2707,21 @@ class AppleMailConnector:
             message_id,
             attachment_index,
             mailbox=mailbox,
-        )
-        filename = str(result["name"])
-        payload = bytes(result["payload"])
-        payload_slice, truncated, next_offset = _attachment_range(
-            payload,
             offset=offset,
             max_bytes=max_bytes,
         )
-        self._enforce_inline_cap(len(payload_slice), filename)
+        filename = str(result["name"])
+        payload = bytes(result["payload"])
+        self._enforce_inline_cap(len(payload), filename)
         return {
             "name": filename,
             "mime_type": result["mime_type"],
             "size": result["size"],
-            "payload": payload_slice,
-            "content_offset": offset,
-            "content_bytes_returned": len(payload_slice),
-            "content_truncated": truncated,
-            "next_offset": next_offset,
+            "payload": payload,
+            "content_offset": result.get("content_offset", offset),
+            "content_bytes_returned": result.get("content_bytes_returned", len(payload)),
+            "content_truncated": result.get("content_truncated", False),
+            "next_offset": result.get("next_offset"),
         }
 
     def _get_attachment_content_applescript(
