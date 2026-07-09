@@ -97,7 +97,7 @@ Search for messages matching specified criteria.
 - For thread retrieval, call `get_thread(message_id)` to expand an anchor into thread member ids; pipe those ids into `source=[ids]` for filtered metadata.
 - Omitting both `account` and `source` returns `error_type: validation_error`.
 - `include_attachments` defaults to **false** for `search_messages` (unlike `get_messages` which defaults to true). Reason: search results can span 50+ rows, and the AppleScript fallback path enumerates attachments per row — measured 1s for 50 messages but 97s for 100 cold-cache messages on a 47k-message Gmail INBOX (#142). To get attachment metadata for a small known set, prefer the two-step: `search_messages(...)` to get ids → `get_messages([those_ids])` (default-on attachments, bounded cardinality).
-- Responses include `search_backend`, one of `imap`, `local-db`, `applescript`, `source`, or `unknown`. Use it to confirm whether the fast path actually handled the request.
+- Responses include `search_backend`, one of `imap`, `local-db`, `applescript`, `source`, or `unknown`, plus `search_elapsed_ms` for the user-visible elapsed time in milliseconds. Use them together to confirm whether the fast path actually handled the request and how long it took.
 
 **Performance note for `body_contains` / `text_contains`:**
 
@@ -122,6 +122,8 @@ When the call commits to the AppleScript path **and** a body/text filter is set,
   "success": true,
   "messages": [...],
   "count": 17,
+  "search_backend": "applescript",
+  "search_elapsed_ms": 148203.7,
   "warnings": [
     "AppleScript body search can take minutes on large mailboxes (measured 148s for 100 cold-cache messages on a 47k-message Gmail INBOX). Run `apple-mail-fast-mcp setup-imap --account 'Gmail'` for sub-second IMAP body search."
   ]
@@ -136,6 +138,7 @@ When the call commits to the AppleScript path **and** a body/text filter is set,
   "account": "Gmail",
   "mailbox": "INBOX",
   "search_backend": "local-db",
+  "search_elapsed_ms": 3.4,
   "messages": [
     {
       "id": "12345",

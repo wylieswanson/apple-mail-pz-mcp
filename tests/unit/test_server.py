@@ -1435,6 +1435,21 @@ class TestSearchMessages:
         assert result["success"] is True
         assert result["search_backend"] == "local-db"
 
+    def test_search_elapsed_ms_for_account_search(
+        self, mock_mail: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ticks = iter([10.0, 10.1234])
+        monkeypatch.setattr(
+            "apple_mail_fast_mcp.server.time.perf_counter",
+            lambda: next(ticks),
+        )
+        mock_mail.search_messages.return_value = []
+
+        result = search_messages("Gmail")
+
+        assert result["success"] is True
+        assert result["search_elapsed_ms"] == 123.4
+
     def test_source_search_reports_source_backend(self, mock_mail: MagicMock) -> None:
         mock_mail.get_message.return_value = {
             "id": "1",
@@ -1449,6 +1464,28 @@ class TestSearchMessages:
 
         assert result["success"] is True
         assert result["search_backend"] == "source"
+
+    def test_search_elapsed_ms_for_source_search(
+        self, mock_mail: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ticks = iter([1.0, 1.0023])
+        monkeypatch.setattr(
+            "apple_mail_fast_mcp.server.time.perf_counter",
+            lambda: next(ticks),
+        )
+        mock_mail.get_message.return_value = {
+            "id": "1",
+            "subject": "x",
+            "sender": "a@example.com",
+            "date_received": "2026-04-01",
+            "read_status": True,
+            "flagged": False,
+        }
+
+        result = search_messages(source=["1"])
+
+        assert result["success"] is True
+        assert result["search_elapsed_ms"] == 2.3
 
 
 # ---------------------------------------------------------------------------

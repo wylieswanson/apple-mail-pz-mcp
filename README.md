@@ -157,7 +157,8 @@ to Mail's store.
 Run `diagnose_mail_access(account="iCloud", mailbox="INBOX")` from your MCP
 client to see whether the running process can read Mail's store and which
 search backends are configured. `search_messages` responses also include a
-`search_backend` field (`imap`, `local-db`, `applescript`, or `source`).
+`search_backend` field (`imap`, `local-db`, `applescript`, or `source`) and
+`search_elapsed_ms`.
 
 ## Optional: faster search via IMAP
 

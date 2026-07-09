@@ -7,6 +7,7 @@ import atexit
 import logging
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, TypeVar, cast
@@ -1076,6 +1077,9 @@ def search_messages(
         Dictionary containing matching messages. Each message row includes
         id, subject, sender, date_received, read_status, flagged. Rows
         are metadata-only — call ``get_messages([ids])`` for bodies.
+        The top-level response includes ``search_backend`` and
+        ``search_elapsed_ms`` so clients can tell which path ran and how
+        long the visible search took.
 
         When a body IS present (``source`` + ``body_contains``/``text_contains``),
         a row may carry a ``prompt_injection`` warning — see ``get_messages``;
@@ -1091,6 +1095,7 @@ def search_messages(
     """
     try:
         warnings: list[str] = []
+        search_started = time.perf_counter()
 
         if source is not None:
             # body/text filters need bodies on the resolved messages so the
@@ -1142,6 +1147,9 @@ def search_messages(
                 "messages": filtered,
                 "count": len(filtered),
                 "search_backend": "source",
+                "search_elapsed_ms": round(
+                    (time.perf_counter() - search_started) * 1000, 1
+                ),
             }
             if warnings:
                 response["warnings"] = warnings
@@ -1221,6 +1229,9 @@ def search_messages(
             "messages": _annotate_injection(messages),
             "count": len(messages),
             "search_backend": search_backend,
+            "search_elapsed_ms": round(
+                (time.perf_counter() - search_started) * 1000, 1
+            ),
         }
         if warnings:
             response["warnings"] = warnings
