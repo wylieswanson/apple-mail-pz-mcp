@@ -1,4 +1,4 @@
-.PHONY: help install dev test test-unit test-integration test-e2e test-verbose lint format typecheck complexity audit check-all coverage clean eval-descriptions eval-tools eval-tasks schema-budget
+.PHONY: help install dev test test-unit test-integration test-e2e test-verbose lint format typecheck complexity audit check-all coverage clean eval-descriptions eval-tools eval-tasks schema-budget check-bundle
 
 help:
 	@echo "Available targets:"
@@ -14,6 +14,7 @@ help:
 	@echo "  make typecheck        - Run mypy type checker"
 	@echo "  make complexity       - Check cyclomatic complexity"
 	@echo "  make schema-budget    - Report the tools/list token cost per request"
+	@echo "  make check-bundle     - Build + smoke-test the .mcpb bundle"
 	@echo "  make eval-tasks       - Multi-turn cost eval: round-trips per completed task"
 	@echo "  make audit            - Run all audit scripts"
 	@echo "  make check-all        - Run all checks"
@@ -71,10 +72,21 @@ coverage:
 schema-budget:
 	@uv run python scripts/schema_budget.py
 
-check-all: lint typecheck test complexity
+# Build the .mcpb and smoke-test it by launching it as the host does. Not part
+# of check-all (needs node + network); CI runs it on every PR.
+check-bundle:
+	@./scripts/build-mcpb.sh
+
+# Keep this list identical to .github/workflows/test.yml's unit-tests job.
+# Three divergent definitions of "validated" (here, CI, and the release skill)
+# are how check_readme_claims.sh sat un-run for months while silently skipping
+# its own assertions.
+check-all: lint typecheck test test-e2e complexity
 	@./scripts/check_version_sync.sh
 	@./scripts/check_client_server_parity.sh
 	@./scripts/check_docs.sh
+	@./scripts/check_readme_claims.sh
+	@./scripts/check_applescript_safety.sh
 	@uv run python scripts/schema_budget.py --check
 	@echo ""
 	@echo "All checks passed."
