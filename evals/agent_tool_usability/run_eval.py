@@ -64,7 +64,14 @@ TOOL_NAMES = [
 
 KEYCHAIN_SERVICE = "apple-mail-pz-mcp-evals"
 # Read-through fallback for keys stored before the #335/#337 rebrand. Drop at 1.0.0.
-_LEGACY_KEYCHAIN_SERVICE = "apple-mail-mcp-evals"
+# Read-through fallback. A Keychain service name identifies a *stored secret*,
+# not the distribution, so it must never be renamed without keeping the old
+# names readable — otherwise every existing key silently disappears. Ordered
+# newest first; each rename appends to the front.
+_LEGACY_KEYCHAIN_SERVICES = (
+    "apple-mail-fast-mcp-evals",  # v0.10.x, before the PingZero rename
+    "apple-mail-mcp-evals",       # pre-#335
+)
 KEYCHAIN_ACCOUNT = "openrouter"
 
 
@@ -88,7 +95,8 @@ def get_api_key() -> str:
     Lookup order:
         1. OPENROUTER_API_KEY environment variable
         2. macOS Keychain (service: apple-mail-pz-mcp-evals, account: openrouter;
-           falls back to the old apple-mail-mcp-evals service — #337)
+           falls back through the pre-rename service names, newest first, so a
+           key stored under an older name keeps working)
         3. .env file at project root (deprecated — prints warning)
 
     To store your key in Keychain:
@@ -99,10 +107,11 @@ def get_api_key() -> str:
     if api_key:
         return api_key
 
-    # 2. macOS Keychain — prefer the new service, fall back to the legacy one.
-    api_key = _keychain_lookup(KEYCHAIN_SERVICE) or _keychain_lookup(_LEGACY_KEYCHAIN_SERVICE)
-    if api_key:
-        return api_key
+    # 2. macOS Keychain — prefer the current service, fall back through renames.
+    for service in (KEYCHAIN_SERVICE, *_LEGACY_KEYCHAIN_SERVICES):
+        api_key = _keychain_lookup(service)
+        if api_key:
+            return api_key
 
     # 3. .env file (deprecated fallback)
     env_path = SCRIPT_DIR.parent.parent / ".env"

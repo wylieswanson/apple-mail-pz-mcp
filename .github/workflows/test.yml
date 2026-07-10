@@ -44,14 +44,58 @@ jobs:
       - name: Docs drift check
         run: ./scripts/check_docs.sh
 
+      - name: README claims check
+        run: ./scripts/check_readme_claims.sh
+
+      - name: AppleScript safety check
+        run: ./scripts/check_applescript_safety.sh
+
+      # The tools/list payload is billed to every request. Ratchet it here, not
+      # only in a developer's `make check-all`.
+      - name: Schema budget ratchet
+        run: uv run python scripts/schema_budget.py --check
+
+      # Mocked; no AppleScript runs. Seconds, and the only gate that exercises
+      # MCP dispatch end to end.
+      - name: E2E tests (mocked)
+        run: uv run pytest tests/e2e/ -q
+        env:
+          MAIL_TEST_MODE: "false"
+        timeout-minutes: 5
+
+  # The packaging path had no coverage until a tag was pushed — which is how a
+  # .mcpb that installed cleanly and then failed to launch reached v0.11.0.
+  # build-mcpb.sh smoke-tests the staged bundle by running it exactly as the
+  # host does, so build it on every PR.
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # provenance freeze needs real history
+
+      - uses: actions/setup-node@v4
+
+      - uses: astral-sh/setup-uv@v7
+
+      - run: uv python install 3.10
+
+      - name: Build and smoke-test the .mcpb bundle
+        run: ./scripts/build-mcpb.sh
+        timeout-minutes: 10
+
   test-summary:
     runs-on: ubuntu-latest
-    needs: [unit-tests]
+    needs: [unit-tests, bundle]
     if: always()
     steps:
       - name: Check test results
         run: |
           if [ "${{ needs.unit-tests.result }}" != "success" ]; then
             echo "Unit tests failed"
+            exit 1
+          fi
+          if [ "${{ needs.bundle.result }}" != "success" ]; then
+            echo "Bundle build/smoke test failed"
             exit 1
           fi

@@ -54,6 +54,10 @@ dev = [
     "pip-audit>=2.7.0",
     "ruff>=0.15.15",
     "mypy>=1.20.2",
+    # Build backend, needed to import hatch_build.py in tests. The hook's
+    # finalize() once deleted provenance it never wrote, shipping bundles that
+    # reported "commit unknown"; it is now covered.
+    "hatchling>=1.25",
 ]
 
 [project.scripts]
