@@ -74,7 +74,7 @@ jobs:
         with:
           fetch-depth: 0  # provenance freeze needs real history
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
 
       - uses: astral-sh/setup-uv@v7
 
