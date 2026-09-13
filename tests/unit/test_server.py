@@ -10,7 +10,11 @@ operation_logger calls.
 
 from __future__ import annotations
 
+import ast
+import asyncio
 import json
+import threading
+from pathlib import Path
 from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -27,10 +31,13 @@ from apple_mail_fast_mcp.exceptions import (
     MailMessageNotFoundError,
 )
 from apple_mail_fast_mcp.server import (
+    DEFAULT_ELICITATION_TIMEOUT_S,
     _elicit_confirmation,
+    _elicitation_timeout_s,
     _warn_if_local_db_unavailable,
     create_mailbox,
     create_rule,
+    delete_mailbox,
     delete_messages,
     delete_rule,
     delete_template,
@@ -99,6 +106,19 @@ def mock_ctx_raise() -> MagicMock:
     doesn't implement the elicitation capability — #226)."""
     ctx = MagicMock()
     ctx.elicit = AsyncMock(side_effect=RuntimeError("not supported"))
+    return ctx
+
+
+@pytest.fixture
+def mock_ctx_hang() -> MagicMock:
+    """Mock MCP Context whose elicit() never returns — a host that accepts
+    the elicitation request and then never answers it (Claude Code in print
+    mode, or nobody at the prompt)."""
+    async def _never(*args: Any, **kwargs: Any) -> None:
+        await asyncio.Event().wait()
+
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock(side_effect=_never)
     return ctx
 
 
@@ -231,6 +251,220 @@ class TestElicitConfirmationFailsClosed:
         assert calls == [
             ("delete_rule", {"rule_index": 1}, "confirmation_unavailable")
         ]
+
+
+# ---------------------------------------------------------------------------
+# Elicitation timeout
+#
+# A host can accept an elicitation request and never answer it — Claude Code
+# in print mode logs "Elicitation request received in print mode" and replies
+# with nothing. With no bound, the gated tool awaited forever: a 3-message
+# delete_messages sat until the host cancelled it ~15 min later, and a
+# delete_mailbox hung 70 min until the server was killed. The bound must still
+# fail closed: a timeout is "nobody confirmed", never "go ahead".
+# ---------------------------------------------------------------------------
+
+
+class TestElicitConfirmationTimeout:
+    async def test_returns_confirmation_timeout_when_host_never_answers(
+        self, mock_ctx_hang: MagicMock, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S", "0.05")
+        # The outer bound keeps a regression from hanging the suite.
+        result = await asyncio.wait_for(
+            _elicit_confirmation(
+                ctx=mock_ctx_hang, summary="Do X?",
+                operation="op", params={"k": "v"},
+            ),
+            timeout=5,
+        )
+        assert result is not None
+        assert result["success"] is False
+        assert result["error_type"] == "confirmation_timeout"
+        # The operator's knob is named in the error, so it is discoverable.
+        assert "APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S" in result["error"]
+
+    async def test_logs_timeout_to_audit_trail(
+        self, mock_ctx_hang: MagicMock, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A distinct status, so the audit trail tells "nobody answered"
+        apart from "declined" and "host can't elicit"."""
+        from apple_mail_fast_mcp import server as server_mod
+        monkeypatch.setenv("APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S", "0.05")
+        calls: list[tuple[str, dict[str, Any], str]] = []
+        monkeypatch.setattr(
+            server_mod.operation_logger, "log_operation",
+            lambda op, params, status: calls.append((op, params, status)),
+        )
+        await asyncio.wait_for(
+            _elicit_confirmation(
+                ctx=mock_ctx_hang, summary="Do X?",
+                operation="delete_mailbox", params={"name": "Spam"},
+            ),
+            timeout=5,
+        )
+        assert calls == [
+            ("delete_mailbox", {"name": "Spam"}, "confirmation_timeout")
+        ]
+
+    async def test_gated_tool_does_not_run_after_timeout(
+        self, mock_mail: MagicMock, mock_ctx_hang: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S", "0.05")
+        result = await asyncio.wait_for(
+            delete_messages(
+                ["1", "2", "3"], account="Gmail", source_mailbox="INBOX",
+                ctx=mock_ctx_hang,
+            ),
+            timeout=5,
+        )
+        assert result["error_type"] == "confirmation_timeout"
+        mock_mail.delete_messages.assert_not_called()
+
+    def test_default_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S", raising=False)
+        assert _elicitation_timeout_s() == DEFAULT_ELICITATION_TIMEOUT_S
+
+    def test_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S", "600")
+        assert _elicitation_timeout_s() == 600.0
+
+    @pytest.mark.parametrize("raw", ["soon", "0", "-5", "nan", "inf"])
+    def test_invalid_override_falls_back_to_default(
+        self, raw: str, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S", raw)
+        assert _elicitation_timeout_s() == DEFAULT_ELICITATION_TIMEOUT_S
+
+
+# ---------------------------------------------------------------------------
+# Async tools must not run blocking I/O on the event loop
+#
+# FastMCP moves plain `def` tools to a worker thread itself, but runs
+# `async def` tools on the event loop. The confirmation-gated tools are async
+# (they await elicitation), so a connector call made directly inside one —
+# an osascript subprocess, an IMAP round-trip — froze the whole server for its
+# duration: no pings, no cancellation, no other tool calls.
+# ---------------------------------------------------------------------------
+
+
+def _blocking_call_names(tree: ast.Module) -> set[str]:
+    """Module-level sync functions in server.py that reach the connector:
+    those calling ``mail.<method>(...)`` directly, closed transitively over
+    calls between them. The sync tools land in here too; that is harmless,
+    since async code never calls a tool function."""
+    funcs = {
+        node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
+    }
+
+    def calls(fn: ast.FunctionDef) -> set[str]:
+        names: set[str] = set()
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "mail"
+            ):
+                names.add("mail")
+            elif isinstance(func, ast.Name):
+                names.add(func.id)
+        return names
+
+    blocking = {name for name, fn in funcs.items() if "mail" in calls(fn)}
+    while True:
+        grown = {
+            name for name, fn in funcs.items() if calls(fn) & blocking
+        } | blocking
+        if grown == blocking:
+            return blocking
+        blocking = grown
+
+
+class TestAsyncToolsDoNotBlockEventLoop:
+    def test_no_direct_connector_calls_in_async_functions(self) -> None:
+        """Static ratchet over every ``async def`` in server.py: a connector
+        call — or a call to a sync helper that makes one — must go through
+        ``_run_blocking``, which passes the callable rather than calling it."""
+        from apple_mail_fast_mcp import server as server_mod
+
+        tree = ast.parse(Path(server_mod.__file__).read_text())
+        blocking = _blocking_call_names(tree)
+        offenders: list[str] = []
+        for fn in tree.body:
+            if not isinstance(fn, ast.AsyncFunctionDef):
+                continue
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if (
+                    isinstance(func, ast.Attribute)
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id == "mail"
+                ):
+                    offenders.append(f"{fn.name}: mail.{func.attr}()")
+                elif isinstance(func, ast.Name) and func.id in blocking:
+                    offenders.append(f"{fn.name}: {func.id}()")
+        assert offenders == []
+
+    async def test_delete_messages_connector_call_runs_off_loop_thread(
+        self, mock_mail: MagicMock, mock_ctx_accept: MagicMock,
+    ) -> None:
+        loop_thread = threading.get_ident()
+        seen: list[int] = []
+
+        def _record(**kwargs: Any) -> int:
+            seen.append(threading.get_ident())
+            return 1
+
+        mock_mail.delete_messages.side_effect = _record
+        result = await delete_messages(["1"], ctx=mock_ctx_accept)
+        assert result["success"] is True
+        assert seen and seen[0] != loop_thread
+
+    async def test_delete_mailbox_connector_call_runs_off_loop_thread(
+        self, mock_mail: MagicMock, mock_ctx_accept: MagicMock,
+    ) -> None:
+        loop_thread = threading.get_ident()
+        seen: list[int] = []
+
+        def _record(**kwargs: Any) -> int:
+            seen.append(threading.get_ident())
+            return 0
+
+        mock_mail.delete_mailbox.side_effect = _record
+        result = await delete_mailbox(
+            account="Gmail", name="Spam", ctx=mock_ctx_accept
+        )
+        assert result["success"] is True
+        assert seen and seen[0] != loop_thread
+
+    async def test_delete_rule_lookup_and_delete_run_off_loop_thread(
+        self, mock_mail: MagicMock, mock_ctx_accept: MagicMock,
+    ) -> None:
+        """Covers the pre-confirmation lookup too: ``_resolve_rule_name``
+        runs ``list_rules`` over AppleScript before the prompt is shown."""
+        loop_thread = threading.get_ident()
+        seen: list[int] = []
+
+        def _rules() -> list[dict[str, Any]]:
+            seen.append(threading.get_ident())
+            return [{"index": 1, "name": "Junk filter", "enabled": True}]
+
+        def _delete(rule_index: int) -> str:
+            seen.append(threading.get_ident())
+            return "Junk filter"
+
+        mock_mail.list_rules.side_effect = _rules
+        mock_mail.delete_rule.side_effect = _delete
+        result = await delete_rule(rule_index=1, ctx=mock_ctx_accept)
+        assert result["success"] is True
+        assert len(seen) == 2
+        assert loop_thread not in seen
 
 
 # ---------------------------------------------------------------------------
@@ -4623,8 +4857,6 @@ class TestDraftToolErrorPaths:
         )
 
         # Have extract create a real file so the path is non-empty.
-        from pathlib import Path
-
         def fake_extract(
             draft_id: str, names: list[str], dest: Path
         ) -> list[Path]:

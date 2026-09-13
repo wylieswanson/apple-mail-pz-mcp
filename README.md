@@ -148,9 +148,12 @@ The consequence is that the write tools only *function* on a host that implement
 | Host | Elicitation | Write tools |
 |---|---|---|
 | Claude Code | Yes | Work |
+| Claude Code, non-interactive (`-p`) | Takes the prompt, never answers | Time out after 120s |
 | Codex CLI ≥ ~v0.119 | Yes | Work |
 | Codex CLI, older | No | Fail closed |
 | Claude Desktop / Cowork | No ([`claude-ai-mcp#153`](https://github.com/anthropics/claude-ai-mcp/issues/153)) | Fail closed |
+
+A timed-out call returns `error_type: "confirmation_timeout"` and changes nothing. Set `APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S` to wait longer or shorter than the 120s default.
 
 They are still installed by default, because that's a host limitation rather than a property of this server, and hosts are fixing it. If you'd rather the model not see tools it cannot use on your host, start the server in read-only mode — it exposes the 13 read tools and skips registering the 14 mutating ones:
 

@@ -287,6 +287,70 @@ class TestToolInvocation:
         getattr(mock_mail, connector_method).assert_called_once()
 
 
+class TestElicitationOverLiveSession:
+    """The confirmation gate against a real in-memory MCP client session,
+    not a patched ``_elicit_confirmation`` — so the timeout is exercised
+    against the SDK's actual request/response plumbing."""
+
+    async def test_accepted_prompt_runs_the_delete(
+        self, mock_mail: MagicMock,
+    ) -> None:
+        from fastmcp import Client
+
+        async def _accept(*_args: object) -> bool:
+            return True
+
+        mock_mail.delete_mailbox.return_value = 0
+        async with Client(server.mcp, elicitation_handler=_accept) as client:
+            result = await client.call_tool(
+                "delete_mailbox", {"account": "Gmail", "name": "Spam"}
+            )
+        assert result.structured_content is not None
+        assert result.structured_content["success"] is True
+        mock_mail.delete_mailbox.assert_called_once()
+
+    async def test_late_answer_times_out_and_session_survives(
+        self, mock_mail: MagicMock, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The shape that hung delete_mailbox for 70 minutes: the client
+        takes the elicitation request and does not answer in time. The call
+        must fail closed — a late *accept* must not run the delete — and the
+        session must still serve the next call.
+
+        The handler answers late rather than never: the Python MCP client
+        runs elicitation handlers inline in its receive loop, so a handler
+        that never returns would also stop this client from reading the tool
+        result. Claude Code in print mode keeps reading; it just never
+        replies."""
+        import asyncio
+
+        from fastmcp import Client
+
+        monkeypatch.setenv("APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S", "0.3")
+
+        async def _late_accept(*_args: object) -> bool:
+            await asyncio.sleep(1.5)
+            return True
+
+        mock_mail.list_accounts.return_value = []
+        async with Client(server.mcp, elicitation_handler=_late_accept) as client:
+            result = await asyncio.wait_for(
+                client.call_tool(
+                    "delete_mailbox", {"account": "Gmail", "name": "Spam"}
+                ),
+                timeout=10,
+            )
+            assert result.structured_content is not None
+            assert result.structured_content["error_type"] == "confirmation_timeout"
+            mock_mail.delete_mailbox.assert_not_called()
+
+            after = await asyncio.wait_for(
+                client.call_tool("list_accounts", {}), timeout=10
+            )
+            assert after.structured_content is not None
+            assert after.structured_content["success"] is True
+
+
 class TestVersionIntrospection:
     """An agent must be able to ask what it is talking to."""
 
