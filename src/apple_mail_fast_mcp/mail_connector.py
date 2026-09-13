@@ -8,6 +8,7 @@ import smtplib
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import time
 import warnings
 from collections.abc import Callable
@@ -38,6 +39,7 @@ from .exceptions import (
     MailAttachmentTooLargeError,
     MailDraftHtmlUnavailableError,
     MailDraftNotFoundError,
+    MailError,
     MailImapMoveUnsupportedError,
     MailImapRequiredError,
     MailImapTrashNotFoundError,
@@ -46,6 +48,7 @@ from .exceptions import (
     MailMailboxNotEmptyError,
     MailMailboxNotFoundError,
     MailMessageNotFoundError,
+    MailPermissionError,
     MailRuleNotFoundError,
     MailSafetyError,
     MailUnsupportedGmailSystemLabelError,
@@ -107,6 +110,19 @@ _IMAP_FALLBACK_EXCS: tuple[type[Exception], ...] = (
     UnicodeEncodeError,
 )
 
+
+_APPLESCRIPT_LOCK = threading.Lock()
+"""Serializes osascript calls across the process. Mail.app answers Apple
+Events one at a time on its main thread, so overlapping calls only queue
+inside Mail — where the wait counts against each caller's subprocess timeout,
+a quick call behind a slow one times out, and a killed bulk mutation is left
+half-applied. FastMCP runs sync tools on a thread pool, so overlap is the
+normal case. Waiting here, before the clock starts, makes a timeout mean the
+script itself was slow."""
+
+_AUTOMATION_DENIED_RE = re.compile(r"\(-1743\)|not authori[sz]ed", re.IGNORECASE)
+"""osascript's refusal when the host process lacks the macOS Automation grant
+for Mail (errAEEventNotPermitted, -1743). Matches the en-US and en-GB text."""
 
 _DRAFT_POLL_INTERVAL_S: float = 0.5
 """Seconds between drafts-mailbox rescans while waiting for a just-saved
@@ -1093,7 +1109,14 @@ class AppleMailConnector:
             MailAccountNotFoundError: If account not found
             MailMailboxNotFoundError: If mailbox not found
             MailMessageNotFoundError: If message not found
+            MailRuleNotFoundError: If rule not found
+            MailPermissionError: If macOS denied Automation access to Mail
         """
+        if not _APPLESCRIPT_LOCK.acquire(timeout=self.timeout):
+            raise MailAppleScriptError(
+                f"Mail.app was busy with another operation for {self.timeout}s; "
+                "nothing was run. Retry when it finishes."
+            )
         try:
             logger.debug(f"Executing AppleScript: {script[:200]}...")
 
@@ -1119,7 +1142,14 @@ class AppleMailConnector:
                 normalized = error_msg.replace("\u2019", "'")
 
                 # Parse error and raise appropriate exception
-                if "Can't get account" in normalized:
+                if _AUTOMATION_DENIED_RE.search(normalized):
+                    raise MailPermissionError(
+                        "macOS denied this process Automation access to Mail "
+                        "(-1743). Allow it in System Settings > Privacy & "
+                        "Security > Automation, under the app that launched "
+                        f"this server, then retry. ({error_msg})"
+                    )
+                elif "Can't get account" in normalized:
                     raise MailAccountNotFoundError(error_msg)
                 elif "Can't get mailbox" in normalized:
                     raise MailMailboxNotFoundError(error_msg)
@@ -1135,19 +1165,19 @@ class AppleMailConnector:
             return output
 
         except subprocess.TimeoutExpired as e:
-            raise MailAppleScriptError(f"Script execution timeout after {self.timeout}s") from e
+            # Killing osascript does not stop an Apple Event Mail has already
+            # started, so a mutation can be partly applied.
+            raise MailAppleScriptError(
+                f"Script execution timeout after {self.timeout}s. Mail.app may "
+                "still be applying it; re-check the messages or mailboxes "
+                "before retrying."
+            ) from e
+        except MailError:
+            raise
         except Exception as e:
-            if isinstance(
-                e,
-                (
-                    MailAccountNotFoundError,
-                    MailMailboxNotFoundError,
-                    MailMessageNotFoundError,
-                    MailAppleScriptError,
-                ),
-            ):
-                raise
             raise MailAppleScriptError(f"Unexpected error: {str(e)}") from e
+        finally:
+            _APPLESCRIPT_LOCK.release()
 
     def list_accounts(self) -> list[dict[str, Any]]:
         """List all mail accounts.

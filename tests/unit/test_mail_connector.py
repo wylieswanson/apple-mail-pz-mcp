@@ -68,6 +68,63 @@ class TestMessageIdMatchClause:
         assert f'message id is "< <{uuid_id}>>"' not in clause
 
 
+class TestAppleScriptSerialization:
+    """Mail.app answers Apple Events one at a time on its main thread.
+    Overlapping osascript calls just queue inside Mail, where the waiting
+    counts against each caller's subprocess timeout — so a quick call behind
+    a slow one times out, and a killed bulk mutation is left half-applied.
+    FastMCP runs sync tools on a thread pool, so overlap is the normal case.
+    The connector serializes its osascript calls and waits for its turn
+    before the timeout clock starts."""
+
+    def test_concurrent_calls_never_overlap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess
+        import threading
+
+        guard = threading.Lock()
+        active = 0
+        peak = 0
+
+        def fake_run(*_args: object, **_kwargs: object) -> MagicMock:
+            nonlocal active, peak
+            with guard:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.02)
+            with guard:
+                active -= 1
+            return MagicMock(returncode=0, stdout="ok", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        connector = AppleMailConnector(timeout=5)
+        threads = [
+            threading.Thread(target=connector._run_applescript, args=("s",))
+            for _ in range(4)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+        assert peak == 1
+
+    def test_waiting_behind_a_busy_mail_fails_with_a_clear_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess
+
+        from apple_mail_fast_mcp import mail_connector
+
+        run = MagicMock()
+        monkeypatch.setattr(subprocess, "run", run)
+        connector = AppleMailConnector(timeout=1)
+        with mail_connector._APPLESCRIPT_LOCK:
+            with pytest.raises(MailAppleScriptError, match="busy"):
+                connector._run_applescript("s")
+        run.assert_not_called()
+
+
 class TestAppleMailConnector:
     """Tests for AppleMailConnector."""
 
@@ -166,6 +223,54 @@ class TestAppleMailConnector:
             stderr='Can\u2019t get mailbox "NonExistent"',
         )
         with pytest.raises(MailMailboxNotFoundError):
+            connector._run_applescript("test script")
+
+    @patch("subprocess.run")
+    def test_run_applescript_rule_not_found_keeps_its_type(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """The catch-all used to re-wrap MailRuleNotFoundError as a generic
+        "Unexpected error" MailAppleScriptError, since its re-raise list
+        omitted it — so the rule tools' not-found routing never fired."""
+        from apple_mail_fast_mcp.exceptions import MailRuleNotFoundError
+
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="Can’t get rule 99. (-1728)"
+        )
+        with pytest.raises(MailRuleNotFoundError):
+            connector._run_applescript("test script")
+
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            "execution error: Not authorized to send Apple events to Mail. (-1743)",
+            "execution error: Not authorised to send Apple events to Mail. (-1743)",
+            "execution error: Mail got an error: (-1743)",
+        ],
+    )
+    @patch("subprocess.run")
+    def test_run_applescript_automation_denial_is_a_permission_error(
+        self, mock_run: MagicMock, connector: AppleMailConnector, stderr: str
+    ) -> None:
+        """A missing macOS Automation grant must say so, with the fix, instead
+        of surfacing as an opaque AppleScript error."""
+        from apple_mail_fast_mcp.exceptions import MailPermissionError
+
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr=stderr)
+        with pytest.raises(MailPermissionError, match="Automation"):
+            connector._run_applescript("test script")
+
+    @patch("subprocess.run")
+    def test_run_applescript_timeout_warns_the_change_may_be_partial(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """Killing osascript does not stop an Apple Event Mail has already
+        started, so a timed-out mutation can be half-applied. The error must
+        say so, or an agent retries blind."""
+        import subprocess
+
+        mock_run.side_effect = subprocess.TimeoutExpired("cmd", 30)
+        with pytest.raises(MailAppleScriptError, match="re-check"):
             connector._run_applescript("test script")
 
     @patch.object(AppleMailConnector, "_run_applescript")

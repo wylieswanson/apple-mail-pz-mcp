@@ -137,6 +137,8 @@ this budget; keep only prose that changes what the model does.
 
 **Timeout:** Default 60s, configurable via `AppleMailConnector(timeout=N)`. Some operations on large mailboxes may need more.
 
+**One osascript at a time:** `_run_applescript` holds a process-wide lock (`_APPLESCRIPT_LOCK`). Mail answers Apple Events serially anyway; overlapping calls only queued inside Mail, where the wait ate each caller's timeout. A call waits up to `timeout` for its turn, then gets a full `timeout` to run. A timeout does not undo work Mail already started, so the error tells the caller to re-check before retrying.
+
 ## Performance Constraints
 
 - Each `osascript` subprocess call: 100-300ms overhead minimum
