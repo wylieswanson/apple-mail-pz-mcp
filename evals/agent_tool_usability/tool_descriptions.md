@@ -99,41 +99,37 @@ Trash) and no rate limit (local operation).
 
 ### delete_mailbox
 
-Delete a mailbox via IMAP.
+Delete a mailbox. By default it is staged, not destroyed: moved
+with its messages and child mailboxes under the account's "To Delete"
+mailbox for the owner to delete, with no confirmation prompt.
 
-Mail.app's AppleScript dictionary doesn't expose a working delete
-primitive for mailboxes, so this operation goes through IMAP. Requires
-IMAP credentials in Keychain (#73 opt-in flow) — returns
-``error_type: "imap_required"`` when missing.
-
-Always elicits user confirmation (destructive). By default refuses
-non-empty mailboxes to prevent accidental data loss; pass
-``delete_messages=True`` to cascade.
-
-Refused (#164): targeting the bare ``[Gmail]`` parent or any
-``[Gmail]/...`` child path returns ``error_type:
-"unsupported_gmail_system_label"``. Gmail's IMAP server doesn't
-support DELETE for these paths.
+Deleting "To Delete" itself, or a mailbox inside it, really deletes it
+(IMAP DELETE) after user confirmation. Either way needs IMAP credentials
+(``error_type: "imap_required"``). INBOX and Gmail system labels are
+refused.
 
 **Parameters:**
 
 - `account` (string, required): Mail.app account display name or UUID.
-- `name` (string, required): Mailbox name. Slash-separated for nested mailboxes.
-- `delete_messages` (boolean, optional) (default: False): When False (default), refuse if the mailbox contains messages. When True, cascade-delete the mailbox and its contents.
+- `name` (string, required): Mailbox path, slash-separated for nested mailboxes.
+- `delete_messages` (boolean, optional) (default: False): Real deletes only. False (default) refuses a non-empty mailbox; True deletes its messages too.
 
 ### delete_messages
 
-Delete messages (always moves to the account's Trash mailbox).
+Delete messages. By default they are staged, not destroyed: moved to
+the account's "To Delete" mailbox for the owner to delete, with no
+confirmation prompt. Staging needs ``account`` and ``source_mailbox``
+(the account and mailbox fields of a search result).
 
-Destructive: gated behind user confirmation via MCP elicitation
-(issue #239), matching delete_rule / delete_mailbox / delete_template.
+Messages already in "To Delete" are really deleted (moved to Trash)
+after user confirmation. Max 100 ids per call.
 
 **Parameters:**
 
-- `message_ids` (list[string], required): List of message IDs to delete
-- `permanent` (boolean, optional) (default: False): Reserved; currently a no-op. Mail.app's AppleScript dictionary exposes no path to permanent-delete that bypasses Trash (issue #111). Passing True emits a DeprecationWarning; messages still go to Trash. Recoverable from the account's Trash mailbox until that mailbox is emptied.
-- `account` (string, optional): Optional account name (or UUID) the messages live in. Must be provided together with `source_mailbox`. When both are given, the operation is much faster.
-- `source_mailbox` (string, optional): Optional source mailbox name; see `account`.
+- `message_ids` (list[string], required): Message ids to delete.
+- `permanent` (boolean, optional) (default: False): Ignored; real deletes always go to Trash (#111).
+- `account` (string, optional): Account name or UUID the messages live in.
+- `source_mailbox` (string, optional): Mailbox the messages live in.
 
 ### delete_rule
 

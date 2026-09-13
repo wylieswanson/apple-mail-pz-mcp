@@ -52,6 +52,8 @@ ALLOWLIST = {
     "find_message_by_message_id": "Internal RFC-id->Mail-id lookup (e.g. update_draft seed recovery).",
     "extract_draft_attachments": "Helper for update_draft delete-and-recreate attachment preservation.",
     "auto_template_vars": "Auto-fills template variables; used by the template/draft path, not standalone.",
+    "stage_messages_for_deletion": "delete_messages\x27 default branch (move into the staging mailbox).",
+    "stage_mailbox_for_deletion": "delete_mailbox\x27 default branch (re-parent under the staging mailbox).",
 }
 
 missing = {line.strip() for line in sys.stdin if line.strip()}

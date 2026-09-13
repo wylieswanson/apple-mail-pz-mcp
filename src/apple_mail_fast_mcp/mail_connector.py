@@ -4470,6 +4470,107 @@ class AppleMailConnector:
         result = self._run_applescript(script)
         return int(result) if result.isdigit() else 0
 
+    def stage_messages_for_deletion(
+        self,
+        message_ids: list[str],
+        *,
+        account: str,
+        source_mailbox: str,
+        staging_mailbox: str,
+    ) -> int:
+        """Move messages into the account's delete-staging mailbox, where the
+        owner reviews and deletes them, instead of deleting them.
+
+        Creates the staging mailbox when missing — every call, since the
+        owner may delete the emptied mailbox between runs — then takes the
+        same verified move as ``update_message`` (IMAP MOVE when configured,
+        else AppleScript). Needs ``source_mailbox`` so the move stays on the
+        scoped fast path.
+
+        Returns:
+            Number of messages moved.
+        """
+        self._ensure_mailbox(account, staging_mailbox)
+        return self.update_message(
+            message_ids,
+            destination_mailbox=staging_mailbox,
+            account=account,
+            source_mailbox=source_mailbox,
+        )
+
+    def stage_mailbox_for_deletion(
+        self,
+        *,
+        account: str,
+        name: str,
+        staging_mailbox: str,
+    ) -> str:
+        """Move a mailbox, with its messages and child mailboxes, under the
+        account's delete-staging mailbox instead of deleting it.
+
+        IMAP-only, like ``update_mailbox``'s move: Mail's AppleScript can't
+        re-parent a mailbox.
+
+        Returns:
+            The mailbox's new path, e.g. ``"To Delete/Spam"`` (a numeric
+            suffix is added when that name is taken).
+
+        Raises:
+            ValueError: ``name`` is INBOX.
+            MailUnsupportedGmailSystemLabelError: ``name`` is a Gmail system
+                label.
+            MailImapRequiredError: No IMAP credentials for the account.
+            MailMailboxNotFoundError: No such mailbox on the server.
+        """
+        from .utils import is_gmail_system_label
+
+        if name.strip().upper() == "INBOX":
+            raise ValueError("INBOX cannot be deleted or staged for deletion")
+        if is_gmail_system_label(name):
+            raise MailUnsupportedGmailSystemLabelError(
+                f"cannot stage Gmail system label {name!r} for deletion (see #164)"
+            )
+        try:
+            host, port, email = self._resolve_imap_config(account)
+            password = self._get_imap_password_with_fallback(account, email)
+        except (MailKeychainEntryNotFoundError, MailKeychainAccessDeniedError) as e:
+            raise MailImapRequiredError(
+                f"staging a mailbox for deletion requires IMAP credentials for "
+                f"account {account!r}; configure them via the Keychain opt-in flow"
+            ) from e
+        imap = ImapConnector(host, port, email, password, pool=self._imap_pool)
+        return imap.stage_mailbox(name, staging_mailbox)
+
+    def _ensure_mailbox(self, account: str, name: str) -> None:
+        """Create the top-level mailbox ``name`` in ``account`` unless it
+        exists. IMAP CREATE when configured — synchronous on the server, so
+        an IMAP MOVE into it right after succeeds — else AppleScript, where
+        Mail handles the server's namespace itself."""
+        if not self._imap_breaker_open(account):
+            try:
+                host, port, email = self._resolve_imap_config(account)
+                password = self._get_imap_password_with_fallback(account, email)
+                ImapConnector(
+                    host, port, email, password, pool=self._imap_pool
+                ).ensure_folder(name)
+                return
+            except _IMAP_FALLBACK_EXCS as exc:
+                self._log_imap_fallback(account, exc)
+
+        account_clause = applescript_account_clause(account)
+        name_safe = escape_applescript_string(sanitize_input(name))
+        script = _wrap_with_timeout(
+            f"""tell application "Mail"
+                set accountRef to {account_clause}
+                if not (exists mailbox "{name_safe}" of accountRef) then
+                    make new mailbox at accountRef with properties {{name:"{name_safe}"}}
+                end if
+                return "ok"
+            end tell""",
+            timeout=self.timeout,
+        )
+        self._run_applescript(script)
+
     def update_mailbox(
         self,
         account: str,

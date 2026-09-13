@@ -16,6 +16,7 @@ from apple_mail_fast_mcp.imap_connector import (
     OPERATION_TIMEOUT_S,
     ImapConnector,
     _or_message_id_criteria,
+    _to_server_folder_name,
 )
 
 
@@ -1987,6 +1988,142 @@ class TestImapDeleteMailbox:
         )
         assert result == 42
         client.delete_folder.assert_called_once_with("Big")
+
+
+class TestServerFolderName:
+    """Mail shows every mailbox as a "/"-separated path with the server's
+    personal namespace prefix hidden; the IMAP server wants its own
+    delimiter and the prefix. Used by the delete-staging paths, which name
+    a mailbox the server may not have yet."""
+
+    def test_slash_server_without_prefix_is_unchanged(self) -> None:
+        assert _to_server_folder_name("To Delete/Spam", "/", "") == "To Delete/Spam"
+
+    def test_dot_server_with_inbox_prefix(self) -> None:
+        assert (
+            _to_server_folder_name("To Delete/Spam", ".", "INBOX.")
+            == "INBOX.To Delete.Spam"
+        )
+
+    def test_inbox_itself_never_gets_the_prefix(self) -> None:
+        assert _to_server_folder_name("INBOX", ".", "INBOX.") == "INBOX"
+
+    def test_flat_server_refuses_a_nested_path(self) -> None:
+        with pytest.raises(ValueError, match="hierarchy"):
+            _to_server_folder_name("To Delete/Spam", "", "")
+
+
+class TestImapEnsureFolder:
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_creates_missing_folder(self, mock_cls: MagicMock) -> None:
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.capabilities.return_value = {b"IMAP4REV1"}
+        client.list_folders.return_value = [((b"\\HasNoChildren",), b"/", "INBOX")]
+
+        name = ImapConnector("h", 993, "u@e.com", "pw").ensure_folder("To Delete")
+
+        assert name == "To Delete"
+        client.create_folder.assert_called_once_with("To Delete")
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_existing_folder_is_left_alone(self, mock_cls: MagicMock) -> None:
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.capabilities.return_value = {b"IMAP4REV1"}
+        client.list_folders.return_value = [
+            ((b"\\HasNoChildren",), b"/", "INBOX"),
+            ((b"\\HasNoChildren",), b"/", "To Delete"),
+        ]
+
+        name = ImapConnector("h", 993, "u@e.com", "pw").ensure_folder("To Delete")
+
+        assert name == "To Delete"
+        client.create_folder.assert_not_called()
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_namespace_server_creates_under_the_personal_prefix(
+        self, mock_cls: MagicMock
+    ) -> None:
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.capabilities.return_value = {b"IMAP4REV1", b"NAMESPACE"}
+        client.namespace.return_value = ((("INBOX.", "."),), None, None)
+        client.list_folders.return_value = [
+            ((b"\\HasChildren",), b".", "INBOX"),
+            ((b"\\HasNoChildren",), b".", "INBOX.Archive"),
+        ]
+
+        name = ImapConnector("h", 993, "u@e.com", "pw").ensure_folder("To Delete")
+
+        assert name == "INBOX.To Delete"
+        client.create_folder.assert_called_once_with("INBOX.To Delete")
+
+
+class TestImapStageMailbox:
+    @staticmethod
+    def _client(mock_cls: MagicMock, *names: str) -> MagicMock:
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.capabilities.return_value = {b"IMAP4REV1"}
+        client.list_folders.return_value = [
+            ((b"\\HasNoChildren",), b"/", n) for n in ("INBOX", *names)
+        ]
+        return client
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_renames_under_the_staging_folder(self, mock_cls: MagicMock) -> None:
+        client = self._client(mock_cls, "Spam", "To Delete")
+
+        staged = ImapConnector("h", 993, "u@e.com", "pw").stage_mailbox(
+            "Spam", "To Delete"
+        )
+
+        assert staged == "To Delete/Spam"
+        client.rename_folder.assert_called_once_with("Spam", "To Delete/Spam")
+        client.create_folder.assert_not_called()
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_creates_the_staging_folder_first(self, mock_cls: MagicMock) -> None:
+        client = self._client(mock_cls, "Old/Receipts")
+
+        staged = ImapConnector("h", 993, "u@e.com", "pw").stage_mailbox(
+            "Old/Receipts", "To Delete"
+        )
+
+        assert staged == "To Delete/Receipts"
+        client.create_folder.assert_called_once_with("To Delete")
+        client.rename_folder.assert_called_once_with(
+            "Old/Receipts", "To Delete/Receipts"
+        )
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_taken_name_gets_a_numeric_suffix(self, mock_cls: MagicMock) -> None:
+        client = self._client(
+            mock_cls, "Spam", "To Delete", "To Delete/Spam", "To Delete/Spam 2"
+        )
+
+        staged = ImapConnector("h", 993, "u@e.com", "pw").stage_mailbox(
+            "Spam", "To Delete"
+        )
+
+        assert staged == "To Delete/Spam 3"
+        client.rename_folder.assert_called_once_with("Spam", "To Delete/Spam 3")
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_missing_mailbox_is_not_found_and_nothing_changes(
+        self, mock_cls: MagicMock
+    ) -> None:
+        from apple_mail_fast_mcp.exceptions import MailMailboxNotFoundError
+
+        client = self._client(mock_cls, "To Delete")
+
+        with pytest.raises(MailMailboxNotFoundError):
+            ImapConnector("h", 993, "u@e.com", "pw").stage_mailbox(
+                "Nope", "To Delete"
+            )
+        client.create_folder.assert_not_called()
+        client.rename_folder.assert_not_called()
 
 
 class TestImapRenameMailbox:

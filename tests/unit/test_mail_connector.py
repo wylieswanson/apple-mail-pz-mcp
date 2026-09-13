@@ -10131,3 +10131,128 @@ class TestNumericAnchorBoundedProbe:
         monkeypatch.setattr(connector, "_imap_get_thread", lambda a: [])
 
         connector.get_thread("12345")
+
+
+class TestDeleteStagingConnector:
+    """Staged deletes: messages and mailboxes move under the account's
+    staging mailbox for the owner to delete, instead of being destroyed."""
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    def test_stage_messages_ensures_the_folder_then_moves(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[str] = []
+        monkeypatch.setattr(
+            connector, "_ensure_mailbox",
+            lambda account, name: calls.append(f"ensure {account} {name}"),
+        )
+
+        def fake_update(message_ids: list[str], **kwargs: Any) -> int:
+            calls.append(f"move {kwargs}")
+            return len(message_ids)
+
+        monkeypatch.setattr(connector, "update_message", fake_update)
+
+        count = connector.stage_messages_for_deletion(
+            ["a@x", "b@x"], account="Work", source_mailbox="INBOX",
+            staging_mailbox="To Delete",
+        )
+
+        assert count == 2
+        assert calls == [
+            "ensure Work To Delete",
+            "move {'destination_mailbox': 'To Delete', 'account': 'Work', "
+            "'source_mailbox': 'INBOX'}",
+        ]
+
+    def test_ensure_mailbox_uses_imap_when_configured(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            connector, "_resolve_imap_config", lambda a: ("h", 993, "u@e.com")
+        )
+        monkeypatch.setattr(
+            connector, "_get_imap_password_with_fallback", lambda a, e: "pw"
+        )
+        run = MagicMock()
+        monkeypatch.setattr(connector, "_run_applescript", run)
+        with patch("apple_mail_fast_mcp.mail_connector.ImapConnector") as imap_cls:
+            connector._ensure_mailbox("Work", "To Delete")
+        imap_cls.return_value.ensure_folder.assert_called_once_with("To Delete")
+        run.assert_not_called()
+
+    def test_ensure_mailbox_falls_back_to_applescript_without_imap(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            connector, "_resolve_imap_config", lambda a: ("h", 993, "u@e.com")
+        )
+
+        def no_keychain(account: str, email: str) -> str:
+            raise MailKeychainEntryNotFoundError("none")
+
+        monkeypatch.setattr(connector, "_get_imap_password_with_fallback", no_keychain)
+        run = MagicMock(return_value="ok")
+        monkeypatch.setattr(connector, "_run_applescript", run)
+
+        connector._ensure_mailbox("Work", "To Delete")
+
+        script = run.call_args[0][0]
+        assert 'exists mailbox "To Delete"' in script
+        assert 'make new mailbox' in script
+
+    def test_stage_mailbox_refuses_inbox(self, connector: AppleMailConnector) -> None:
+        with pytest.raises(ValueError, match="INBOX"):
+            connector.stage_mailbox_for_deletion(
+                account="Work", name="INBOX", staging_mailbox="To Delete"
+            )
+
+    def test_stage_mailbox_refuses_gmail_system_labels(
+        self, connector: AppleMailConnector
+    ) -> None:
+        from apple_mail_fast_mcp.exceptions import (
+            MailUnsupportedGmailSystemLabelError,
+        )
+
+        with pytest.raises(MailUnsupportedGmailSystemLabelError):
+            connector.stage_mailbox_for_deletion(
+                account="Gmail", name="[Gmail]/Spam", staging_mailbox="To Delete"
+            )
+
+    def test_stage_mailbox_requires_imap(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from apple_mail_fast_mcp.exceptions import MailImapRequiredError
+
+        monkeypatch.setattr(
+            connector, "_resolve_imap_config", lambda a: ("h", 993, "u@e.com")
+        )
+
+        def no_keychain(account: str, email: str) -> str:
+            raise MailKeychainEntryNotFoundError("none")
+
+        monkeypatch.setattr(connector, "_get_imap_password_with_fallback", no_keychain)
+        with pytest.raises(MailImapRequiredError):
+            connector.stage_mailbox_for_deletion(
+                account="Work", name="Spam", staging_mailbox="To Delete"
+            )
+
+    def test_stage_mailbox_returns_the_new_path(
+        self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            connector, "_resolve_imap_config", lambda a: ("h", 993, "u@e.com")
+        )
+        monkeypatch.setattr(
+            connector, "_get_imap_password_with_fallback", lambda a, e: "pw"
+        )
+        with patch("apple_mail_fast_mcp.mail_connector.ImapConnector") as imap_cls:
+            imap_cls.return_value.stage_mailbox.return_value = "To Delete/Spam"
+            staged = connector.stage_mailbox_for_deletion(
+                account="Work", name="Spam", staging_mailbox="To Delete"
+            )
+        assert staged == "To Delete/Spam"
+        imap_cls.return_value.stage_mailbox.assert_called_once_with("Spam", "To Delete")
