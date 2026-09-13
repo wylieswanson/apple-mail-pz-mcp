@@ -2110,6 +2110,25 @@ class TestImapStageMailbox:
         assert staged == "To Delete/Spam 3"
         client.rename_folder.assert_called_once_with("Spam", "To Delete/Spam 3")
 
+    @pytest.mark.parametrize("name", ["INBOX.To Delete", "INBOX.To Delete.Spam"])
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_staging_mailbox_is_never_staged_into_itself(
+        self, mock_cls: MagicMock, name: str
+    ) -> None:
+        """On a namespace server the server-side spelling of the staging
+        mailbox slips past the server layer's path check."""
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.capabilities.return_value = {b"IMAP4REV1", b"NAMESPACE"}
+        client.namespace.return_value = ((("INBOX.", "."),), None, None)
+        client.list_folders.return_value = [
+            ((b"\\HasChildren",), b".", n)
+            for n in ("INBOX", "INBOX.To Delete", "INBOX.To Delete.Spam")
+        ]
+        with pytest.raises(ValueError, match="staging mailbox"):
+            ImapConnector("h", 993, "u@e.com", "pw").stage_mailbox(name, "To Delete")
+        client.rename_folder.assert_not_called()
+
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_missing_mailbox_is_not_found_and_nothing_changes(
         self, mock_cls: MagicMock

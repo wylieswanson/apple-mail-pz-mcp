@@ -261,6 +261,18 @@ class TestAppleMailConnector:
             connector._run_applescript("test script")
 
     @patch("subprocess.run")
+    def test_run_applescript_name_containing_not_authorized_is_not_a_denial(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """A mailbox echoed in a not-found error can contain any text."""
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="",
+            stderr='Can\u2019t get mailbox "Not authorized vendors". (-1728)',
+        )
+        with pytest.raises(MailMailboxNotFoundError):
+            connector._run_applescript("test script")
+
+    @patch("subprocess.run")
     def test_run_applescript_timeout_warns_the_change_may_be_partial(
         self, mock_run: MagicMock, connector: AppleMailConnector
     ) -> None:
@@ -495,6 +507,32 @@ class TestAppleMailConnector:
         mock_run.side_effect = MailRuleNotFoundError("Can't get rule 99")
         with pytest.raises(MailRuleNotFoundError):
             connector.delete_rule(rule_index=99)
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_delete_rule_checks_the_confirmed_name_in_the_same_script(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """Rules are addressed by position, and positions shift when another
+        rule is deleted. The name the user confirmed is re-checked inside the
+        deleting script, so a shifted index can't delete a different rule."""
+        mock_run.return_value = "Junk filter"
+        connector.delete_rule(rule_index=4, expected_name='Say "hi"')
+        script = mock_run.call_args[0][0]
+        assert "considering case" in script
+        assert 'is not "Say \\"hi\\""' in script
+        assert script.index("RULE_CHANGED") < script.index("delete rule 4")
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_delete_rule_refuses_when_the_index_now_holds_another_rule(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        from apple_mail_fast_mcp.exceptions import MailRuleNotFoundError
+
+        mock_run.side_effect = MailAppleScriptError(
+            "execution error: RULE_CHANGED (-2700)"
+        )
+        with pytest.raises(MailRuleNotFoundError, match="list_rules"):
+            connector.delete_rule(rule_index=4, expected_name="B")
 
     def test_delete_rule_rejects_zero_or_negative_index(
         self, connector: AppleMailConnector
@@ -822,6 +860,29 @@ class TestAppleMailConnector:
         # Patch semantics: enabled/match_logic/conditions/actions not touched.
         assert "set enabled of newRule" not in update_script
         assert "set rule conditions of newRule" not in update_script
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_update_rule_checks_the_confirmed_name_before_changing_anything(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        mock_run.side_effect = [self._supported_actions_clean_response(), ""]
+        connector.update_rule(rule_index=2, enabled=False, expected_name="Old")
+        script = mock_run.call_args_list[1][0][0]
+        assert 'is not "Old"' in script
+        assert script.index("RULE_CHANGED") < script.index("set enabled of newRule")
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    def test_update_rule_refuses_when_the_index_now_holds_another_rule(
+        self, mock_run: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        from apple_mail_fast_mcp.exceptions import MailRuleNotFoundError
+
+        mock_run.side_effect = [
+            self._supported_actions_clean_response(),
+            MailAppleScriptError("execution error: RULE_CHANGED (-2700)"),
+        ]
+        with pytest.raises(MailRuleNotFoundError, match="list_rules"):
+            connector.update_rule(rule_index=2, enabled=False, expected_name="Old")
 
     @patch.object(AppleMailConnector, "_run_applescript")
     def test_update_rule_enabled_only_changes_enabled(

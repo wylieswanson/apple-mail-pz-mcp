@@ -755,7 +755,7 @@ class TestAsyncToolsDoNotBlockEventLoop:
             seen.append(threading.get_ident())
             return [{"index": 1, "name": "Junk filter", "enabled": True}]
 
-        def _delete(rule_index: int) -> str:
+        def _delete(rule_index: int, expected_name: str | None = None) -> str:
             seen.append(threading.get_ident())
             return "Junk filter"
 
@@ -994,6 +994,26 @@ class TestDiagnoseMailAccess:
 
 
 class TestDeleteRule:
+    async def test_confirmation_is_bound_to_the_rule_name(
+        self, mock_mail: MagicMock, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The prompt names the rule, so the confirmation must cover the
+        name, not just the index: if the index shifts to another rule before
+        a 2026-07-28 retry, the digest changes and the user is asked again."""
+        from apple_mail_fast_mcp import server as server_mod
+
+        seen: list[dict[str, Any]] = []
+
+        async def capture(ctx: Any, summary: str, op: str, params: dict[str, Any]) -> None:
+            seen.append(params)
+            return None
+
+        monkeypatch.setattr(server_mod, "_elicit_confirmation", capture)
+        mock_mail.list_rules.return_value = [{"index": 1, "name": "Junk filter"}]
+        mock_mail.delete_rule.return_value = "Junk filter"
+        await delete_rule(rule_index=1, ctx=MagicMock())
+        assert seen == [{"rule_index": 1, "rule_name": "Junk filter"}]
+
     async def test_success_with_accepted_ctx(
         self, mock_mail: MagicMock, mock_ctx_accept: MagicMock
     ) -> None:
@@ -1005,7 +1025,7 @@ class TestDeleteRule:
         assert result["success"] is True
         assert result["deleted_name"] == "Junk filter"
         mock_ctx_accept.elicit.assert_awaited_once()
-        mock_mail.delete_rule.assert_called_once_with(1)
+        mock_mail.delete_rule.assert_called_once_with(1, expected_name="Junk filter")
 
     async def test_declined_ctx_blocks_delete(
         self, mock_mail: MagicMock, mock_ctx_decline: MagicMock

@@ -2014,6 +2014,12 @@ class ImapConnector:
             )
             if source not in present:
                 raise MailMailboxNotFoundError(f"mailbox {name!r} not found")
+            staging = _to_server_folder_name(staging_path, delimiter, prefix)
+            if source == staging or (delimiter and source.startswith(staging + delimiter)):
+                raise ValueError(
+                    f"{name!r} is the staging mailbox or inside it; delete it "
+                    "for real instead of staging it"
+                )
             self._ensure_folder(client, staging_path, present, delimiter, prefix)
             leaf = name.rsplit("/", 1)[-1]
             for n in range(1, self._STAGE_SUFFIX_LIMIT + 1):

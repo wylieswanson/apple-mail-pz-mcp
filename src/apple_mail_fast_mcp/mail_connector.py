@@ -120,7 +120,9 @@ half-applied. FastMCP runs sync tools on a thread pool, so overlap is the
 normal case. Waiting here, before the clock starts, makes a timeout mean the
 script itself was slow."""
 
-_AUTOMATION_DENIED_RE = re.compile(r"\(-1743\)|not authori[sz]ed", re.IGNORECASE)
+_AUTOMATION_DENIED_RE = re.compile(
+    r"\(-1743\)|not authori[sz]ed to send apple events", re.IGNORECASE
+)
 """osascript's refusal when the host process lacks the macOS Automation grant
 for Mail (errAEEventNotPermitted, -1743). Matches the en-US and en-GB text."""
 
@@ -1488,6 +1490,7 @@ class AppleMailConnector:
         conditions: list[dict[str, Any]] | None = None,
         actions: dict[str, Any] | None = None,
         match_logic: str | None = None,
+        expected_name: str | None = None,
     ) -> None:
         """Update an existing Mail.app rule (patch-style for top-level fields,
         full replacement for conditions/actions when provided).
@@ -1506,10 +1509,14 @@ class AppleMailConnector:
             actions: If provided, REPLACES all action flags wholesale —
                 unprovided actions are reset to off.
             match_logic: 'all' | 'any', only set if not None.
+            expected_name: The rule's name as the caller confirmed it. When
+                given, the update refuses unless the rule at ``rule_index``
+                still has it.
 
         Raises:
             ValueError: If any provided input fails schema validation.
-            MailRuleNotFoundError: If rule_index is out of range.
+            MailRuleNotFoundError: If rule_index is out of range, or no
+                longer holds ``expected_name`` (nothing is changed).
             MailUnsupportedRuleActionError: If the rule currently has an
                 action outside the supported schema.
         """
@@ -1587,11 +1594,14 @@ class AppleMailConnector:
         if len(body_parts) == 1:
             # Only the rule lookup, no actual updates — caller passed nothing.
             return
+        # Before any change: the rule at this index must still be the one the
+        # caller confirmed (see _rule_name_guard).
+        body_parts.insert(1, self._rule_name_guard("newRule", expected_name))
         script = f"{_MAILBOX_RESOLVER_HANDLERS}" + _wrap_with_timeout(
             'tell application "Mail"\n' + "\n".join(body_parts) + "\nend tell",
             timeout=self.timeout,
         )
-        self._run_applescript(script)
+        self._run_rule_script(script, rule_index, expected_name)
 
     def _check_supported_actions(self, rule_index: int) -> None:
         """Verify a rule's existing actions are all in our schema.
@@ -1645,7 +1655,32 @@ class AppleMailConnector:
                 f"Mail.app's Rules pane instead."
             )
 
-    def delete_rule(self, rule_index: int) -> str:
+    def _rule_name_guard(self, rule_ref: str, expected_name: str | None) -> str:
+        """AppleScript that aborts with RULE_CHANGED unless ``rule_ref`` is
+        still named ``expected_name``. Rules are addressed by position, and a
+        concurrent delete shifts every later index; checking inside the
+        mutating script is the only check nothing can interleave with."""
+        if expected_name is None:
+            return ""
+        name_safe = escape_applescript_string(sanitize_input(expected_name))
+        return (
+            "considering case\n"
+            f'    if (name of {rule_ref}) is not "{name_safe}" then error "RULE_CHANGED"\n'
+            "end considering\n"
+        )
+
+    def _run_rule_script(self, script: str, rule_index: int, expected_name: str | None) -> str:
+        try:
+            return self._run_applescript(script)
+        except MailAppleScriptError as e:
+            if "RULE_CHANGED" not in str(e):
+                raise
+            raise MailRuleNotFoundError(
+                f"rule {rule_index} is no longer {expected_name!r} (another rule "
+                "was likely deleted); nothing was changed. Re-run list_rules."
+            ) from e
+
+    def delete_rule(self, rule_index: int, expected_name: str | None = None) -> str:
         """Delete a rule by 1-based index.
 
         Reads the rule's name in the same AppleScript call so callers
@@ -1656,12 +1691,15 @@ class AppleMailConnector:
 
         Args:
             rule_index: 1-based positional index, as returned by ``list_rules``.
+            expected_name: The name the user confirmed. When given, the
+                script refuses unless the rule at ``rule_index`` still has it.
 
         Returns:
             The name of the deleted rule (for confirmation / logging).
 
         Raises:
-            MailRuleNotFoundError: If rule_index is out of range.
+            MailRuleNotFoundError: If rule_index is out of range, or no
+                longer holds ``expected_name``.
         """
         if rule_index < 1:
             raise MailRuleNotFoundError(
@@ -1669,13 +1707,14 @@ class AppleMailConnector:
             )
         script = _wrap_with_timeout(
             f'tell application "Mail"\n'
+            f"{self._rule_name_guard(f'rule {rule_index}', expected_name)}"
             f"    set deletedName to name of rule {rule_index}\n"
             f"    delete rule {rule_index}\n"
             f"    return deletedName\n"
             f"end tell",
             timeout=self.timeout,
         )
-        return self._run_applescript(script)
+        return self._run_rule_script(script, rule_index, expected_name)
 
     def list_mailboxes(self, account: str) -> list[dict[str, Any]]:
         """List all mailboxes for an account.
