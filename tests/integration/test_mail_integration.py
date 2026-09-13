@@ -12,7 +12,10 @@ These tests require:
 Run with: MAIL_TEST_MODE=true MAIL_TEST_ACCOUNT=TestAccount pytest --run-integration
 """
 
+import statistics
+import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
@@ -23,7 +26,10 @@ from apple_mail_fast_mcp.mail_connector import (
     _wrap_as_json_script,
     _wrap_with_timeout,
 )
-from apple_mail_fast_mcp.utils import parse_applescript_json
+from apple_mail_fast_mcp.utils import (
+    escape_applescript_string,
+    parse_applescript_json,
+)
 
 # Skip all integration tests by default
 # Run with: pytest --run-integration
@@ -48,6 +54,49 @@ def test_account() -> str:
     """
     import os
     return os.getenv("MAIL_TEST_ACCOUNT", "Gmail")
+
+
+def _newest_inbox_ids(
+    connector: AppleMailConnector, account: str
+) -> tuple[str, str] | None:
+    """Both id forms for one real message in ``account``'s inbox (#419).
+
+    Returns ``(numeric_id, rfc_message_id)``, or ``None`` if the inbox is
+    empty. ``search_messages`` can't provide this: it returns the numeric id
+    on the AppleScript path and the RFC Message-ID on the IMAP path, never
+    both, and the #419 tests need to drive the same message through each.
+
+    Reads Mail.app's unified ``inbox`` and filters by account, so it needs no
+    per-account mailbox-name matching (which is locale-dependent).
+    """
+    account_safe = escape_applescript_string(account)
+    body = f'''
+    tell application "Mail"
+        set resultData to {{}}
+        repeat with m in (messages of inbox)
+            set mAccount to ""
+            try
+                set mAccount to (name of (account of (mailbox of m)))
+            end try
+            if mAccount is "{account_safe}" then
+                set resultData to {{|numeric_id|:(id of m as text), |rfc_message_id|:(message id of m)}}
+                exit repeat
+            end if
+        end repeat
+    end tell
+    '''
+    raw = parse_applescript_json(
+        connector._run_applescript(
+            _wrap_as_json_script(body, timeout=connector.timeout)
+        )
+    )
+    if not isinstance(raw, dict):
+        return None
+    numeric_id = str(raw.get("numeric_id") or "")
+    rfc_message_id = str(raw.get("rfc_message_id") or "")
+    if not numeric_id or not rfc_message_id:
+        return None
+    return numeric_id, rfc_message_id
 
 
 class TestMailIntegration:
@@ -231,6 +280,175 @@ class TestMailIntegration:
         from apple_mail_fast_mcp.exceptions import MailMessageNotFoundError
         with pytest.raises(MailMessageNotFoundError):
             connector.get_thread("99999999999")
+
+    def test_get_thread_does_not_freeze_mail(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """#415 freeze-regression guard: get_thread on a real search-result id
+        must never trigger the unindexed all-mailbox `whose message id` scan.
+
+        The bug: a numeric id emitted `message id is "N"` branches (unindexed,
+        ~20s/mailbox) across every account × mailbox, and an RFC id fell through
+        to the same AppleScript scan — either wedged Mail's UI for >100s.
+
+        Bound re-aimed in #420. The previous version asserted <10s and blamed
+        any breach on the `whose message id` scan. Both were wrong:
+
+        - **Wrong cause.** Measured on a 61,880-message Gmail account, the
+          IMAP primitives are sub-second (`SEARCH HEADER Message-ID` 0.14s,
+          `SELECT` 0.21s, `SEARCH X-GM-THRID` 0.13s). The cost is orchestration
+          — one AppleScript config resolve, Keychain read, connect and login
+          per account, repeated until the anchor's account is reached. Pointing
+          at the scan sent the next reader hunting a regression that isn't there.
+        - **Wrong bound.** Steady state measures ~7.5s median with occasional
+          ~10.7s runs, so 10s flaked on ordinary network variance.
+
+        25s sits above observed variance, below the >100s freeze this actually
+        guards against, and below `OPERATION_TIMEOUT_S` (30s) — so a genuine
+        IMAP timeout takes the degraded-result branch below instead of being
+        misreported here as a code regression.
+        """
+        matches = connector.search_messages(
+            account=test_account, mailbox="INBOX", limit=1
+        )
+        if not matches:
+            pytest.skip("test inbox has no messages")
+
+        start = time.monotonic()
+        thread, degraded_reason = connector._get_thread_with_status(
+            matches[0]["id"]
+        )
+        elapsed = time.monotonic() - start
+
+        assert isinstance(thread, list) and len(thread) >= 1
+        if degraded_reason is not None:
+            # The IMAP path did not complete, so this run timed the AppleScript
+            # fallback, not the thing under test. A transient stall is not a
+            # code regression — #420 is precisely about not conflating them.
+            pytest.skip(
+                f"IMAP path degraded ({degraded_reason}) after {elapsed:.1f}s "
+                "— nothing to assert about the indexed path on this run"
+            )
+        assert elapsed < 25.0, (
+            f"get_thread took {elapsed:.1f}s on the non-degraded IMAP path. "
+            "The indexed primitives are sub-second, so this is orchestration "
+            "overhead — check for a re-introduced per-account AppleScript "
+            "config resolve, Keychain read, or duplicate connect/login "
+            "(#420), or an unindexed scan creeping back (#415)."
+        )
+
+    # --- #419: numeric-id anchor resolution ------------------------------
+    #
+    # The tests above take an id from search_messages, which on an
+    # IMAP-configured account is an RFC Message-ID — i.e. the already-fast
+    # path. These cover the NUMERIC id, whose anchor used to cost a full
+    # accounts x mailboxes AppleScript walk (~17s vs ~7.5s on a 33k Gmail).
+
+    def test_numeric_anchor_fast_probe_resolves_real_message(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """#419: direct coverage for the bounded probe's AppleScript.
+
+        Unit tests mock _run_applescript and so cannot catch a bad script.
+        This exercises the three things the probe newly relies on against
+        real Mail: `whose id is N` against the unified `inbox`, walking
+        `account of (mailbox of msg)` back to an account name, and the JSON
+        record emission.
+
+        It also pins the invariant the whole change rests on: get_thread
+        chooses between the probe and the unbounded walk purely on cost, so
+        the two must return the SAME anchor.
+        """
+        ids = _newest_inbox_ids(connector, test_account)
+        if ids is None:
+            pytest.skip("test inbox has no messages")
+        numeric_id, rfc_message_id = ids
+
+        probe_anchor = connector._resolve_numeric_anchor_fast(numeric_id)
+
+        assert probe_anchor is not None, (
+            f"bounded probe failed to place numeric id {numeric_id} that "
+            "AppleScript just read out of the unified inbox"
+        )
+        assert probe_anchor["account"] == test_account
+        assert (
+            probe_anchor["rfc_message_id"].strip("<>")
+            == rfc_message_id.strip("<>")
+        )
+        walk_anchor = connector._resolve_thread_anchor_applescript(numeric_id)
+        assert probe_anchor == walk_anchor
+
+    def test_numeric_anchor_probe_beats_unbounded_walk(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """#419 regression guard on the phase this issue actually changes.
+
+        Deliberately times ANCHOR RESOLUTION rather than whole-of-get_thread:
+        the rest of get_thread is IMAP member collection, which is shared by
+        both id formats, is untouched here, and on a large Gmail account
+        swings by tens of seconds with server-side throttling — noise that
+        would swamp the signal and make this test meaningless.
+
+        Medians of 3 to ride out per-call jitter. Measured on a 33k-message
+        Gmail account: ~1.3s probe vs ~3.0s walk.
+        """
+        ids = _newest_inbox_ids(connector, test_account)
+        if ids is None:
+            pytest.skip("test inbox has no messages")
+        numeric_id, _ = ids
+
+        def _median(fn: Any) -> float:
+            samples = []
+            for _ in range(3):
+                start = time.monotonic()
+                assert fn(numeric_id) is not None
+                samples.append(time.monotonic() - start)
+            return statistics.median(samples)
+
+        probe_s = _median(connector._resolve_numeric_anchor_fast)
+        walk_s = _median(connector._resolve_thread_anchor_applescript)
+
+        assert probe_s < walk_s, (
+            f"bounded probe ({probe_s:.2f}s) is no faster than the "
+            f"accounts x mailboxes walk ({walk_s:.2f}s) it replaced (#419)"
+        )
+        assert probe_s < 10.0, (
+            f"numeric anchor resolution took {probe_s:.1f}s — the #415 "
+            "freeze bound applies to the probe too."
+        )
+
+    def test_get_thread_numeric_and_rfc_anchors_agree(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """#419 acceptance: 'threading results unchanged'.
+
+        Both id forms anchor on the same message, so they must return the
+        same member set. Member collection was always shared; this pins that
+        the numeric anchor still hands it an equivalent anchor.
+        """
+        from apple_mail_fast_mcp.exceptions import MailMessageNotFoundError
+
+        ids = _newest_inbox_ids(connector, test_account)
+        if ids is None:
+            pytest.skip("test inbox has no messages")
+        numeric_id, rfc_message_id = ids
+
+        by_numeric = connector.get_thread(numeric_id)
+        try:
+            by_rfc = connector.get_thread(rfc_message_id)
+        except MailMessageNotFoundError:
+            # The RFC form resolves its anchor over IMAP and has no
+            # AppleScript fallback by design (#415), so an unhealthy or
+            # throttled IMAP account leaves nothing to compare against.
+            pytest.skip("IMAP unavailable — cannot resolve the RFC anchor")
+
+        def _keys(thread: list[dict[str, Any]]) -> set[str]:
+            return {
+                str(m.get("rfc_message_id") or m["id"]).strip("<>")
+                for m in thread
+            }
+
+        assert _keys(by_numeric) == _keys(by_rfc)
 
     def test_get_message(
         self, connector: AppleMailConnector, test_account: str
@@ -589,6 +807,31 @@ class TestDraftsLifecycleIntegration:
     Each test cleans up its own drafts.
     """
 
+    @staticmethod
+    def _wait_for_draft(
+        connector: AppleMailConnector, draft_id: str, timeout_s: float = 30.0
+    ) -> dict[str, Any]:
+        """Poll get_draft_state until an IMAP-APPEND draft has synced into
+        Mail.app. create_draft returns as soon as the server APPEND succeeds,
+        but Mail.app reflects the new draft asynchronously (~seconds, longer on
+        Gmail). The pre-#407 broad-mailbox scan incidentally masked this by
+        being slow; the #407 drafts-scoped lookup is fast, so tests that look
+        up a just-created draft must wait for the sync explicitly."""
+        import time
+
+        from apple_mail_fast_mcp.exceptions import MailDraftNotFoundError
+
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            try:
+                return connector.get_draft_state(draft_id)
+            except MailDraftNotFoundError:
+                time.sleep(1.0)
+        pytest.fail(
+            f"draft {draft_id!r} not visible {timeout_s}s after create "
+            "(IMAP-APPEND sync lag)"
+        )
+
     @pytest.fixture
     def anchor_message_id(
         self, connector: AppleMailConnector, test_account: str
@@ -691,7 +934,7 @@ class TestDraftsLifecycleIntegration:
         assert "<" not in draft_id and ">" not in draft_id
 
         try:
-            state = connector.get_draft_state(draft_id)
+            state = self._wait_for_draft(connector, draft_id)
             assert state["subject"] == "ZZZ-AMM-INTEG-MSGID"
             assert "integration message-id round-trip body" in state["body"]
         finally:
@@ -805,13 +1048,17 @@ class TestDraftsLifecycleIntegration:
         )
         try:
             # Fetch the raw draft back over IMAP from the Drafts folder.
+            import imaplib as _imaplib
             imap = ImapConnector(host, port, email, password)
             raw = None
             for folder in ImapConnector._CONVENTIONAL_DRAFTS_NAMES:
                 try:
                     raw = imap.fetch_raw_message(draft_id, folder)
                     break
-                except MailMessageNotFoundError:
+                except (MailMessageNotFoundError, _imaplib.IMAP4.error):
+                    # Candidate folder absent on this server (e.g. bare
+                    # "Drafts" on Gmail, which uses "[Gmail]/Drafts") — the
+                    # SELECT raises; try the next conventional name.
                     continue
             assert raw is not None, "HTML draft not found in any Drafts folder"
             msg = _email.message_from_bytes(raw, policy=_policy.default)
@@ -822,6 +1069,54 @@ class TestDraftsLifecycleIntegration:
             assert f"<b>{marker}</b>" in html.get_content()
             assert "plain fallback" in plain.get_content()
         finally:
+            # Wait for the APPENDed draft to sync into Mail.app before the
+            # AppleScript delete can find it (#407 sync lag).
+            self._wait_for_draft(connector, draft_id)
+            assert connector.delete_draft(draft_id) is True
+
+    def test_applescript_save_returns_a_usable_draft_id(
+        self,
+        connector: AppleMailConnector,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """#421 regression, seed="new" variant.
+
+        The empty-draft_id bug lives in the shared terminal block, so it hit
+        every AppleScript save-as-draft — not just replies. The reply test
+        below covers the reported case; this covers compose, which had none.
+
+        The clean IMAP path is forced off rather than relying on this machine
+        having several enabled accounts (which is what made `effective_account`
+        None here and pushed the reported failure onto AppleScript). Without
+        that, a single-account machine would take the IMAP-APPEND path and
+        silently not exercise the fix at all.
+        """
+        monkeypatch.setattr(
+            AppleMailConnector, "_try_clean_create_or_send",
+            lambda self, **kwargs: None,
+        )
+        marker = "ZZZ-AMM-421-APPLESCRIPT-NEW"
+        result = connector.create_draft(
+            seed="new",
+            to=["test1@example.com"],
+            subject=marker,
+            body="body for the #421 id-bridging poll",
+        )
+        draft_id = result["draft_id"]
+        assert draft_id, (
+            "AppleScript save returned an empty draft_id — the id-bridging "
+            "diff ran before Mail materialised the draft (#421)"
+        )
+        assert "@" not in draft_id, (
+            f"expected Mail's internal numeric id from the AppleScript path; "
+            f"got {draft_id!r}"
+        )
+        try:
+            # The id must be immediately usable — that is the whole point of
+            # waiting for it inside the script.
+            state = connector.get_draft_state(draft_id)
+            assert state["subject"] == marker
+        finally:
             assert connector.delete_draft(draft_id) is True
 
     def test_reply_save_preserves_threading_headers(
@@ -829,6 +1124,14 @@ class TestDraftsLifecycleIntegration:
         connector: AppleMailConnector,
         anchor_message_id: str,
     ) -> None:
+        """#421 regression, the reported case.
+
+        `anchor_message_id` is Mail's numeric internal id, and
+        `_try_imap_reply_forward_draft` requires an RFC Message-ID (`"@" in
+        seed_id`) — so this always exercises the AppleScript save path, on any
+        machine. Before the fix `draft_id` came back `''` every time and the
+        threading assertions below never ran.
+        """
         result = connector.create_draft(
             seed="reply",
             seed_id=anchor_message_id,
@@ -1180,18 +1483,26 @@ class TestDraftsLifecycleIntegration:
     def test_delete_draft_removes_from_drafts_mailbox(
         self,
         connector: AppleMailConnector,
+        test_account: str,
     ) -> None:
         import time
 
         from apple_mail_fast_mcp.exceptions import MailDraftNotFoundError
 
+        # Pin the IMAP-APPEND path (stable RFC Message-ID draft_id). A bare
+        # AppleScript-save on an IMAP account gets a *local* numeric id that
+        # Mail.app re-issues once the draft syncs to the server, so polling by
+        # the original id is unreliable — orthogonal to #407.
         result = connector.create_draft(
             seed="new",
+            from_account=test_account,
             to=["x@example.com"],
             subject="ZZZ-AMM-INTEG-DELETE",
             body="delete me",
         )
         draft_id = result["draft_id"]
+        # Wait for the IMAP-APPEND draft to sync in before deleting it (#407).
+        self._wait_for_draft(connector, draft_id)
         assert connector.delete_draft(draft_id) is True
 
         # IMAP sync lag: the delete returns synchronously but the
@@ -2069,28 +2380,29 @@ class TestDraftsLifecycleIntegration:
         # The IMAP-APPEND path (#245) returns a bare RFC Message-ID, not
         # Mail's internal id; resolve it so the `id of d` lookup below
         # matches (mirrors get_draft_state / delete_draft).
+        # #407: wait for the IMAP-APPEND draft to sync, then resolve to Mail's
+        # internal id via the fast Drafts-scoped resolver (the old broad
+        # find_message_by_message_id scans every mailbox and times out on a
+        # large Gmail's All Mail).
         lookup_id = draft_id
         if "@" in draft_id:
-            lookup_id = connector.find_message_by_message_id(draft_id) or draft_id
+            self._wait_for_draft(connector, draft_id)
+            lookup_id = (
+                connector._resolve_draft_internal_id(draft_id) or draft_id
+            )
 
         try:
             # Read the draft's headers via osascript and confirm the
-            # From header includes both the display name and email.
+            # From header includes both the display name and email. Iterate
+            # the unified "drafts mailbox" (locale-independent, Gmail-mirror-
+            # safe), not per-account name-matched mailboxes (#407).
             import subprocess as _subprocess
             script = f'''
             tell application "Mail"
-                repeat with acc in accounts
-                    try
-                        repeat with mb in mailboxes of acc
-                            if name of mb contains "Drafts" then
-                                repeat with d in messages of mb
-                                    if (id of d as text) is "{lookup_id}" then
-                                        return sender of d
-                                    end if
-                                end repeat
-                            end if
-                        end repeat
-                    end try
+                repeat with d in messages of drafts mailbox
+                    if (id of d as text) is "{lookup_id}" then
+                        return sender of d
+                    end if
                 end repeat
                 return ""
             end tell
@@ -2335,6 +2647,232 @@ class TestTemplateIntegration:
         assert today in rendered["body"]
 
 
+class TestAnchorLookupIncompleteIntegration:
+    """#425: a failed probe must never be reported as a missing message.
+
+    Unit tests mock the whole IMAP layer, so they can prove the branch is
+    wired but not that it holds against the real multi-account resolution
+    path. These drive the real connector with a real Message-ID and only
+    simulate the failure the network actually produces (socket timeout →
+    OSError, which is a member of ``_IMAP_FALLBACK_EXCS``).
+    """
+
+    def _real_rfc_id(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> str:
+        rows = connector.search_messages(
+            account=test_account, mailbox="INBOX", limit=1
+        )
+        if not rows:
+            pytest.skip(f"{test_account} INBOX has no messages to test against")
+        rfc_id = rows[0].get("rfc_message_id") or rows[0].get("id")
+        if not rfc_id or "@" not in rfc_id:
+            pytest.skip(
+                "test_account is not on the IMAP path (no RFC Message-ID)"
+            )
+        return str(rfc_id)
+
+    def test_real_message_never_reported_missing_when_probes_fail(
+        self,
+        connector: AppleMailConnector,
+        test_account: str,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """The exact #425 failure: the message EXISTS, every probe times out.
+
+        Before the fix this raised MailMessageNotFoundError and told the user
+        to run `setup-imap` on a correctly-configured account.
+        """
+        from apple_mail_fast_mcp.exceptions import (
+            MailAnchorLookupIncompleteError,
+            MailMessageNotFoundError,
+        )
+        from apple_mail_fast_mcp.imap_connector import ImapConnector
+
+        rfc_id = self._real_rfc_id(connector, test_account)
+
+        def _timeout(self: ImapConnector, message_id: str) -> None:
+            raise OSError("cannot read from timed out object")
+
+        monkeypatch.setattr(ImapConnector, "resolve_anchor", _timeout)
+
+        with pytest.raises(MailAnchorLookupIncompleteError) as exc:
+            connector.get_thread(rfc_id)
+        # Regression assertion: the old behavior is specifically excluded.
+        assert not isinstance(exc.value, MailMessageNotFoundError)
+        assert "setup-imap" not in str(exc.value)
+
+    def test_one_failing_account_does_not_break_a_resolvable_anchor(
+        self,
+        connector: AppleMailConnector,
+        test_account: str,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """Availability is preserved: a probe failure on an account we did not
+        need must not prevent the anchor resolving where it really lives."""
+        from apple_mail_fast_mcp.imap_connector import ImapConnector
+
+        rfc_id = self._real_rfc_id(connector, test_account)
+        host, _port, _email = connector._resolve_imap_config(test_account)
+        original = ImapConnector.resolve_anchor
+
+        def _fail_other_hosts(
+            self: ImapConnector, message_id: str
+        ) -> dict[str, Any] | None:
+            if getattr(self, "_host", None) != host:
+                raise OSError("simulated timeout on an unrelated account")
+            return original(self, message_id)
+
+        monkeypatch.setattr(ImapConnector, "resolve_anchor", _fail_other_hosts)
+
+        thread = connector.get_thread(rfc_id)
+        assert isinstance(thread, list) and len(thread) >= 1
+
+
+class TestBulkRfcIdDoesNotFreezeMail:
+    """#437: a bulk mutation given RFC Message-IDs and NO account/mailbox is
+    the exact shape that froze Mail.
+
+    `_bulk_repeat_block` used to match `message id` inline when the numeric
+    `id` arm missed — which it always does for an RFC id. That match is
+    unindexed and AppleScript runs on Mail's UI thread, so it loaded every
+    message in scope (33,569 in Gmail's INBOX, 62,085 in All Mail) once per
+    id. Ids are now resolved up front, so the emitted match is the indexed
+    `whose id is N`.
+
+    `flag_color` is used deliberately: IMAP cannot set Mail's
+    `\\$MailFlagBit*` keywords, so it is guaranteed to take the AppleScript
+    fallback rather than an IMAP fast path.
+    """
+
+    def test_bulk_flag_by_rfc_id_completes_and_keeps_mail_responsive(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        import subprocess
+        import threading
+
+        rows = connector.search_messages(
+            account=test_account, mailbox="INBOX", limit=1
+        )
+        if not rows:
+            pytest.skip(f"{test_account} INBOX has no messages")
+        rfc_id = rows[0].get("rfc_message_id") or rows[0].get("id")
+        if not rfc_id or "@" not in rfc_id:
+            pytest.skip("test_account is not on the IMAP path")
+
+        done = threading.Event()
+        result: dict[str, Any] = {}
+
+        def _bulk() -> None:
+            try:
+                # No account / source_mailbox on purpose — the freezing shape.
+                result["count"] = connector.update_message(
+                    [str(rfc_id)], flag_color="orange"
+                )
+            except BaseException as exc:  # noqa: BLE001 - reported below
+                result["error"] = exc
+            finally:
+                done.set()
+
+        t = threading.Thread(target=_bulk, daemon=True)
+        t.start()
+        try:
+            probe_start = time.monotonic()
+            probe = subprocess.run(
+                ["/usr/bin/osascript", "-e",
+                 'tell application "Mail" to return (count of accounts) as text'],
+                capture_output=True, text=True, timeout=30,
+            )
+            probe_elapsed = time.monotonic() - probe_start
+        except subprocess.TimeoutExpired:
+            pytest.fail(
+                "Mail did not answer a trivial AppleScript within 30s while a "
+                "bulk RFC-id update was running — the UI thread is blocked, "
+                "i.e. the #437 freeze is back"
+            )
+        finally:
+            done.wait(timeout=180)
+        t.join(timeout=5)
+
+        assert probe.returncode == 0, f"probe failed: {probe.stderr}"
+        assert probe_elapsed < 25.0, (
+            f"Mail took {probe_elapsed:.1f}s to answer during the bulk "
+            "update — the UI thread is being starved (#437)"
+        )
+        assert "error" not in result, f"bulk update raised: {result.get('error')}"
+        # >= 1, not == 1: the cross-scan visits every mailbox of every account
+        # and has no `exit repeat` after a match, so a Gmail message visible
+        # under several labels increments the counter once per mailbox. That
+        # over-count predates #437 (the old unindexed arm matched the same way
+        # in each mailbox) and is tracked separately — what this test pins is
+        # that the id RESOLVED and the mutation ran without freezing Mail.
+        assert result.get("count", 0) >= 1, (
+            f"expected at least 1 message flagged, got {result.get('count')} "
+            "— the RFC id did not resolve to a real message"
+        )
+
+        # Leave no trace: clear the flag we set.
+        connector.update_message([str(rfc_id)], flag_color="none")
+
+
+class TestGetThreadPartialFlagIntegration:
+    """#420: a degraded thread must announce itself against real Mail.
+
+    Unit tests prove the branch is wired. This proves the AppleScript fallback
+    actually produces a usable result AND reports itself as partial when the
+    IMAP path is knocked out mid-call — the scenario where users on large
+    accounts were silently handed a truncated conversation.
+    """
+
+    def test_forced_imap_failure_yields_a_flagged_partial_thread(
+        self,
+        connector: AppleMailConnector,
+        test_account: str,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        from apple_mail_fast_mcp.imap_connector import ImapConnector
+
+        rows = connector.search_messages(
+            account=test_account, mailbox="INBOX", limit=1
+        )
+        if not rows:
+            pytest.skip(f"{test_account} INBOX has no messages")
+        anchor_id = rows[0].get("rfc_message_id") or rows[0].get("id")
+        if not anchor_id:
+            pytest.skip("search_messages row carries no usable id")
+
+        # Let anchor resolution succeed, then fail collection — exactly the
+        # shape of the real 30s OPERATION_TIMEOUT_S stall.
+        def _timeout(self: ImapConnector, **kwargs: Any) -> None:
+            raise OSError("cannot read from timed out object")
+
+        monkeypatch.setattr(ImapConnector, "find_thread_members", _timeout)
+
+        thread, reason = connector._get_thread_with_status(str(anchor_id))
+
+        assert isinstance(thread, list) and len(thread) >= 1
+        assert reason == "imap_timeout", (
+            f"degraded run reported {reason!r}; a truncated thread must be "
+            "distinguishable from a complete one"
+        )
+
+    def test_healthy_run_reports_complete(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """The flag must not cry wolf — a normal run reports no degradation."""
+        rows = connector.search_messages(
+            account=test_account, mailbox="INBOX", limit=1
+        )
+        if not rows:
+            pytest.skip(f"{test_account} INBOX has no messages")
+        anchor_id = rows[0].get("rfc_message_id") or rows[0].get("id")
+
+        thread, reason = connector._get_thread_with_status(str(anchor_id))
+        assert isinstance(thread, list) and len(thread) >= 1
+        if reason is not None:
+            pytest.skip(f"IMAP genuinely unavailable this run ({reason})")
+
+
 class TestFindMessageByMessageIdIntegration:
     """Real-Mail.app round-trip for ``find_message_by_message_id``.
 
@@ -2345,6 +2883,66 @@ class TestFindMessageByMessageIdIntegration:
     message picked from the test account's INBOX at runtime so the test
     survives any specific Message-ID being deleted.
     """
+
+    def test_mail_stays_responsive_during_lookup(
+        self, connector: AppleMailConnector, test_account: str
+    ) -> None:
+        """#432: the point of this fix is that Mail keeps drawing.
+
+        The old `whose message id` walk ran on Mail's UI thread across every
+        mailbox of every account — measured here at 33,569 messages in Gmail's
+        INBOX and 62,085 in All Mail — so Mail stopped responding entirely and
+        stayed wedged after the 60s timeout killed our osascript client.
+
+        This asserts the observable symptom, not a proxy for it: a second,
+        trivial AppleScript must get an answer WHILE the lookup runs. Against
+        the pre-fix code it does not.
+        """
+        import subprocess
+        import threading
+
+        rows = connector.search_messages(
+            account=test_account, mailbox="INBOX", limit=1
+        )
+        if not rows:
+            pytest.skip(f"{test_account} INBOX has no messages")
+        rfc_id = rows[0].get("rfc_message_id") or rows[0].get("id")
+        if not rfc_id or "@" not in rfc_id:
+            pytest.skip("test_account is not on the IMAP path")
+
+        done = threading.Event()
+
+        def _lookup() -> None:
+            try:
+                connector.find_message_by_message_id(str(rfc_id))
+            finally:
+                done.set()
+
+        t = threading.Thread(target=_lookup, daemon=True)
+        t.start()
+        try:
+            probe_start = time.monotonic()
+            probe = subprocess.run(
+                ["/usr/bin/osascript", "-e",
+                 'tell application "Mail" to return (count of accounts) as text'],
+                capture_output=True, text=True, timeout=30,
+            )
+            probe_elapsed = time.monotonic() - probe_start
+        except subprocess.TimeoutExpired:
+            pytest.fail(
+                "Mail did not answer a trivial AppleScript within 30s while "
+                "find_message_by_message_id was running — the UI thread is "
+                "blocked, i.e. the #432 freeze is back"
+            )
+        finally:
+            done.wait(timeout=120)
+        t.join(timeout=5)
+
+        assert probe.returncode == 0, f"probe failed: {probe.stderr}"
+        assert probe_elapsed < 25.0, (
+            f"Mail took {probe_elapsed:.1f}s to answer `count of accounts` "
+            "during the lookup — the UI thread is being starved (#432)"
+        )
 
     def test_find_by_bare_rfc_id_from_search_messages(
         self, connector: AppleMailConnector, test_account: str

@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from datetime import date as _date
 from datetime import datetime as _datetime
 from datetime import timedelta as _timedelta
+from email import message_from_bytes, policy
 from email.header import decode_header, make_header
 from typing import Any, cast
 
@@ -42,12 +43,14 @@ from imapclient import DRAFT, IMAPClient
 from imapclient.exceptions import IMAPClientError, LoginError
 from imapclient.response_types import Envelope
 
+from .draft_builder import ForwardedAttachment, extract_attachment_payloads
 from .exceptions import (
     MailAttachmentIndexError,
     MailImapMoveUnsupportedError,
     MailImapTrashNotFoundError,
     MailMessageNotFoundError,
 )
+from .utils import parse_rfc822_ids
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +97,7 @@ scan depth."""
 
 _FLAG_SEEN = b"\\Seen"
 _FLAG_FLAGGED = b"\\Flagged"
+_FLAG_ANSWERED = b"\\Answered"
 
 
 # ---------------------------------------------------------------------------
@@ -411,6 +415,75 @@ def _decode(b: bytes | bytearray | str | None) -> str:
     return b.decode("utf-8", errors="replace")
 
 
+def _part_text(part: Any) -> str:
+    """Decode a single non-multipart MIME part to text, honoring its
+    transfer-encoding and charset (falling back to UTF-8/replace)."""
+    try:
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            return str(part.get_payload() or "")
+        charset = part.get_content_charset() or "utf-8"
+        return str(payload.decode(charset, errors="replace"))
+    except (LookupError, ValueError, TypeError):
+        try:
+            return str(part.get_payload() or "")
+        except (ValueError, TypeError):
+            return ""
+
+
+def _html_to_text(html: str) -> str:
+    """Cheap HTML→text for the rare text/html-only message. Not a renderer —
+    just enough to recover readable prose when there is no text/plain part."""
+    import html as _html
+
+    html = re.sub(r"(?is)<(script|style).*?</\1>", "", html)
+    html = re.sub(r"(?i)<br\s*/?>", "\n", html)
+    html = re.sub(r"(?i)</p>", "\n\n", html)
+    html = re.sub(r"<[^>]+>", "", html)
+    return _html.unescape(html)
+
+
+def _extract_text_body(raw: bytes | bytearray | None) -> str:
+    """Parse a full RFC822 message (BODY[]) and return ONLY its
+    human-readable text.
+
+    This is the crux of the body-overflow fix: IMAP ``BODY[TEXT]`` hands back
+    the entire multipart body with every attachment base64-inlined, so a 1.5 MB
+    attachment becomes ~2 MB of ``content`` that overflows the MCP result. By
+    walking the MIME tree here we return kilobytes of decoded prose with the
+    attachment bytes dropped. Attachment *metadata* is derived separately from
+    ``draft_builder.extract_attachment_payloads`` (the canonical walker that
+    matches the BODYSTRUCTURE index contract), so this helper deliberately does
+    not enumerate attachments.
+
+    On any parse failure we degrade to a raw charset decode rather than raising
+    — a body is never worth a hard error.
+    """
+    if not raw:
+        return ""
+    try:
+        msg = message_from_bytes(bytes(raw), policy=policy.default)
+    except (ValueError, TypeError):
+        return _decode(raw)
+    plains: list[str] = []
+    htmls: list[str] = []
+    for part in msg.walk():
+        if part.is_multipart():
+            continue
+        disp = part.get_content_disposition() or ""
+        if part.get_filename() or disp == "attachment":
+            continue  # attachment bytes never enter content
+        ctype = part.get_content_type()
+        if ctype == "text/plain":
+            plains.append(_part_text(part))
+        elif ctype == "text/html":
+            htmls.append(_part_text(part))
+    body = "\n".join(p for p in plains if p.strip())
+    if not body.strip() and htmls:
+        body = _html_to_text("\n".join(htmls))
+    return body.replace("\r\n", "\n").strip()
+
+
 def _decode_mime_header(raw: bytes | bytearray | str | None) -> str:
     """Decode an RFC 2047 encoded-word header value to its Unicode form.
 
@@ -489,16 +562,32 @@ def _flatten_one(node: Any, out: set[int]) -> None:
             pass
 
 
+def _format_address(addr: Any) -> str:
+    """Format one IMAP ENVELOPE address (name + mailbox@host) as a string.
+
+    The display name is RFC 2047-decoded via ``_decode_mime_header`` so
+    recipient/sender names come through in their human-readable Unicode form,
+    consistent with how the subject is decoded (#392)."""
+    name = _decode_mime_header(getattr(addr, "name", None))
+    mailbox = _decode(getattr(addr, "mailbox", None))
+    host = _decode(getattr(addr, "host", None))
+    email = f"{mailbox}@{host}" if mailbox and host else mailbox or ""
+    return f"{name} <{email}>" if name else email
+
+
 def _format_sender(envelope: Envelope) -> str:
     from_ = envelope.from_ or ()
     if not from_:
         return ""
-    first = from_[0]
-    name = _decode_mime_header(first.name)
-    mailbox = _decode(first.mailbox)
-    host = _decode(first.host)
-    email = f"{mailbox}@{host}" if mailbox and host else mailbox or ""
-    return f"{name} <{email}>" if name else email
+    return _format_address(from_[0])
+
+
+def _format_address_list(addrs: Any) -> str:
+    """Format an ENVELOPE address tuple (To/Cc) as a comma-joined string.
+    Returns ``""`` when the field is absent — recipients were previously
+    dropped entirely on the IMAP path; surfacing them closes that gap."""
+    formatted = [_format_address(a) for a in (addrs or ())]
+    return ", ".join(x for x in formatted if x)
 
 
 def _bodystructure_extract_attachments(
@@ -901,10 +990,122 @@ def _envelope_to_dict(
         "rfc_message_id": rfc_id,
         "subject": _decode_mime_header(envelope.subject),
         "sender": _format_sender(envelope),
+        "to": _format_address_list(envelope.to),
+        "cc": _format_address_list(envelope.cc),
         "date_received": date_str,
         "read_status": _FLAG_SEEN in flags,
         "flagged": _FLAG_FLAGGED in flags,
     }
+
+
+def _select_body_bytes(entry: dict[bytes, Any], body_key: bytes) -> bytes:
+    """Pull the body section out of a FETCH entry. IMAPClient can key the
+    returned section slightly differently than requested, so fall back to any
+    ``BODY[...]`` that isn't the header block."""
+    body_bytes = entry.get(body_key)
+    if body_bytes is None:
+        for k, v in entry.items():
+            if (
+                isinstance(k, bytes)
+                and k.startswith(b"BODY[")
+                and b"HEADER" not in k
+            ):
+                body_bytes = v
+                break
+    return body_bytes or b""
+
+
+def _header_fields_bytes(entry: dict[bytes, Any]) -> bytes:
+    """Pull the ``HEADER.FIELDS`` section bytes out of a FETCH entry,
+    tolerating imapclient's ``BODY.PEEK[…]`` → ``BODY[…]`` key normalization
+    (#415)."""
+    for key, value in entry.items():
+        if (
+            isinstance(key, bytes)
+            and b"HEADER.FIELDS" in key
+            and isinstance(value, (bytes, bytearray))
+        ):
+            return bytes(value)
+    return b""
+
+
+def _anchor_from_fetch(entry: dict[bytes, Any]) -> dict[str, Any]:
+    """Build a ``get_thread`` anchor from a FETCH of ENVELOPE +
+    REFERENCES/IN-REPLY-TO headers (#415). References is not carried in the
+    IMAP ENVELOPE, so it is parsed from the fetched header block."""
+    envelope = entry.get(b"ENVELOPE")
+    rfc_id = ""
+    subject = ""
+    in_reply_to = ""
+    if envelope is not None:
+        rfc_id = _strip_brackets(_decode(envelope.message_id))
+        subject = _decode_mime_header(envelope.subject)
+        in_reply_to = _strip_brackets(_decode(envelope.in_reply_to))
+    references: list[str] = []
+    header_bytes = _header_fields_bytes(entry)
+    if header_bytes:
+        parsed = message_from_bytes(header_bytes, policy=policy.default)
+        references = parse_rfc822_ids(parsed.get("References", "") or "")
+        if not in_reply_to:
+            irt = parse_rfc822_ids(parsed.get("In-Reply-To", "") or "")
+            in_reply_to = irt[0] if irt else ""
+    return {
+        "rfc_message_id": rfc_id,
+        "subject": subject,
+        "in_reply_to": in_reply_to or None,
+        "references": references,
+    }
+
+
+def _payload_to_attachment_meta(fa: ForwardedAttachment) -> dict[str, Any]:
+    """Map a ``draft_builder`` ForwardedAttachment tuple
+    ``(filename, maintype, subtype, payload)`` to the IMAP attachment-metadata
+    shape. ``downloaded`` is True — the bytes came from the full BODY[] parse,
+    not from BODYSTRUCTURE metadata."""
+    return {
+        "name": fa[0],
+        "mime_type": f"{fa[1]}/{fa[2]}",
+        "size": len(fa[3]),
+        "downloaded": True,
+    }
+
+
+def _build_get_message_result(
+    entry: dict[bytes, Any],
+    body_key: bytes,
+    *,
+    want_body: bool,
+    text_mode: bool,
+    include_attachments: bool,
+) -> dict[str, Any]:
+    """Assemble the get_message response dict from a single FETCH entry.
+
+    Kept out of ``get_message`` itself so that method stays a thin
+    fetch-orchestrator (and under the complexity budget). In text mode
+    ``content`` is the decoded human-readable body and attachment metadata is
+    derived from the same full ``BODY[]`` bytes via the canonical
+    ``extract_attachment_payloads`` walker (which matches the BODYSTRUCTURE
+    index contract); otherwise both fall back to the legacy behavior."""
+    result = _envelope_to_dict(entry[b"ENVELOPE"], tuple(entry.get(b"FLAGS", ())))
+    body_bytes = b""
+    if want_body:
+        body_bytes = _select_body_bytes(entry, body_key)
+        result["content"] = (
+            _extract_text_body(body_bytes) if text_mode else _decode(body_bytes)
+        )
+    else:
+        result["content"] = ""
+    if include_attachments:
+        if want_body and text_mode:
+            result["attachments"] = [
+                _payload_to_attachment_meta(fa)
+                for fa in extract_attachment_payloads(body_bytes)
+            ]
+        else:
+            result["attachments"] = _bodystructure_extract_attachments(
+                entry.get(b"BODYSTRUCTURE")
+            )
+    return result
 
 
 class ImapConnector:
@@ -1089,6 +1290,7 @@ class ImapConnector:
         include_content: bool = True,
         headers_only: bool = False,
         include_attachments: bool = False,
+        body_format: str = "text",
     ) -> dict[str, Any]:
         """Look up a single message by RFC 5322 Message-ID and return its
         envelope + flags, optionally with body content.
@@ -1109,6 +1311,14 @@ class ImapConnector:
             include_content: When False, ``content`` is the empty string
                 (matches the AppleScript path's behavior with the same
                 flag).
+            body_format: ``"text"`` (default) fetches the full message and
+                returns ``content`` as decoded human-readable text only —
+                attachment bytes are parsed out (their metadata still comes
+                via ``include_attachments``). This is what keeps a message
+                with a multi-MB attachment from overflowing the MCP result.
+                ``"raw"`` preserves the legacy behavior: ``content`` is the
+                undecoded ``BODY[TEXT]`` (the entire multipart body with
+                base64 attachments inlined) — kept only as an escape hatch.
             headers_only: When True, fetches ``BODY[HEADER]`` instead of
                 ``BODY[TEXT]`` — useful for preview-style callers who
                 don't want the body. ``content`` is always returned as
@@ -1132,8 +1342,12 @@ class ImapConnector:
 
         fetch_keys: list[bytes] = [b"ENVELOPE", b"FLAGS"]
         want_body = include_content and not headers_only
+        text_mode = body_format != "raw"
+        # text mode parses the whole message server-side, so fetch BODY[] (full
+        # RFC822); raw mode keeps the legacy header-less BODY[TEXT].
+        body_key = b"BODY[]" if text_mode else b"BODY[TEXT]"
         if want_body:
-            fetch_keys.append(b"BODY[TEXT]")
+            fetch_keys.append(body_key)
         elif headers_only:
             # We don't currently use the raw header block for anything in
             # the response (envelope already gives us subject/sender/date),
@@ -1141,7 +1355,12 @@ class ImapConnector:
             # the server for headers without paying for the body. Some
             # servers send less data this way; some don't care.
             fetch_keys.append(b"BODY[HEADER]")
-        if include_attachments:
+        # When we parse the full body (text mode), attachment metadata comes
+        # from that parse — more reliable than BODYSTRUCTURE, which yields a
+        # false-empty list on some real messages. Only pay for BODYSTRUCTURE
+        # when we won't have the full body to parse (raw mode, or body skipped).
+        have_full_body = want_body and text_mode
+        if include_attachments and not have_full_body:
             fetch_keys.append(b"BODYSTRUCTURE")
 
         with self._session() as client:
@@ -1165,19 +1384,13 @@ class ImapConnector:
                     f"{mailbox!r} between SEARCH and FETCH."
                 )
 
-            result = _envelope_to_dict(
-                entry[b"ENVELOPE"], tuple(entry.get(b"FLAGS", ()))
+            return _build_get_message_result(
+                entry,
+                body_key,
+                want_body=want_body,
+                text_mode=text_mode,
+                include_attachments=include_attachments,
             )
-            if want_body:
-                body_bytes = entry.get(b"BODY[TEXT]") or b""
-                result["content"] = _decode(body_bytes)
-            else:
-                result["content"] = ""
-            if include_attachments:
-                result["attachments"] = _bodystructure_extract_attachments(
-                    entry.get(b"BODYSTRUCTURE")
-                )
-            return result
 
     def fetch_raw_message(
         self, message_id: str, mailbox: str = "INBOX"
@@ -1433,6 +1646,117 @@ class ImapConnector:
             return _bodystructure_extract_attachments(
                 entry.get(b"BODYSTRUCTURE")
             )
+
+    def locate_message(self, message_id: str) -> dict[str, Any] | None:
+        """Locate an RFC 5322 Message-ID and return where and *when* it is.
+
+        Returns ``{"folder": str, "uid": int, "internaldate": datetime}`` for
+        the first probed folder containing the Message-ID, or ``None`` when no
+        probed folder has it.
+
+        The ``internaldate`` is the point of this method (#432). Mail.app's
+        ``message id`` property is UNINDEXED, so matching it in AppleScript
+        loads every message in a mailbox and freezes Mail's UI. Mail *does*
+        order messages newest-first with cheap positional access, so a caller
+        that knows roughly WHEN a message arrived can binary-search to it in
+        ~log2(n) property reads instead of scanning. This supplies that date
+        from the server side, where the lookup IS indexed (measured 0.14s over
+        61,880 messages).
+
+        Shares the bounded probe-folder set with :meth:`resolve_anchor` — for
+        locating, Gmail's All Mail is ideal rather than a liability, since it
+        mirrors every message and so answers for any folder.
+
+        Raises:
+            IMAPClientError / OSError / LoginError: connection/auth failures,
+                so the caller can distinguish "not there" from "could not
+                check" (#425).
+        """
+        bracketed = _bracket_message_id(message_id)
+        with self._session() as client:
+            for folder in self._anchor_probe_folders(client):
+                try:
+                    client.select_folder(folder, readonly=True)
+                    uids = client.search(["HEADER", "Message-ID", bracketed])
+                except IMAPClientError as exc:
+                    logger.debug(
+                        "locate_message: skipping %s (%s)", folder, exc
+                    )
+                    continue
+                if not uids:
+                    continue
+                try:
+                    fetched = client.fetch([uids[0]], [b"INTERNALDATE"])
+                except IMAPClientError:
+                    continue
+                entry = fetched.get(uids[0]) or {}
+                internaldate = entry.get(b"INTERNALDATE")
+                if internaldate is None:
+                    continue
+                return {
+                    "folder": folder,
+                    "uid": uids[0],
+                    "internaldate": internaldate,
+                }
+        return None
+
+    def resolve_anchor(self, message_id: str) -> dict[str, Any] | None:
+        """Resolve an RFC 5322 Message-ID to a get_thread anchor via
+        server-side, INDEXED ``SEARCH HEADER Message-ID`` (#415).
+
+        This exists so ``get_thread`` never runs Mail.app's UNINDEXED
+        all-mailbox ``whose message id`` scan, which loads every message and
+        freezes Mail on a large account (a 33k-message INBOX takes >100s).
+        IMAP ``SEARCH HEADER`` is server-indexed and instant.
+
+        Probes a BOUNDED folder set — Gmail's ``\\All`` (All Mail mirrors every
+        message) if present, else INBOX + Sent — and never lists/scans every
+        folder or message. Returns an anchor dict
+        ``{rfc_message_id, subject, in_reply_to, references}`` for the first
+        probed folder that contains the Message-ID, or ``None`` if not found.
+        The caller supplies ``account``.
+
+        Raises:
+            IMAPClientError / OSError / LoginError: connection/auth failures,
+                so the caller can fall through to the next account.
+        """
+        bracketed = _bracket_message_id(message_id)
+        with self._session() as client:
+            for folder in self._anchor_probe_folders(client):
+                try:
+                    client.select_folder(folder, readonly=True)
+                    uids = client.search(["HEADER", "Message-ID", bracketed])
+                except IMAPClientError as exc:
+                    logger.debug(
+                        "resolve_anchor: skipping %s (%s)", folder, exc
+                    )
+                    continue
+                if not uids:
+                    continue
+                try:
+                    fetched = client.fetch(
+                        [uids[0]],
+                        [
+                            b"ENVELOPE",
+                            b"BODY.PEEK[HEADER.FIELDS "
+                            b"(REFERENCES IN-REPLY-TO)]",
+                        ],
+                    )
+                except IMAPClientError:
+                    continue
+                entry = fetched.get(uids[0])
+                if entry:
+                    return _anchor_from_fetch(entry)
+        return None
+
+    def _anchor_probe_folders(self, client: IMAPClient) -> list[str]:
+        """Bounded folder set for #415 anchor resolution: Gmail All Mail
+        (mirrors every message) if present, else INBOX + Sent. Never lists
+        all folders — that's the cost we're removing."""
+        all_mail = self._find_all_mail_folder(client)
+        if all_mail:
+            return [all_mail]
+        return list(self._anchor_lookup_folders(client))
 
     def find_thread_members(
         self,
@@ -1704,6 +2028,19 @@ class ImapConnector:
         "INBOX.Drafts",
     )
 
+    # Conventional Sent folder names to fall back on when the server
+    # doesn't advertise \\Sent via SPECIAL-USE (RFC 6154). Issue #406.
+    # "Sent Messages" is iCloud's name; "[Gmail]/Sent Mail" is Gmail's
+    # (Gmail also advertises \\Sent, so the convention list is only a
+    # safety net there). Order is informative — first match wins per
+    # ``client.list_folders``.
+    _CONVENTIONAL_SENT_NAMES: tuple[str, ...] = (
+        "Sent",
+        "Sent Messages",
+        "[Gmail]/Sent Mail",
+        "INBOX.Sent",
+    )
+
     def append_draft(self, raw_message: bytes) -> str:
         """APPEND a pre-built RFC822 message to the account's Drafts
         folder with the ``\\Draft`` flag, and return the folder used.
@@ -1749,6 +2086,75 @@ class ImapConnector:
             else:
                 present.add(name)
         for candidate in self._CONVENTIONAL_DRAFTS_NAMES:
+            if candidate in present:
+                return candidate
+        return None
+
+    def append_sent_copy(
+        self, raw_message: bytes, *, answered: bool = False
+    ) -> str:
+        """APPEND a copy of an already-sent message to the Sent folder.
+
+        Restores the Sent-mailbox copy that the SMTP send path (#322)
+        dropped: Mail.app's AppleScript ``tell theMessage to send`` used to
+        save a copy into Sent as a side effect, but the direct ``smtplib``
+        submission bypasses that. This mirrors :meth:`append_draft` (#245)
+        — same IMAP-APPEND transport, targeting the Sent folder instead of
+        Drafts and flagging the copy as already-read (issue #406).
+
+        The copy is flagged ``\\Seen`` (outgoing mail is not "unread" to its
+        own sender) and, when ``answered`` is true, ``\\Answered`` — matching
+        the flag a normal reply carries in the Sent mailbox.
+
+        The Sent folder is resolved by the RFC 6154 ``\\Sent`` SPECIAL-USE
+        flag first (Gmail advertises it, so ``[Gmail]/Sent Mail`` is found
+        without hard-coding), then a conventional-name fallback that covers
+        iCloud's ``Sent Messages`` and other providers.
+
+        Args:
+            raw_message: The serialized RFC 822 message that was sent (from
+                ``build_draft_mime``; still carries any ``Bcc`` header, which
+                is intentional — the Sent copy records blind recipients, as
+                Mail.app's own Sent copy does).
+            answered: True when the sent message was itself a reply.
+
+        Returns:
+            The Sent folder name the copy was APPENDed to.
+
+        Raises:
+            MailMessageNotFoundError: No Sent folder discoverable via
+                SPECIAL-USE or conventional names. Callers treat this (like
+                any failure here) as best-effort — the message is already
+                delivered — and must not surface it as a send failure.
+            IMAPClientError: Protocol-level APPEND failure.
+        """
+        flags: list[bytes] = [_FLAG_SEEN]
+        if answered:
+            flags.append(_FLAG_ANSWERED)
+        with self._session() as client:
+            folder = self._find_sent_folder(
+                client
+            ) or self._find_sent_by_convention(client)
+            if folder is None:
+                raise MailMessageNotFoundError(
+                    f"No Sent folder found on {self._host} "
+                    f"(no \\Sent SPECIAL-USE flag and none of "
+                    f"{list(self._CONVENTIONAL_SENT_NAMES)} present)."
+                )
+            client.append(folder, raw_message, flags=flags)
+            return folder
+
+    def _find_sent_by_convention(self, client: IMAPClient) -> str | None:
+        """Fall back to conventional Sent names for servers that don't
+        advertise SPECIAL-USE ``\\Sent`` (e.g. iCloud's ``Sent Messages``).
+        First match wins in :attr:`_CONVENTIONAL_SENT_NAMES` order (#406)."""
+        present: set[str] = set()
+        for _flags, _delim, name in client.list_folders():
+            if isinstance(name, (bytes, bytearray)):
+                present.add(name.decode("utf-8", errors="replace"))
+            else:
+                present.add(name)
+        for candidate in self._CONVENTIONAL_SENT_NAMES:
             if candidate in present:
                 return candidate
         return None
@@ -1960,7 +2366,9 @@ class ImapConnector:
         """Return the Sent folder name via the ``\\Sent`` SPECIAL-USE flag,
         or None if not found. Used by Tier 1.5 (#125) as the second
         anchor-lookup target after INBOX — covers the common case of a
-        thread anchored at a sent message."""
+        thread anchored at a sent message — and by :meth:`append_sent_copy`
+        (#406), which falls back to :meth:`_find_sent_by_convention` when
+        this returns None."""
         for flags, _delim, name in client.list_folders():
             if b"\\Sent" in flags:
                 if isinstance(name, (bytes, bytearray)):

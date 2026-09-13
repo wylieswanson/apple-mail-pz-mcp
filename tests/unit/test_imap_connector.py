@@ -26,6 +26,8 @@ def _fake_envelope(
     sender_name: bytes = b"Alice",
     sender_mailbox: bytes = b"alice",
     sender_host: bytes = b"example.com",
+    to: tuple[Address, ...] = (),
+    cc: tuple[Address, ...] = (),
     date: datetime | None = None,
 ) -> Envelope:
     """Build an Envelope with reasonable defaults for envelope-shape tests."""
@@ -37,8 +39,8 @@ def _fake_envelope(
         from_=(from_addr,),
         sender=(from_addr,),
         reply_to=(from_addr,),
-        to=(),
-        cc=(),
+        to=to,
+        cc=cc,
         bcc=(),
         in_reply_to=None,
         message_id=message_id,
@@ -1161,11 +1163,12 @@ class TestGetMessage:
         assert result["read_status"] is True
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
-    def test_default_fetch_keys_include_body_text(
+    def test_default_fetch_keys_include_full_body(
         self, mock_cls: MagicMock
     ) -> None:
-        """Default include_content=True and headers_only=False → fetch
-        ENVELOPE + FLAGS + BODY[TEXT]."""
+        """Default body_format='text' → fetch ENVELOPE + FLAGS + BODY[] (the
+        whole message, so the body is MIME-parsed server-side and attachment
+        bytes are dropped from ``content``)."""
         self._setup_client(mock_cls)
 
         ImapConnector("h", 993, "u@e.com", "pw").get_message(
@@ -1175,8 +1178,151 @@ class TestGetMessage:
         fetch_keys = mock_cls.return_value.fetch.call_args[0][1]
         assert b"ENVELOPE" in fetch_keys
         assert b"FLAGS" in fetch_keys
-        assert b"BODY[TEXT]" in fetch_keys
+        assert b"BODY[]" in fetch_keys
+        assert b"BODY[TEXT]" not in fetch_keys
         assert b"BODY[HEADER]" not in fetch_keys
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_raw_body_format_fetches_legacy_body_text(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """body_format='raw' is the escape hatch: keep the legacy
+        header-less BODY[TEXT] fetch and the undecoded content."""
+        self._setup_client(mock_cls, body=b"--b\r\nraw mime\r\n--b--")
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").get_message(
+            "abc@x", mailbox="INBOX", body_format="raw",
+        )
+
+        fetch_keys = mock_cls.return_value.fetch.call_args[0][1]
+        assert b"BODY[TEXT]" in fetch_keys
+        assert b"BODY[]" not in fetch_keys
+        # raw mode returns the bytes verbatim (charset-decoded only).
+        assert result["content"] == "--b\r\nraw mime\r\n--b--"
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_text_body_strips_attachment_base64(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """The crux of the overflow fix: a multipart message with a large
+        base64 attachment yields ``content`` with the readable text only —
+        the attachment bytes never appear."""
+        import base64
+
+        blob = base64.b64encode(b"\x00" * 8000).decode()
+        full = (
+            "From: alice@example.com\r\n"
+            "Subject: Hi\r\n"
+            'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
+            "--B\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"
+            "Please see the attached report.\r\n"
+            "--B\r\nContent-Type: application/octet-stream\r\n"
+            "Content-Transfer-Encoding: base64\r\n"
+            'Content-Disposition: attachment; filename="r.bin"\r\n\r\n'
+            f"{blob}\r\n--B--\r\n"
+        ).encode()
+        self._setup_client(mock_cls, body=full)
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").get_message(
+            "abc@x", mailbox="INBOX",
+        )
+
+        assert result["content"] == "Please see the attached report."
+        assert blob[:50] not in result["content"]
+        assert len(result["content"]) < 200  # not megabytes of base64
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_to_cc_recipients_surfaced(self, mock_cls: MagicMock) -> None:
+        """To/Cc were dropped on the IMAP path; now they come through from
+        the ENVELOPE. Display names are RFC 2047-decoded via
+        ``_decode_mime_header`` (CHANGE 1): a plain-ASCII name passes through
+        unchanged, an encoded-word name comes back as decoded Korean."""
+        client = self._setup_client(mock_cls)
+        entry = next(iter(client.fetch.return_value.values()))
+        entry[b"ENVELOPE"] = _fake_envelope(
+            to=(
+                Address(b"Bob", None, b"bob", b"example.com"),
+                # =?utf-8?b?7ZmN6ri464+Z?= is the encoded-word form of 홍길동.
+                Address(
+                    b"=?utf-8?b?7ZmN6ri464+Z?=", None, b"hong", b"example.com"
+                ),
+            ),
+            cc=(Address(None, None, b"carol", b"example.com"),),
+        )
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").get_message(
+            "abc@x", mailbox="INBOX",
+        )
+
+        # Plain ASCII unchanged; encoded-word decoded to Korean (CHANGE 1).
+        assert result["to"] == "Bob <bob@example.com>, 홍길동 <hong@example.com>"
+        # No-name recipient → bare address.
+        assert result["cc"] == "carol@example.com"
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_attachments_from_full_body_parse(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """include_attachments=True derives attachment metadata from the
+        canonical ``extract_attachment_payloads`` walker over the full body
+        bytes (CHANGE 2) — so a real attachment is found even when the
+        BODYSTRUCTURE walker would miss it (the historical false-negative).
+        BODYSTRUCTURE isn't even fetched when we already have the full body."""
+        import base64
+
+        blob = base64.b64encode(b"PK\x03\x04" + b"\x00" * 1000).decode()
+        full = (
+            "From: a@e.com\r\nSubject: Hi\r\n"
+            'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
+            "--B\r\nContent-Type: text/plain\r\n\r\nbody text\r\n"
+            "--B\r\nContent-Type: application/octet-stream\r\n"
+            "Content-Transfer-Encoding: base64\r\n"
+            'Content-Disposition: attachment; filename="report.hwp"\r\n\r\n'
+            f"{blob}\r\n--B--\r\n"
+        ).encode()
+        self._setup_client(mock_cls, body=full)
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").get_message(
+            "abc@x", mailbox="INBOX", include_attachments=True,
+        )
+
+        atts = result["attachments"]
+        assert len(atts) == 1
+        assert atts[0]["name"] == "report.hwp"
+        assert atts[0]["mime_type"] == "application/octet-stream"
+        assert atts[0]["size"] == 1004
+        assert atts[0]["downloaded"] is True
+        assert result["content"] == "body text"
+        fetch_keys = mock_cls.return_value.fetch.call_args[0][1]
+        assert b"BODYSTRUCTURE" not in fetch_keys
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_attachments_fall_back_to_bodystructure_without_body(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """When the body isn't fetched (include_content=False) there is no
+        full parse to mine, so attachment metadata still comes from
+        BODYSTRUCTURE — the legacy path stays intact."""
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.search.return_value = [9]
+        client.fetch.return_value = {
+            9: {
+                b"ENVELOPE": _fake_envelope(message_id=b"<9@e.com>"),
+                b"FLAGS": (),
+                b"BODYSTRUCTURE": _MULTIPART_WITH_ATTACHMENT,
+            }
+        }
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").get_message(
+            "9@e.com", mailbox="INBOX",
+            include_content=False, include_attachments=True,
+        )
+
+        fetch_keys = client.fetch.call_args[0][1]
+        assert b"BODYSTRUCTURE" in fetch_keys
+        names = [a["name"] for a in result["attachments"]]
+        assert "x.pdf" in names
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_include_content_false_skips_body_fetch(
@@ -3795,6 +3941,100 @@ class TestAppendDraft:
         assert mock_client.append.call_args[0][0] == "Drafts"
 
 
+class TestAppendSentCopy:
+    """#406: after an SMTP send (#322), a copy is APPENDed to the account's
+    Sent folder over IMAP (Mail.app's AppleScript send used to do this as a
+    side effect). Mirrors TestAppendDraft: SPECIAL-USE first, conventional
+    fallback, plus the \\Seen / \\Answered flag conventions."""
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_appends_to_special_use_sent_with_seen_flag(self, mock_cls):
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.list_folders.return_value = [
+            ((b"\\HasNoChildren",), b"/", "INBOX"),
+            ((b"\\Sent", b"\\HasNoChildren"), b"/", "[Gmail]/Sent Mail"),
+        ]
+
+        conn = ImapConnector("imap.gmail.com", 993, "u@gmail.com", "pw")
+        folder = conn.append_sent_copy(b"raw-bytes")
+
+        assert folder == "[Gmail]/Sent Mail"
+        args, kwargs = mock_client.append.call_args
+        assert args[0] == "[Gmail]/Sent Mail"
+        assert args[1] == b"raw-bytes"
+        flags = kwargs.get("flags", args[2] if len(args) > 2 else None)
+        assert flags is not None
+        assert b"\\Seen" in list(flags)
+        # A non-reply must NOT be marked answered.
+        assert b"\\Answered" not in list(flags)
+        mock_client.logout.assert_called_once()
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_falls_back_to_conventional_icloud_sent_messages(self, mock_cls):
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        # iCloud does not advertise \Sent SPECIAL-USE; it names the folder
+        # "Sent Messages".
+        mock_client.list_folders.return_value = [
+            ((b"\\HasNoChildren",), b"/", "INBOX"),
+            ((b"\\HasNoChildren",), b"/", "Sent Messages"),
+        ]
+
+        conn = ImapConnector("imap.mail.me.com", 993, "u@me.com", "pw")
+        folder = conn.append_sent_copy(b"raw-bytes")
+
+        assert folder == "Sent Messages"
+        assert mock_client.append.call_args[0][0] == "Sent Messages"
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_conventional_fallback_handles_bytes_folder_names(self, mock_cls):
+        # Some servers return folder names as bytes rather than str; the
+        # convention scan must decode them before matching.
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.list_folders.return_value = [
+            ((b"\\HasNoChildren",), b"/", b"INBOX"),
+            ((b"\\HasNoChildren",), b"/", b"Sent Messages"),
+        ]
+
+        conn = ImapConnector("imap.mail.me.com", 993, "u@me.com", "pw")
+        folder = conn.append_sent_copy(b"raw-bytes")
+
+        assert folder == "Sent Messages"
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_reply_copy_is_marked_answered(self, mock_cls):
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.list_folders.return_value = [
+            ((b"\\Sent",), b"/", "Sent"),
+        ]
+
+        conn = ImapConnector("imap.example.com", 993, "u@e.com", "pw")
+        conn.append_sent_copy(b"raw-bytes", answered=True)
+
+        _args, kwargs = mock_client.append.call_args
+        flags = list(kwargs["flags"])
+        assert b"\\Seen" in flags
+        assert b"\\Answered" in flags
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_no_sent_folder_raises_not_found(self, mock_cls):
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        # Neither SPECIAL-USE \Sent nor any conventional name present.
+        mock_client.list_folders.return_value = [
+            ((b"\\HasNoChildren",), b"/", "INBOX"),
+            ((b"\\HasNoChildren",), b"/", "Archive"),
+        ]
+
+        conn = ImapConnector("imap.example.com", 993, "u@e.com", "pw")
+        with pytest.raises(MailMessageNotFoundError):
+            conn.append_sent_copy(b"raw-bytes")
+        mock_client.append.assert_not_called()
+
+
 class TestEnvelopeVanishRobustness:
     """#314: a message can be expunged/moved between SEARCH and FETCH (a
     concurrent change), so the server's FETCH response omits ENVELOPE for
@@ -3848,3 +4088,77 @@ class TestEnvelopeVanishRobustness:
         conn = ImapConnector("imap.example.com", 993, "u@e.com", "pw")
         with pytest.raises(MailMessageNotFoundError):
             conn.get_message("<gone@example.com>")
+
+
+class TestResolveAnchor:
+    """#415: resolve an RFC Message-ID to a get_thread anchor via server-side
+    INDEXED `SEARCH HEADER Message-ID`, bounded to Gmail All Mail (else
+    INBOX+Sent) — never the unindexed all-mailbox Mail.app scan."""
+
+    @staticmethod
+    def _fetch(uid: int, refs: bytes = b"") -> dict[int, dict[bytes, Any]]:
+        return {
+            uid: {
+                b"ENVELOPE": _fake_envelope(
+                    message_id=b"<abc@x>", subject=b"Hi there"
+                ),
+                b"BODY[HEADER.FIELDS (REFERENCES IN-REPLY-TO)]": (
+                    b"References: " + refs + b"\r\n"
+                ),
+            }
+        }
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_gmail_probes_all_mail_only(self, mock_cls: MagicMock) -> None:
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.list_folders.return_value = [
+            ([b"\\All"], b"/", "[Gmail]/All Mail"),
+            ([b"\\Sent"], b"/", "[Gmail]/Sent Mail"),
+        ]
+        client.search.return_value = [42]
+        client.fetch.return_value = self._fetch(42, b"<r1@x> <r2@x>")
+
+        conn = ImapConnector("h", 993, "e@x", "pw")
+        anchor = conn.resolve_anchor("abc@x")
+
+        assert anchor is not None
+        assert anchor["rfc_message_id"] == "abc@x"
+        assert anchor["subject"] == "Hi there"
+        assert anchor["references"] == ["r1@x", "r2@x"]
+        # Gmail → ONLY All Mail probed (never INBOX/Sent/every folder).
+        client.select_folder.assert_called_once_with(
+            "[Gmail]/All Mail", readonly=True
+        )
+        # Indexed server-side SEARCH HEADER Message-ID (bracketed).
+        assert client.search.call_args[0][0] == [
+            "HEADER", "Message-ID", "<abc@x>",
+        ]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_non_gmail_probes_inbox_then_sent_only(
+        self, mock_cls: MagicMock
+    ) -> None:
+        client = MagicMock()
+        mock_cls.return_value = client
+        # No \All; a \Sent folder present.
+        client.list_folders.return_value = [
+            ([b"\\Sent"], b"/", "Sent Messages"),
+        ]
+        client.search.return_value = []  # not found → None
+
+        conn = ImapConnector("h", 993, "e@x", "pw")
+        assert conn.resolve_anchor("abc@x") is None
+
+        # Bounded probe: INBOX then Sent, in order — never all folders.
+        selected = [c[0][0] for c in client.select_folder.call_args_list]
+        assert selected == ["INBOX", "Sent Messages"]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_not_found_returns_none(self, mock_cls: MagicMock) -> None:
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.list_folders.return_value = [([b"\\All"], b"/", "All Mail")]
+        client.search.return_value = []
+        conn = ImapConnector("h", 993, "e@x", "pw")
+        assert conn.resolve_anchor("nope@x") is None

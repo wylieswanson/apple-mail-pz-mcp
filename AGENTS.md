@@ -3,7 +3,7 @@
 An MCP server bridging AI agents and Apple Mail via AppleScript on macOS.
 
 **Stack:** Python 3.10+, FastMCP, AppleScript (via `osascript`)
-**Version:** v0.11.1 | **Tests:** 1593 unit / 39 e2e / 62 integration | **Coverage:** 91%
+**Version:** v0.11.1 | **Tests:** 1754 unit / 39 e2e / 73 integration | **Coverage:** 91%
 
 This file is the canonical agent guide. Codex reads it directly; Claude Code
 reaches it via [`.claude/CLAUDE.md`](.claude/CLAUDE.md). Edit it here.
@@ -183,9 +183,9 @@ Claude Code loads these from `.claude/skills/`. Other agents should read the
 
 ## Key Files
 
-- `src/apple_mail_fast_mcp/mail_connector.py` — Core AppleScript client (~5660 lines)
-- `src/apple_mail_fast_mcp/server.py` — FastMCP server wrapping the connector (~3700 lines)
-- `src/apple_mail_fast_mcp/imap_connector.py` — IMAP fast path (~2400 lines)
+- `src/apple_mail_fast_mcp/mail_connector.py` — Core AppleScript client (~6770 lines)
+- `src/apple_mail_fast_mcp/server.py` — FastMCP server wrapping the connector (~3800 lines)
+- `src/apple_mail_fast_mcp/imap_connector.py` — IMAP fast path (~2800 lines)
 - `src/apple_mail_fast_mcp/security.py` — Input validation, audit logging, confirmation flows
 - `src/apple_mail_fast_mcp/utils.py` — Pure functions: escaping, parsing, validation, host-arg coercion, `env_flag`
 - `src/apple_mail_fast_mcp/version.py` — Version/commit/build-date provenance (`--version`, `serverInfo`, `diagnose_mail_access`)

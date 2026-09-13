@@ -21,6 +21,13 @@ class Provider:
     name: str
     app_password_url: str | None
     steps: tuple[str, ...]
+    # True when the provider's SMTP submission server auto-files a copy of
+    # sent mail into the Sent folder server-side (Gmail does; iCloud, Yahoo,
+    # Outlook/Office365, Fastmail do not). The SMTP send path (#322/#406)
+    # uses this to skip its own IMAP-APPEND Sent copy for such providers —
+    # appending would produce a duplicate. Verified live against Gmail during
+    # the PR #404 review.
+    smtp_saves_sent_copy: bool = False
 
 
 ICLOUD = Provider(
@@ -43,6 +50,7 @@ GMAIL = Provider(
         "Create an app password (any name) — you get a 16-character code.",
         "Paste it below (spaces are fine — they're stripped).",
     ),
+    smtp_saves_sent_copy=True,
 )
 
 YAHOO = Provider(

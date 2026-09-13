@@ -581,3 +581,37 @@ def check_test_mode_safety(
             )
 
     return None
+
+
+def send_recipients_test_violation(recipients: list[str]) -> str | None:
+    """Transport-boundary reserved-domain guard for send paths (#322/#175).
+
+    ``check_test_mode_safety`` runs in the server-tool wrapper, which only
+    sees the *caller-supplied* recipients. A send path that derives further
+    recipients inside the connector — e.g. an SMTP ``reply_all`` whose ``cc``
+    is pulled from the original message — can therefore reach the wire with
+    real addresses the server gate never validated. This is the #175 class
+    of bug re-armed by a new transport. Call this at the point where the
+    *final* envelope recipient set is known (just before handing bytes to
+    ``smtplib``) and refuse the send when it returns a message.
+
+    Returns:
+        ``None`` when the send is allowed (not in test mode, or every
+        recipient is on an RFC 2606 reserved test domain). Otherwise a
+        human-readable violation message. Outside test mode this always
+        returns ``None`` — it never constrains real sends.
+    """
+    if not _is_test_mode_enabled():
+        return None
+    if not recipients:
+        return (
+            "Test mode: send requires explicit recipients (implicit-reply "
+            "targets cannot be safety-verified before send)."
+        )
+    bad = [r for r in recipients if not _is_reserved_test_domain(r)]
+    if bad:
+        return (
+            "Test mode: recipients must use RFC 2606 reserved domains "
+            f"(example.com/.test/.invalid/etc.). Violations: {', '.join(bad)}"
+        )
+    return None

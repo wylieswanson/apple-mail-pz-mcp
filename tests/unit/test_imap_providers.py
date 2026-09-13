@@ -81,3 +81,30 @@ class TestProviderTable:
         assert all(
             p.app_password_url for k, p in PROVIDERS.items() if k != "generic"
         )
+
+
+class TestSmtpSavesSentCopy:
+    """Gmail's SMTP server auto-files submitted mail into Sent Mail
+    server-side; every other provider we support does not. The
+    ``smtp_saves_sent_copy`` flag lets the send path skip its own Sent-copy
+    APPEND for Gmail to avoid a duplicate (#406 / PR #404 re-review)."""
+
+    def test_only_gmail_auto_saves(self):
+        assert PROVIDERS["gmail"].smtp_saves_sent_copy is True
+        assert all(
+            p.smtp_saves_sent_copy is False
+            for k, p in PROVIDERS.items()
+            if k != "gmail"
+        )
+
+    def test_detect_carries_the_flag(self):
+        # Both the SMTP host and the IMAP host resolve to the Gmail provider.
+        assert detect_provider(
+            "smtp.gmail.com", "me@x.test"
+        ).smtp_saves_sent_copy
+        assert detect_provider(
+            "imap.gmail.com", "me@gmail.com"
+        ).smtp_saves_sent_copy
+        assert not detect_provider(
+            "smtp.x.test", "me@x.test"
+        ).smtp_saves_sent_copy
