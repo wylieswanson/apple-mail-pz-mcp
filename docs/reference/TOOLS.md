@@ -324,13 +324,37 @@ Return all messages in the thread containing the given anchor message, sorted by
      "subject": "Re: Q3 Report", "sender": "bob@x.com",
      "date_received": "Mon Jan 1 2024 14:30:00", "read_status": true, "flagged": false}
   ],
-  "count": 2
+  "count": 2,
+  "partial": false
 }
 ```
 
 Row fields include both `id` (path-native — see `search_messages` for details) and `rfc_message_id` (always RFC 5322 bracketless, or `null` when the message lacks a Message-ID header). See `search_messages` for the dual-emit (#148) rationale.
 
 Uses the connector's tiered IMAP threading dispatch (Tier 1 X-GM-THRID for Gmail per #122, Tier 3 header-search BFS fallback) when IMAP is configured; falls back to AppleScript otherwise.
+
+**Completeness (`partial`) — #420.** `partial` is always present. When `true`, the IMAP path could not complete and the rows came from the AppleScript fallback, which is **subject-prefiltered** and therefore misses thread members whose subject was rewritten mid-conversation — it can return strictly fewer messages than the full thread. `partial_reason` is then present and names the cause:
+
+| `partial_reason` | Meaning | Worth retrying? |
+|---|---|---|
+| `imap_timeout` | IMAP stalled (30s `OPERATION_TIMEOUT_S`) | Yes — usually transient |
+| `imap_unavailable` | Connection failed for another reason | Yes |
+| `imap_auth_failed` | Credentials rejected, or Keychain access denied | No — re-run `setup-imap` |
+| `imap_not_configured` | No Keychain entry; user hasn't opted in to IMAP | No — steady state |
+| `imap_breaker_open` | Circuit breaker open after repeated failures | Yes, after a cooldown |
+
+Treat a partial thread as a **lower bound** on the conversation. Before this field existed, a truncated thread was indistinguishable from a complete one.
+
+```json
+{"success": true, "thread": [{"id": "100", "...": "..."}], "count": 1,
+ "partial": true, "partial_reason": "imap_timeout"}
+```
+
+> **⚡ Performance on large accounts (Gmail especially).** IMAP `SEARCH` runs on **one mailbox at a time** — there is no cross-folder search — so threading cost scales with **how many mailboxes must be checked**, not how many messages you have. A thread's messages are inherently spread across mailboxes (INBOX for received, Sent for replies, plus labels/folders).
+>
+> Gmail is the outlier: it exposes each **label** as a folder and files a copy of a message into *every* label it carries, and accounts routinely have dozens of labels. The shortcut is **All Mail**, which holds every message exactly once — so on Gmail, enable **Settings → Labels → All Mail → "Show in IMAP"** for fast threading (and to search all mail). With All Mail hidden, `get_thread` must walk every label-folder (one `SEARCH` each), which is slow on many-label accounts. Non-Gmail (true folder) accounts usually have a handful of folders with thread members concentrated in INBOX/Sent, so they stay fast without any special mailbox — though an account with genuinely dozens of folders would hit the same per-folder cost.
+>
+> The cost above is **member collection**, and it is identical for both `message_id` forms — they converge on the same tiered dispatch. **Anchor resolution** differs by form: an RFC Message-ID is resolved over IMAP (one indexed `SEARCH HEADER Message-ID`), while a numeric Mail.app id is resolved by AppleScript against Mail's unified `inbox`, then `sent mailbox` — bounded, and locale-independent. A numeric id that is in neither falls back to a scan of every mailbox of every account, which is correct but markedly slower (~3.0s vs ~1.3s on a 33k-message Gmail account, #419).
 
 **Examples:**
 
@@ -346,7 +370,8 @@ full = get_messages(ids)
 
 **Error Codes:**
 
-- `message_not_found`: Anchor message doesn't exist or was deleted
+- `message_not_found`: Anchor message doesn't exist or was deleted — every configured account was checked and definitively did not have it
+- `anchor_lookup_incomplete`: At least one account could **not** be checked (timeout / connection failure / rejected credentials), so absence was never established. Carries `retryable: true` — the message may well exist. Distinct from `message_not_found` on purpose (#425)
 - `unknown`: Unexpected error occurred
 
 ---
@@ -1060,7 +1085,7 @@ Create a draft (fresh, reply, or forward). Optionally send immediately.
 | `template_name` | string | No | None | Optional template to render for `subject` + `body`. Caller-supplied `subject`/`body` override the rendered output. |
 | `template_vars` | object | No | None | Variables for the template renderer. Requires `template_name`. |
 | `from_account` | string | No | None | Mail.app account name or UUID. None = Mail's default. On a save-as-draft with exactly one enabled account, that account is adopted so the clean (no iOS quote bug) IMAP draft path can engage — it's Mail's default sender anyway, so the From is unchanged (#321). |
-| `send_now` | boolean | No | False | `False` saves as draft. `True` sends immediately and elicits confirmation. |
+| `send_now` | boolean | No | False | `False` saves as draft. `True` sends immediately and elicits confirmation. When the account has SMTP + IMAP credentials configured, the send goes out over a clean **SMTP** submission (#322) — a wrapper-free RFC 822 message — so sent mail avoids the iOS cite-blockquote (Mail.app bug FB11734014); it falls back to Mail's AppleScript send (which does apply the wrapper) when SMTP isn't available. Unlike a save-as-draft, a `send_now` with no `from_account` is **not** auto-resolved to the sole account (#321) — pass `from_account` to get the clean SMTP path. |
 
 **Returns:**
 
@@ -1088,6 +1113,21 @@ response includes an optional `warnings: list[str]` field noting the body
 may render as a blockquote on iOS Mail (Mail.app bug FB11734014, #245).
 The field is **omitted** on the clean path. Configure IMAP for the account
 (`apple-mail-pz-mcp setup-imap`) — or pass `from_account` — to avoid it.
+
+**Send path (`send_now=True`, #322).** Historically every send went out via
+Mail's AppleScript `tell theMessage to send`, whose `content` setter wraps
+the body in the same FB11734014 cite-blockquote as the draft case — so sent
+mail could render as a quote on iOS too. When `from_account` is given and
+that account has SMTP + IMAP credentials, `create_draft` now submits a clean,
+wrapper-free RFC 822 message (the same `build_draft_mime` output as the draft
+path) directly over the account's **SMTP** server, reusing the account's IMAP
+app-password (no separate SMTP credential). It falls back to the AppleScript
+send when SMTP isn't configured/reachable. In test mode (`MAIL_TEST_MODE`),
+the SMTP path re-verifies every **resolved** recipient — including reply-all
+recipients derived inside the connector — against the reserved-domain
+allowlist at the transport boundary and refuses the send
+(`error_type: "safety_violation"`) on a violation, closing the #175 class of
+bypass for the new transport.
 
 **Examples:**
 

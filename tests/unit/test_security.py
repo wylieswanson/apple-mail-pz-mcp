@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from apple_mail_fast_mcp.security import (
     OPERATION_TIERS,
     TIER_LIMITS,
@@ -18,6 +20,7 @@ from apple_mail_fast_mcp.security import (
     detect_prompt_injection,
     operation_logger,
     rate_limiter,
+    send_recipients_test_violation,
     validate_bulk_operation,
     validate_send_operation,
 )
@@ -292,6 +295,21 @@ class TestCheckTestModeSafety:
         # Clear the per-process UUID-resolution cache so tests don't see
         # cached identifiers from other tests' mocked subprocess returns.
         _get_test_account_identifiers.cache_clear()
+
+    @pytest.fixture(autouse=True)
+    def _stub_uuid_osascript(self, monkeypatch: Any) -> None:
+        """The safety gate shells to ``osascript`` to enrich the identifier
+        set with the account's UUID. In CI that first osascript triggers a
+        ~20-30s Mail.app cold-launch (#408). Default it to a benign
+        "not found" so the gate falls back to name-only matching — which is
+        all these name-based tests need. The two UUID-path tests re-stub
+        ``subprocess.run`` in their own body (shadowing this)."""
+        monkeypatch.setattr(
+            "apple_mail_fast_mcp.security.subprocess.run",
+            lambda *a, **k: type(
+                "R", (), {"returncode": 1, "stdout": "", "stderr": "n/a"}
+            )(),
+        )
 
     def test_no_test_mode_returns_none(self, monkeypatch: Any) -> None:
         monkeypatch.delenv("MAIL_TEST_MODE", raising=False)
@@ -634,3 +652,36 @@ class TestInjectionScanEnabled:
     def test_other_values_keep_enabled(self, monkeypatch: Any) -> None:
         monkeypatch.setenv("APPLE_MAIL_MCP_DISABLE_INJECTION_SCAN", "0")
         assert _injection_scan_enabled() is True
+
+
+class TestTestModeRecipientViolation:
+    """#322/#175: transport-boundary reserved-domain guard for send paths
+    whose final recipient set is only known after in-connector derivation."""
+
+    def test_outside_test_mode_always_allowed(self, monkeypatch: Any) -> None:
+        monkeypatch.delenv("MAIL_TEST_MODE", raising=False)
+        assert send_recipients_test_violation(["real@person.com"]) is None
+
+    def test_reserved_recipients_allowed(self, monkeypatch: Any) -> None:
+        monkeypatch.setenv("MAIL_TEST_MODE", "true")
+        assert (
+            send_recipients_test_violation(
+                ["a@example.com", "b@example.net", "c@foo.test"]
+            )
+            is None
+        )
+
+    def test_real_recipient_blocked(self, monkeypatch: Any) -> None:
+        monkeypatch.setenv("MAIL_TEST_MODE", "true")
+        msg = send_recipients_test_violation(
+            ["ok@example.com", "leak@real-person.com"]
+        )
+        assert msg is not None
+        assert "leak@real-person.com" in msg
+        assert "ok@example.com" not in msg
+
+    def test_empty_recipients_blocked(self, monkeypatch: Any) -> None:
+        monkeypatch.setenv("MAIL_TEST_MODE", "true")
+        msg = send_recipients_test_violation([])
+        assert msg is not None
+        assert "explicit recipients" in msg

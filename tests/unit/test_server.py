@@ -1779,7 +1779,7 @@ class TestGetMessages:
         assert result["success"] is True
         assert result["count"] == 1
         assert result["messages"][0]["id"] == "1"
-        # All six params flow through per id; include_attachments defaults
+        # All params flow through per id; include_attachments defaults
         # True for get_messages (bounded id-list cardinality, see #133+#142).
         mock_mail.get_message.assert_called_once_with(
             "1",
@@ -1788,6 +1788,7 @@ class TestGetMessages:
             account=None,
             mailbox=None,
             include_attachments=True,
+            body_format="text",
         )
         mock_logger.log_operation.assert_called_once()
 
@@ -1999,6 +2000,7 @@ class TestGetMessages:
             account="iCloud",
             mailbox="INBOX",
             include_attachments=True,
+            body_format="text",
         )
 
     # ---- include_attachments (#133 + #142) -------------------------------
@@ -2323,25 +2325,46 @@ class TestGetThread:
     def test_success_returns_thread_and_logs(
         self, mock_mail: MagicMock, mock_logger: MagicMock
     ) -> None:
-        mock_mail.get_thread.return_value = [
+        mock_mail._get_thread_with_status.return_value = ([
             {"id": "1", "subject": "Q3", "sender": "a@b", "date_received": "Mon", "read_status": True, "flagged": False},
             {"id": "2", "subject": "Re: Q3", "sender": "c@d", "date_received": "Tue", "read_status": False, "flagged": False},
-        ]
+        ], None)
 
         result = get_thread("1")
 
         assert result["success"] is True
         assert result["count"] == 2
         assert len(result["thread"]) == 2
-        mock_mail.get_thread.assert_called_once_with("1")
+        # #420: a complete result must say so explicitly, not by omission.
+        assert result["partial"] is False
+        assert "partial_reason" not in result
+        mock_mail._get_thread_with_status.assert_called_once_with("1")
         mock_logger.log_operation.assert_called_once_with(
             "get_thread", {"message_id": "1"}, "success"
         )
 
+    def test_degraded_result_is_flagged_partial_with_a_reason(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        """#420: the fallback can return a smaller thread than IMAP would.
+        The call still succeeds — it just must not claim completeness."""
+        mock_mail._get_thread_with_status.return_value = (
+            [{"id": "1", "subject": "Q3", "sender": "a@b",
+              "date_received": "Mon", "read_status": True, "flagged": False}],
+            "imap_timeout",
+        )
+
+        result = get_thread("1")
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["partial"] is True
+        assert result["partial_reason"] == "imap_timeout"
+
     def test_message_not_found_maps_to_message_not_found(
         self, mock_mail: MagicMock, mock_logger: MagicMock
     ) -> None:
-        mock_mail.get_thread.side_effect = MailMessageNotFoundError("nope")
+        mock_mail._get_thread_with_status.side_effect = MailMessageNotFoundError("nope")
 
         result = get_thread("nope")
 
@@ -2353,13 +2376,36 @@ class TestGetThread:
     def test_unexpected_exception_maps_to_unknown(
         self, mock_mail: MagicMock, mock_logger: MagicMock
     ) -> None:
-        mock_mail.get_thread.side_effect = RuntimeError("boom")
+        mock_mail._get_thread_with_status.side_effect = RuntimeError("boom")
 
         result = get_thread("1")
 
         assert result["success"] is False
         assert result["error_type"] == "unknown"
         assert "boom" in result["error"]
+
+    def test_incomplete_lookup_is_its_own_retryable_error_type(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        """#425: an unchecked account must not read as "no such message".
+        MCP callers need to tell retry-worthy from definitive."""
+        from apple_mail_fast_mcp.exceptions import (
+            MailAnchorLookupIncompleteError,
+        )
+
+        mock_mail._get_thread_with_status.side_effect = MailAnchorLookupIncompleteError(
+            "the IMAP probe failed for Gmail"
+        )
+
+        result = get_thread("real@x")
+
+        assert result["success"] is False
+        assert result["error_type"] == "anchor_lookup_incomplete"
+        assert result["retryable"] is True
+        assert "Gmail" in result["error"]
+        # The misleading remediation must not survive into the tool response.
+        assert "setup-imap" not in result["error"]
+        mock_logger.log_operation.assert_not_called()
 
 
 class TestGetStatistics:
@@ -3827,6 +3873,31 @@ class TestCreateDraftTool:
         assert result["success"] is False
         assert result["error_type"] == "cancelled"
         mock_mail.create_draft.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connector_safety_error_maps_to_safety_violation(
+        self,
+        isolated_drafts: Any,
+        mock_mail: MagicMock,
+        mock_logger: MagicMock,
+        mock_ctx_accept: MagicMock,
+    ) -> None:
+        """#322/#175: the SMTP send path's transport-boundary guard raises
+        MailSafetyError for a derived non-reserved recipient the server-layer
+        gate never saw; the server surfaces it as a safety_violation, not a
+        generic ``unknown`` error."""
+        from apple_mail_fast_mcp.exceptions import MailSafetyError
+        from apple_mail_fast_mcp.server import create_draft
+
+        mock_mail.create_draft.side_effect = MailSafetyError(
+            "Test mode: recipients must use RFC 2606 reserved domains"
+        )
+        result = await create_draft(
+            to=["ok@example.com"], subject="hi", body="x",
+            send_now=True, ctx=mock_ctx_accept,
+        )
+        assert result["success"] is False
+        assert result["error_type"] == "safety_violation"
 
     @pytest.mark.asyncio
     async def test_send_now_missing_ctx_blocks_with_confirmation_required(

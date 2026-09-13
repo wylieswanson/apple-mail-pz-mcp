@@ -3,11 +3,11 @@
 ## Component diagram
 
 ```
-Claude Desktop / MCP client
+MCP client
         |  (MCP JSON-RPC over stdio)
         v
 server.py (FastMCP)
-  |-- 26 tools (@_tool / @mcp.tool)        12 read-only, 14 mutating
+  |-- tools (@_tool / @mcp.tool; see TOOLS.md for the current surface)
   |-- input validation + sanitization
   |-- elicitation (confirmation) gates on destructive ops
   |-- structured responses ({"success": bool, ...})
@@ -25,17 +25,18 @@ mail_connector.py (AppleMailConnector) — dispatch + domain logic
 
 ## Dispatch model (the central v0.8.0 abstraction)
 
-**AppleScript is the universal baseline** — every operation works through `osascript` against Mail.app,
-with no extra setup. On top of that, several read and bulk-mutation operations take an **IMAP fast
-path** when two conditions hold:
+**AppleScript is the baseline for many operations**, using `osascript` against Mail.app.
+Some operations, including mailbox deletion and re-parenting, require IMAP. Several read and
+bulk-mutation operations take an **IMAP fast path** when two conditions hold:
 
 1. the caller hints the location — an `account` (and, where relevant, a `source_mailbox` / `mailbox`), and
 2. the account has Keychain IMAP credentials (opt-in via `apple-mail-pz-mcp setup-imap`).
 
 When both hold, the connector issues server-side IMAP (e.g. `SEARCH`, `UID MOVE`, `STORE`) instead of
-driving Mail.app's per-message AppleScript loop. **On any IMAP failure** — no credentials, bad
-password, offline, capability gap — it falls back to AppleScript, so functionality is never lost; you
-only gain speed when IMAP is configured and reachable. Failures are absorbed by the
+driving Mail.app's per-message AppleScript loop. **Where an AppleScript fallback exists**, eligible
+IMAP failures can switch to that path. Fallback may be slower or less complete; callers must
+preserve incomplete-result indicators and distinguish an indeterminate lookup from a definitive
+not-found result. Eligible failures are handled by the
 `_IMAP_FALLBACK_EXCS` set and a **per-account circuit breaker** (`_imap_breaker_*`, ~30 s cooldown,
 #118) so a flaky account doesn't pay the connect/login cost on every call.
 
@@ -44,8 +45,12 @@ IMAP connections are created per call by default; an opt-in **connection pool** 
 
 Fast paths shipped in v0.8.0: search (#32-era), `get_messages` / `get_attachments` / `get_thread`
 reads, and the bulk mutations — move (#149), delete (#150), read-status (#151), flag (#152) — each
-with an AppleScript fallback. Compose/send (`create_draft` and the `send_now=true` send) is
-**always** AppleScript — it needs Mail.app's compose machinery.
+with an AppleScript fallback.
+
+Compose/save (`create_draft`) can use IMAP APPEND of MIME built by `draft_builder.py`;
+`send_now=true` can use `smtp_sender.py`. These paths avoid Mail.app's quoted-body
+formatting behavior and depend on credentials plus account/seed information. When
+unavailable, eligible calls fall back to AppleScript. See `create_draft` in the connector.
 
 ## Dual-emit message-ID model (#148)
 
@@ -60,7 +65,8 @@ read tool gave you verbatim.
 Mail.app's real primitive is the draft — every outgoing message is a draft until sent. Three tools
 model the lifecycle:
 
-- `create_draft` — new / reply (`reply_to`) / forward (`forward_of`); `send_now=true` sends instead of saving.
+- `create_draft` — new / reply (`reply_to`) / forward (`forward_of`); can save via IMAP APPEND.
+  `send_now=true` sends instead of saving, using SMTP when available or AppleScript fallback.
 - `update_draft` — **delete-and-recreate** (Mail.app forbids mutating a saved draft in place); reply/forward threading headers are preserved by re-seeding from the original.
 - `delete_draft` — move a draft to Trash.
 
@@ -79,6 +85,24 @@ model the lifecycle:
 If IMAP isn't configured/reachable, `get_thread` reconstructs the thread via AppleScript (subject
 prefilter + `In-Reply-To`/`References` header walk).
 
+### Anchor resolution
+
+The tiers above cover **member collection**, which is shared by both `message_id` forms. Resolving
+the *anchor* first is what differs, and it is bounded in both cases (#415, #419):
+
+| id form | Strategy | Cost |
+|---------|----------|------|
+| RFC Message-ID | `ImapConnector.resolve_anchor` — indexed `SEARCH HEADER Message-ID` over Gmail All Mail, else INBOX + Sent | one bounded IMAP probe; no AppleScript |
+| numeric | `_resolve_numeric_anchor_fast` — `whose id is N` against Mail's unified `inbox`, then `sent mailbox` | 2 indexed lookups, account-count-independent |
+| numeric (not in either) | `_resolve_thread_anchor_applescript` — every mailbox of every account | correctness backstop; ~2× the probe on a 33k Gmail account |
+
+Both numeric paths emit the same anchor record (`_anchor_record_applescript` /
+`_anchor_from_applescript_record` are shared), so the choice between them is purely a cost decision.
+The unified mailboxes are used because they aggregate across accounts and are locale-independent —
+the same reason `drafts mailbox` is used for draft lookups (#407). Note that the numeric anchor
+deliberately stays in AppleScript: routing it through `resolve_anchor` instead measured ~17s on a
+33k-message Gmail account, since `SEARCH HEADER` over a 33k All Mail is far from instant.
+
 ## Module responsibilities
 
 | Module | Role |
@@ -86,6 +110,7 @@ prefilter + `In-Reply-To`/`References` header walk).
 | `server.py` | MCP tool registration, validation, elicitation gates, response formatting |
 | `mail_connector.py` | AppleScript generation/execution + IMAP-fast-path dispatch |
 | `imap_connector.py` | IMAP client, connection pool, search/fetch/bulk-mutation fast paths |
+| `draft_builder.py` / `smtp_sender.py` | MIME construction and clean SMTP sending |
 | `security.py` | Input sanitization, rate limiting, audit logging, confirmation flows |
 | `utils.py` | Pure functions: escaping, parsing, validation |
 | `drafts.py` / `templates.py` | Draft-seed state and email-template storage under `~/.apple_mail_mcp/` |

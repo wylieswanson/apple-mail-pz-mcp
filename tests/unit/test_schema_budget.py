@@ -14,6 +14,10 @@ from pathlib import Path
 
 import pytest
 
+# The gate is a script, so it is exercised as one: a local subprocess of this
+# interpreter, no network. Opts out of the #408 real-I/O guard.
+pytestmark = pytest.mark.allow_real_io
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "schema_budget.py"
 BASELINE = REPO_ROOT / "evals" / "schema_budget.json"
