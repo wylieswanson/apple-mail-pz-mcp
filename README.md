@@ -99,7 +99,9 @@ uvx --from git+https://github.com/wylieswanson/apple-mail-pz-mcp apple-mail-pz-m
 ```
 
 `uv tool install` freezes the git commit into the build, so `apple-mail-pz-mcp --version`
-reports exactly what you installed. Then point your MCP client at the installed script:
+reports exactly what you installed. It does **not** read `uv.lock`: dependencies resolve to the
+newest versions `pyproject.toml` allows. From a checkout, `make install-tool` installs with the
+locked, tested versions instead. Then point your MCP client at the installed script:
 
 ```json
 {

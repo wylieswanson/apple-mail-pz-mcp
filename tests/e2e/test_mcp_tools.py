@@ -301,25 +301,53 @@ class TestToolInvocation:
 
 class TestElicitationOverLiveSession:
     """The confirmation gate against a real in-memory MCP client session,
-    not a patched ``_elicit_confirmation`` — so the timeout is exercised
-    against the SDK's actual request/response plumbing."""
+    not a patched ``_elicit_confirmation`` — so it runs through the SDK's
+    actual plumbing, on both protocol eras: ``legacy`` is the 2025-11-25
+    handshake today's hosts negotiate (server-initiated elicitation);
+    ``auto`` negotiates 2026-07-28 (input-required result, then a retry)."""
 
+    @pytest.mark.parametrize("mode", ["legacy", "auto"])
     async def test_accepted_prompt_runs_the_delete(
-        self, mock_mail: MagicMock,
+        self, mock_mail: MagicMock, mode: str,
     ) -> None:
         from fastmcp import Client
+        from mcp.types.version import MODERN_PROTOCOL_VERSIONS
 
-        async def _accept(*_args: object) -> bool:
+        asked: list[str] = []
+
+        async def _accept(message: str, *_args: object) -> bool:
+            asked.append(message)
             return True
 
         mock_mail.delete_mailbox.return_value = 0
-        async with Client(server.mcp, elicitation_handler=_accept) as client:
+        async with Client(server.mcp, elicitation_handler=_accept, mode=mode) as client:
+            modern = client.protocol_version in MODERN_PROTOCOL_VERSIONS
+            result = await client.call_tool(
+                "delete_mailbox", {"account": "Gmail", "name": "To Delete"}
+            )
+        assert modern is (mode == "auto")
+        assert len(asked) == 1 and "To Delete" in asked[0]
+        assert result.structured_content is not None
+        assert result.structured_content["success"] is True
+        mock_mail.delete_mailbox.assert_called_once()
+
+    @pytest.mark.parametrize("mode", ["legacy", "auto"])
+    async def test_declined_prompt_blocks_the_delete(
+        self, mock_mail: MagicMock, mode: str,
+    ) -> None:
+        from fastmcp import Client
+        from fastmcp.client.elicitation import ElicitResult
+
+        async def _decline(*_args: object) -> ElicitResult[Any]:
+            return ElicitResult(action="decline")
+
+        async with Client(server.mcp, elicitation_handler=_decline, mode=mode) as client:
             result = await client.call_tool(
                 "delete_mailbox", {"account": "Gmail", "name": "To Delete"}
             )
         assert result.structured_content is not None
-        assert result.structured_content["success"] is True
-        mock_mail.delete_mailbox.assert_called_once()
+        assert result.structured_content["error_type"] == "cancelled"
+        mock_mail.delete_mailbox.assert_not_called()
 
     async def test_late_answer_times_out_and_session_survives(
         self, mock_mail: MagicMock, monkeypatch: pytest.MonkeyPatch,
@@ -345,7 +373,11 @@ class TestElicitationOverLiveSession:
             return True
 
         mock_mail.list_accounts.return_value = []
-        async with Client(server.mcp, elicitation_handler=_late_accept) as client:
+        # A timeout only exists on the legacy era: 2026-07-28 has no
+        # server-side wait (the tool returns, the client retries).
+        async with Client(
+            server.mcp, elicitation_handler=_late_accept, mode="legacy"
+        ) as client:
             result = await asyncio.wait_for(
                 client.call_tool(
                     "delete_mailbox", {"account": "Gmail", "name": "To Delete"}
@@ -411,7 +443,7 @@ class TestVersionIntrospection:
         """The word a user says must appear in the description a model reads."""
         tools = await server.mcp.get_tool("get_server_version")
         assert "version" in (tools.description or "").lower()
-        assert tools.annotations.readOnlyHint is True
+        assert tools.annotations.read_only_hint is True
 
     async def test_diagnose_reports_version_commit_and_date(
         self, mock_mail: MagicMock

@@ -102,7 +102,7 @@ async def _openai_tools(mcp: Any) -> list[dict[str, Any]]:
             "function": {
                 "name": t.name,
                 "description": t.description or "",
-                "parameters": t.inputSchema,
+                "parameters": t.input_schema,
             },
         }
         for t in tools

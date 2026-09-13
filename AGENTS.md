@@ -2,8 +2,8 @@
 
 An MCP server bridging AI agents and Apple Mail via AppleScript on macOS.
 
-**Stack:** Python 3.10+, FastMCP, AppleScript (via `osascript`)
-**Version:** v0.11.1 | **Tests:** 1793 unit / 41 e2e / 75 integration | **Coverage:** 91%
+**Stack:** Python 3.10+, FastMCP 4 / MCP SDK 2, AppleScript (via `osascript`)
+**Version:** v0.11.1 | **Tests:** 1804 unit / 44 e2e / 75 integration | **Coverage:** 91%
 
 This file is the canonical agent guide. Codex reads it directly; Claude Code
 reaches it via [`.claude/CLAUDE.md`](.claude/CLAUDE.md). Edit it here.
@@ -24,6 +24,7 @@ not renamed casually. See `keychain.py`.
 ## Commands
 
 ```bash
+make install-tool          # Install the CLI from this checkout, pinned to uv.lock
 make test                  # Unit tests (~1s, mocked AppleScript)
 make test-integration      # Real Mail.app tests (requires test account)
 make test-e2e              # End-to-end MCP tool tests
@@ -84,6 +85,13 @@ Two consequences drive real code:
   Nothing is destroyed, so no confirmation — which is what makes deletes work
   on elicitation-less hosts. Only a target already inside the staging mailbox
   takes the real, gated delete. Keep it that way: staging must never destroy.
+- **Confirmation speaks both protocol eras.** On the 2025-11-25 handshake
+  (what Claude Code and Desktop negotiate today) `_elicit_confirmation` sends
+  a server-initiated elicitation. MCP 2026-07-28 removed that back-channel, so
+  there it returns an `InputRequiredResult` and the client retries the call
+  with the answer (`_confirm_by_input_request`). The sealed `request_state` is
+  a digest of `(operation, params)`, so a "yes" only counts for the call that
+  was shown. Gated tools therefore return `dict | InputRequiredResult`.
 - **A host can take the prompt and never answer.** Claude Code in print mode
   (`-p`) logs the elicitation request and sends nothing back; unbounded, that
   hung `delete_mailbox` for 70 minutes. The wait is capped at 120s

@@ -155,13 +155,12 @@ def _hint(tool: Any, key: str) -> Any:
     ann = tool.annotations
     if ann is None:
         return None
-    # FastMCP exposes annotations as a ToolAnnotations dataclass-ish object,
-    # but allows dict at construction. Support both via getattr fallback.
-    if hasattr(ann, key):
-        return getattr(ann, key)
     if isinstance(ann, dict):
         return ann.get(key)
-    return None
+    # ToolAnnotations: ``key`` is the wire name (readOnlyHint); MCP SDK v2
+    # renamed the attributes to snake_case and deprecates the old ones, so
+    # read through the model's wire-form dump.
+    return ann.model_dump(by_alias=True).get(key)
 
 
 class TestProductionAnnotations:

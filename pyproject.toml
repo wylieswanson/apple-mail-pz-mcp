@@ -34,8 +34,9 @@ classifiers = [
 
 dependencies = [
     "anyio>=4.0",
-    "fastmcp>=3.3.1",
-    "imapclient>=3.1.0",
+    "fastmcp>=4.0.3,<5",
+    "imapclient>=4.0.1,<5",
+    "mcp>=2.2.0,<3",
 ]
 
 # Dev dependencies live only in [dependency-groups] (PEP 735) — `uv sync --dev`,

@@ -5,6 +5,8 @@ FastMCP server for Apple Mail integration.
 import argparse
 import atexit
 import functools
+import hashlib
+import json
 import logging
 import math
 import sys
@@ -17,7 +19,9 @@ from typing import Annotated, Any, ParamSpec, TypeVar, cast
 import anyio
 import anyio.to_thread
 from fastmcp import Context, FastMCP
-from fastmcp.server.elicitation import AcceptedElicitation
+from fastmcp.server.elicitation import AcceptedElicitation, parse_elicit_response_type
+from mcp.types import ElicitRequest, ElicitRequestFormParams, ElicitResult, InputRequiredResult
+from mcp.types.version import MODERN_PROTOCOL_VERSIONS
 from pydantic import BeforeValidator
 
 from . import __version__
@@ -54,6 +58,7 @@ from .security import (
     check_test_mode_safety,
     detect_prompt_injection,
     operation_logger,
+    refund_rate_limit,
     validate_bulk_operation,
     validate_send_operation,
 )
@@ -288,9 +293,73 @@ def _elicitation_timeout_s() -> float:
     return value
 
 
+_CONFIRM_INPUT_KEY = "confirm"
+_CONFIRM_TITLE = "Confirm"
+_CONFIRM_DESCRIPTION = "Set to true to proceed with this operation."
+
+
+def _confirmation_digest(operation: str, params: dict[str, Any]) -> str:
+    """What the user is being asked to confirm, as a stable digest."""
+    blob = json.dumps([operation, params], sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def _is_modern_protocol(ctx: Context) -> bool:
+    """True on an MCP 2026-07-28 connection, which has no back-channel for
+    server-initiated requests such as elicitation."""
+    rc = ctx.request_context
+    return rc is not None and rc.protocol_version in MODERN_PROTOCOL_VERSIONS
+
+
+def _confirm_by_input_request(
+    ctx: Context, summary: str, operation: str, params: dict[str, Any]
+) -> dict[str, Any] | InputRequiredResult | None:
+    """Confirmation on an MCP 2026-07-28 connection (SEP-2322).
+
+    Round one returns an ``InputRequiredResult`` asking the client for the
+    same boolean form the legacy prompt shows; the tool returns it as-is.
+    The client asks the user and retries the identical call with the answer
+    in ``input_responses`` and our ``request_state`` echoed back — sealed by
+    the framework, so it can't be forged. ``request_state`` is a digest of
+    ``(operation, params)``: an answer is honored only on a retry of the
+    call that was confirmed, so a "yes" can't be carried onto another call.
+    """
+    digest = _confirmation_digest(operation, params)
+    responses = ctx.input_responses
+    raw = responses.get(_CONFIRM_INPUT_KEY) if responses else None
+    if raw is None or ctx.request_state != digest:
+        # The asking round is not the action: hand back the rate-limit slot
+        # the tool took before calling us, or every confirmed call counts twice.
+        refund_rate_limit(operation)
+        operation_logger.log_operation(operation, params, "confirmation_requested")
+        schema = parse_elicit_response_type(
+            bool, response_title=_CONFIRM_TITLE, response_description=_CONFIRM_DESCRIPTION
+        ).schema
+        return InputRequiredResult(
+            input_requests={
+                _CONFIRM_INPUT_KEY: ElicitRequest(
+                    params=ElicitRequestFormParams(message=summary, requested_schema=schema)
+                )
+            },
+            request_state=digest,
+        )
+    try:
+        answer = raw if isinstance(raw, ElicitResult) else ElicitResult.model_validate(raw)
+    except ValueError:
+        answer = None
+    if answer is not None and answer.action == "accept" and (answer.content or {}).get("value") is True:
+        return None
+    operation_logger.log_operation(operation, params, "cancelled")
+    return {
+        "success": False,
+        "error": "User declined to continue",
+        "error_type": "cancelled",
+    }
+
+
 async def _elicit_confirmation(
     ctx: Context | None, summary: str, operation: str, params: dict[str, Any]
-) -> dict[str, Any] | None:
+) -> dict[str, Any] | InputRequiredResult | None:
     """Elicit user confirmation via MCP. Fails closed — confirmation gates
     the destructive operation entirely.
 
@@ -309,6 +378,9 @@ async def _elicit_confirmation(
           unsupported, IO error). Pre-#226 these paths silently
           proceeded; the silent-pass was a real bypass of the
           confirmation gate.
+        - An ``InputRequiredResult`` on an MCP 2026-07-28 connection, for the
+          tool to return as-is; see ``_confirm_by_input_request``. Callers
+          must rate-limit before calling, since that round refunds the slot.
         - ``{"error_type": "confirmation_timeout"}`` when the client took
           the request but no answer arrived within
           ``_elicitation_timeout_s()``. Claude Code in print mode does
@@ -327,20 +399,16 @@ async def _elicit_confirmation(
             ),
             "error_type": "confirmation_required",
         }
+    if _is_modern_protocol(ctx):
+        return _confirm_by_input_request(ctx, summary, operation, params)
     timeout_s = _elicitation_timeout_s()
     try:
-        # mypy 1.20.x collapses every ctx.elicit overload to the
-        # response_type=None variant (the inter-overload docstrings break
-        # its overload grouping), so it reports a bogus arg-type here and
-        # types result.data as dict[str, Any] below — hence the ignore and
-        # the cast. At runtime FastMCP wraps the bool and returns a real
-        # bool in result.data.
         with anyio.fail_after(timeout_s):
             result = await ctx.elicit(
                 summary,
-                response_type=bool,  # type: ignore[arg-type]
-                response_title="Confirm",
-                response_description=("Set to true to proceed with this operation."),
+                response_type=bool,
+                response_title=_CONFIRM_TITLE,
+                response_description=_CONFIRM_DESCRIPTION,
             )
     except TimeoutError:
         logger.warning("No confirmation answer within %gs; blocking %s", timeout_s, operation)
@@ -369,7 +437,7 @@ async def _elicit_confirmation(
     # Fail closed unless the user explicitly affirmed (accepted *and* set
     # the confirm flag true). Decline, cancel, and accept-with-false all
     # block. (#282)
-    if not (isinstance(result, AcceptedElicitation) and cast(bool, result.data) is True):
+    if not (isinstance(result, AcceptedElicitation) and result.data is True):
         operation_logger.log_operation(operation, params, "cancelled")
         return {
             "success": False,
@@ -481,7 +549,7 @@ def _rule_actions_require_confirmation(actions: dict[str, Any]) -> bool:
 async def delete_rule(
     rule_index: int,
     ctx: Context | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | InputRequiredResult:
     """
     Delete a Mail.app rule by 1-based positional index.
 
@@ -560,7 +628,7 @@ async def create_rule(
     match_logic: str = "all",
     enabled: bool = True,
     ctx: Context | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | InputRequiredResult:
     """
     Create a new Mail.app rule.
 
@@ -671,7 +739,7 @@ async def update_rule(
     actions: OptAnyDict = None,
     match_logic: str | None = None,
     ctx: Context | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | InputRequiredResult:
     """
     Update an existing Mail.app rule (patch semantics).
 
@@ -2427,7 +2495,7 @@ async def delete_mailbox(
     name: str,
     delete_messages: bool = False,
     ctx: Context | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | InputRequiredResult:
     """Delete a mailbox. By default it is staged, not destroyed: moved
     with its messages and child mailboxes under the account's "To Delete"
     mailbox for the owner to delete, with no confirmation prompt.
@@ -2572,7 +2640,7 @@ async def delete_messages(
     account: str | None = None,
     source_mailbox: str | None = None,
     ctx: Context | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | InputRequiredResult:
     """Delete messages. By default they are staged, not destroyed: moved to
     the account's "To Delete" mailbox for the owner to delete, with no
     confirmation prompt. Staging needs ``account`` and ``source_mailbox``
@@ -2833,7 +2901,7 @@ def save_template(name: str, body: str, subject: str | None = None) -> dict[str,
     {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True},
     mutating=True,
 )
-async def delete_template(name: str, ctx: Context | None = None) -> dict[str, Any]:
+async def delete_template(name: str, ctx: Context | None = None) -> dict[str, Any] | InputRequiredResult:
     """Delete a template by name.
 
     Destructive — requires user confirmation via MCP elicitation before
@@ -3191,7 +3259,7 @@ async def _run_send_now_gates(
     *,
     validate_recipient_shape: bool = False,
     validate_args: tuple[Any, ...] = (),
-) -> dict[str, Any] | None:
+) -> dict[str, Any] | InputRequiredResult | None:
     """Run the standard send_now gate chain (#191):
 
     1. ``check_test_mode_safety(operation, recipients=recipients)``
@@ -3325,7 +3393,7 @@ async def create_draft(
     from_account: str | None = None,
     send_now: bool = False,
     ctx: Context | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | InputRequiredResult:
     """Create a draft (fresh, reply, or forward). Optionally send immediately.
 
     Mail.app's actual primitive is the draft — every outgoing message is
@@ -3546,7 +3614,7 @@ async def update_draft(
     from_account: str | None = None,
     send_now: bool = False,
     ctx: Context | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | InputRequiredResult:
     """Update an existing draft. Implemented as delete-and-recreate.
 
     **Returns a NEW draft_id** — Mail.app forbids mutating saved drafts,

@@ -1,8 +1,9 @@
-.PHONY: help install dev test test-unit test-integration test-e2e test-verbose lint format typecheck complexity audit check-all coverage clean eval-descriptions eval-tools eval-tasks schema-budget check-bundle
+.PHONY: help install install-tool dev test test-unit test-integration test-e2e test-verbose lint format typecheck complexity audit check-all coverage clean eval-descriptions eval-tools eval-tasks schema-budget check-bundle
 
 help:
 	@echo "Available targets:"
 	@echo "  make install          - Install dependencies"
+	@echo "  make install-tool     - Install the CLI from this checkout, pinned to uv.lock"
 	@echo "  make dev              - Install with dev dependencies"
 	@echo "  make test             - Run unit tests"
 	@echo "  make test-unit        - Run unit tests only"
@@ -23,6 +24,16 @@ help:
 
 install:
 	uv sync
+
+# Install the console script from this checkout with exactly the dependency
+# versions in uv.lock. A bare `uv tool install .` ignores the lockfile and
+# resolves the newest versions pyproject allows — which is how a live install
+# once ran majors no test had seen.
+install-tool:
+	@constraints=$$(mktemp) && \
+	uv export --frozen --no-dev --no-hashes --no-emit-project --no-header > "$$constraints" && \
+	uv tool install --reinstall --force . --constraints "$$constraints"; \
+	status=$$?; rm -f "$$constraints"; exit $$status
 
 dev:
 	uv sync --dev
