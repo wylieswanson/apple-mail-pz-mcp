@@ -261,6 +261,137 @@ class TestElicitConfirmationFailsClosed:
 
 
 # ---------------------------------------------------------------------------
+# Confirmation on MCP 2026-07-28 connections (multi-round-trip, SEP-2322)
+#
+# That protocol era removed server-initiated requests, so ctx.elicit() raises
+# and every gated tool failed closed. Instead the tool returns an
+# InputRequiredResult; the client asks the user and retries the same call with
+# the answer in input_responses and our request_state echoed back (sealed by
+# the framework). request_state carries a digest of what was confirmed, so a
+# "yes" can't be replayed onto a different call.
+# ---------------------------------------------------------------------------
+
+
+def _modern_ctx(
+    responses: dict[str, Any] | None = None, state: str | None = None
+) -> MagicMock:
+    ctx = MagicMock()
+    ctx.request_context.protocol_version = "2026-07-28"
+    ctx.input_responses = responses
+    ctx.request_state = state
+    ctx.elicit = AsyncMock(side_effect=AssertionError("no back-channel on 2026-07-28"))
+    return ctx
+
+
+class TestElicitConfirmationInputRequired:
+    PARAMS: dict[str, Any] = {"account": "Work", "name": "To Delete"}
+
+    async def _ask(self, ctx: MagicMock, params: dict[str, Any] | None = None) -> Any:
+        return await _elicit_confirmation(
+            ctx=ctx, summary="Delete mailbox?", operation="delete_mailbox",
+            params=params if params is not None else self.PARAMS,
+        )
+
+    async def _first_round_state(self) -> str:
+        from mcp.types import InputRequiredResult
+
+        asked = await self._ask(_modern_ctx())
+        assert isinstance(asked, InputRequiredResult)
+        assert asked.request_state is not None
+        return asked.request_state
+
+    async def test_first_round_returns_an_input_request(self) -> None:
+        from mcp.types import ElicitRequest, InputRequiredResult
+
+        ctx = _modern_ctx()
+        asked = await self._ask(ctx)
+
+        assert isinstance(asked, InputRequiredResult)
+        assert asked.input_requests is not None
+        request = asked.input_requests["confirm"]
+        assert isinstance(request, ElicitRequest)
+        assert request.params.message == "Delete mailbox?"
+        assert "value" in request.params.requested_schema["properties"]
+        ctx.elicit.assert_not_awaited()
+
+    async def test_confirmed_retry_proceeds(self) -> None:
+        from mcp.types import ElicitResult
+
+        state = await self._first_round_state()
+        answer = ElicitResult(action="accept", content={"value": True})
+        assert await self._ask(_modern_ctx({"confirm": answer}, state)) is None
+
+    async def test_answer_given_as_a_plain_dict_is_accepted(self) -> None:
+        state = await self._first_round_state()
+        answer = {"action": "accept", "content": {"value": True}}
+        assert await self._ask(_modern_ctx({"confirm": answer}, state)) is None
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            {"action": "decline"},
+            {"action": "cancel"},
+            {"action": "accept", "content": {"value": False}},
+            {"action": "accept", "content": {}},
+        ],
+    )
+    async def test_anything_but_an_explicit_yes_is_cancelled(
+        self, answer: dict[str, Any]
+    ) -> None:
+        from mcp.types import ElicitResult
+
+        state = await self._first_round_state()
+        result = await self._ask(
+            _modern_ctx({"confirm": ElicitResult.model_validate(answer)}, state)
+        )
+        assert result is not None
+        assert result["error_type"] == "cancelled"
+
+    async def test_yes_for_a_different_call_is_asked_again(self) -> None:
+        """The confirmation is bound to what was shown: a retry whose
+        arguments differ from the confirmed call gets a fresh prompt."""
+        from mcp.types import ElicitResult, InputRequiredResult
+
+        state = await self._first_round_state()
+        answer = ElicitResult(action="accept", content={"value": True})
+        result = await self._ask(
+            _modern_ctx({"confirm": answer}, state),
+            params={"account": "Work", "name": "INBOX-other"},
+        )
+        assert isinstance(result, InputRequiredResult)
+
+    async def test_yes_without_our_request_state_is_asked_again(self) -> None:
+        from mcp.types import ElicitResult, InputRequiredResult
+
+        answer = ElicitResult(action="accept", content={"value": True})
+        result = await self._ask(_modern_ctx({"confirm": answer}, None))
+        assert isinstance(result, InputRequiredResult)
+
+    async def test_asking_does_not_use_up_a_rate_limit_slot(self) -> None:
+        """Gated tools rate-limit before confirming. The asking round isn't
+        the action, so it hands its slot back — otherwise every confirmed
+        send would count twice against the 3-per-minute send tier."""
+        from apple_mail_fast_mcp.security import TIER_LIMITS, check_rate_limit
+
+        max_calls, _window = TIER_LIMITS["sends"]
+        for _ in range(max_calls + 2):
+            assert check_rate_limit("create_draft", {}) is None
+            await _elicit_confirmation(
+                ctx=_modern_ctx(), summary="Send?", operation="create_draft",
+                params={"subject": "hi"},
+            )
+
+    async def test_gated_tool_returns_the_input_request(
+        self, mock_mail: MagicMock, real_deletes: None,
+    ) -> None:
+        from mcp.types import InputRequiredResult
+
+        result = await delete_mailbox(account="Work", name="Spam", ctx=_modern_ctx())
+        assert isinstance(result, InputRequiredResult)
+        mock_mail.delete_mailbox.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Elicitation timeout
 #
 # A host can accept an elicitation request and never answer it — Claude Code

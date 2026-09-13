@@ -603,7 +603,7 @@ All tools return a consistent error format:
 - `permission_error`: Insufficient permissions
 - `cancelled`: User cancelled the operation
 - `confirmation_required`: A destructive tool could not ask for confirmation (the client has no elicitation support)
-- `confirmation_timeout`: The client took the confirmation prompt but sent no answer within 120s (for example Claude Code in non-interactive `-p` mode); nothing was changed. Override the wait with `APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S` (seconds)
+- `confirmation_timeout`: The client took the confirmation prompt but sent no answer within 120s (pre-2026-07-28 protocol only; newer clients retry the call instead) (for example Claude Code in non-interactive `-p` mode); nothing was changed. Override the wait with `APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S` (seconds)
 - `unknown`: Unexpected error
 
 ---

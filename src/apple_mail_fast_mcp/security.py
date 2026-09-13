@@ -179,6 +179,13 @@ class RateLimiter:
         for q in self._windows.values():
             q.clear()
 
+    def refund(self, tier: str) -> None:
+        """Give back the newest slot in ``tier`` — for a call that was
+        counted but turned out not to act (a confirmation's asking round)."""
+        q = self._windows[tier]
+        if q:
+            q.pop()
+
 
 rate_limiter = RateLimiter()
 
@@ -198,6 +205,11 @@ def check_rate_limit(operation: str, params: dict[str, Any]) -> dict[str, Any] |
         "error": f"Rate limit exceeded: {max_calls} calls per {int(window)}s for {tier} operations",
         "error_type": "rate_limited",
     }
+
+
+def refund_rate_limit(operation: str) -> None:
+    """Undo the slot ``check_rate_limit`` just took for ``operation``."""
+    rate_limiter.refund(OPERATION_TIERS[operation])
 
 
 def validate_attachment_type(filename: str, allow_executables: bool = False) -> bool:

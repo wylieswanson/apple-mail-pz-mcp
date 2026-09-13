@@ -3,7 +3,7 @@
 #
 # Direct-vs-transitive split (#296): this gate hard-fails (exit 1) ONLY on
 # advisories affecting our DIRECT runtime deps (pyproject [project].dependencies
-# — anyio, fastmcp, imapclient). Advisories in TRANSITIVE deps are printed as warnings
+# — anyio, fastmcp, imapclient, mcp). Advisories in TRANSITIVE deps are printed as warnings
 # and DO NOT block (exit 0): a freshly-disclosed transitive CVE shouldn't force a
 # last-minute bump on a release branch. Transitive advisories are surfaced
 # continuously off the release path by the weekly .github/workflows/dependency-audit.yml

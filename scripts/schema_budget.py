@@ -58,7 +58,9 @@ def _measure_current_process() -> dict[str, Any]:
     tools = asyncio.run(_run())
     entries = []
     for tool in tools:
-        payload = tool.model_dump(mode="json", exclude_none=True)
+        # by_alias: measure the JSON actually sent (inputSchema, _meta), not
+        # the SDK's Python field names, which MCP SDK v2 renamed to snake_case.
+        payload = tool.model_dump(mode="json", exclude_none=True, by_alias=True)
         blob = json.dumps(payload, separators=(",", ":"), sort_keys=True)
         schema = payload.get("inputSchema") or {}
         entries.append(
