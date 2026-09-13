@@ -141,11 +141,13 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 
 ### Read-only mode and the elicitation caveat
 
-Every destructive tool confirms the operation through **MCP elicitation** and *fails closed*: if the client can't prompt the user, the tool returns `error_type: "confirmation_required"` rather than proceeding. That is a deliberate security property — an earlier version silently proceeded, which was a real bypass of the confirmation gate.
+**Deletes don't need it: they are staged.** `delete_messages` and `delete_mailbox` move their target into a per-account `To Delete` mailbox for you to review and delete in Mail. Nothing is destroyed, so there's no prompt, and deletes work on every host below. Only deleting something already in `To Delete` is a real, confirmed delete. Set `APPLE_MAIL_MCP_DELETE_STAGING=off` for confirmed deletes to Trash instead, or to another name to stage elsewhere ([details](docs/reference/TOOLS.md#delete-staging)).
 
-The consequence is that the write tools only *function* on a host that implements elicitation:
+Every other destructive tool (real deletes, rule changes, `send_now`, `delete_template`) confirms the operation through **MCP elicitation** and *fails closed*: if the client can't prompt the user, the tool returns `error_type: "confirmation_required"` rather than proceeding. That is a deliberate security property — an earlier version silently proceeded, which was a real bypass of the confirmation gate.
 
-| Host | Elicitation | Write tools |
+The consequence is that those confirmed tools only *function* on a host that implements elicitation:
+
+| Host | Elicitation | Confirmed tools |
 |---|---|---|
 | Claude Code | Yes | Work |
 | Claude Code, non-interactive (`-p`) | Takes the prompt, never answers | Time out after 120s |

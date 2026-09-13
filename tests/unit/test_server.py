@@ -110,6 +110,13 @@ def mock_ctx_raise() -> MagicMock:
 
 
 @pytest.fixture
+def real_deletes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Turn delete staging off, for tests of the real delete path (Trash /
+    IMAP DELETE behind confirmation). Staging is the default."""
+    monkeypatch.setenv("APPLE_MAIL_MCP_DELETE_STAGING", "off")
+
+
+@pytest.fixture
 def mock_ctx_hang() -> MagicMock:
     """Mock MCP Context whose elicit() never returns — a host that accepts
     the elicitation request and then never answers it (Claude Code in print
@@ -265,6 +272,7 @@ class TestElicitConfirmationFailsClosed:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("real_deletes")
 class TestElicitConfirmationTimeout:
     async def test_returns_confirmation_timeout_when_host_never_answers(
         self, mock_ctx_hang: MagicMock, monkeypatch: pytest.MonkeyPatch,
@@ -339,6 +347,166 @@ class TestElicitConfirmationTimeout:
 
 
 # ---------------------------------------------------------------------------
+# Delete staging (default)
+#
+# delete_messages / delete_mailbox move their target under the account's
+# "To Delete" mailbox for the owner to review and delete, instead of
+# destroying it. Nothing is lost, so no confirmation is asked — which is what
+# lets deletes work on hosts that can't elicit (Claude Desktop, Cowork,
+# headless agents). Only a target already inside the staging mailbox takes
+# the real, confirmed delete path.
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteStaging:
+    @pytest.fixture(autouse=True)
+    def _default_staging(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("APPLE_MAIL_MCP_DELETE_STAGING", raising=False)
+
+    async def test_delete_messages_stages_without_confirmation(
+        self, mock_mail: MagicMock, mock_logger: MagicMock,
+    ) -> None:
+        mock_mail.stage_messages_for_deletion.return_value = 3
+        # ctx=None: no way to confirm, and none is needed.
+        result = await delete_messages(
+            ["1", "2", "3"], account="Work", source_mailbox="INBOX", ctx=None,
+        )
+        assert result == {"success": True, "count": 3, "staged_to": "To Delete"}
+        mock_mail.stage_messages_for_deletion.assert_called_once_with(
+            ["1", "2", "3"], account="Work", source_mailbox="INBOX",
+            staging_mailbox="To Delete",
+        )
+        mock_mail.delete_messages.assert_not_called()
+        mock_logger.log_operation.assert_called_once_with(
+            "delete_messages",
+            {"count": 3, "account": "Work", "source_mailbox": "INBOX",
+             "staged_to": "To Delete"},
+            "staged",
+        )
+
+    async def test_delete_messages_staging_needs_account_and_mailbox(
+        self, mock_mail: MagicMock,
+    ) -> None:
+        result = await delete_messages(["1"], ctx=None)
+        assert result["error_type"] == "validation_error"
+        assert "source_mailbox" in result["error"]
+        mock_mail.stage_messages_for_deletion.assert_not_called()
+
+    async def test_messages_already_staged_are_really_deleted_after_confirmation(
+        self, mock_mail: MagicMock, mock_ctx_accept: MagicMock,
+    ) -> None:
+        mock_mail.delete_messages.return_value = 2
+        result = await delete_messages(
+            ["1", "2"], account="Work", source_mailbox="to delete",
+            ctx=mock_ctx_accept,
+        )
+        assert result["success"] is True
+        assert "staged_to" not in result
+        mock_ctx_accept.elicit.assert_awaited_once()
+        mock_mail.delete_messages.assert_called_once()
+        mock_mail.stage_messages_for_deletion.assert_not_called()
+
+    async def test_env_off_restores_the_confirmed_trash_delete(
+        self, mock_mail: MagicMock, mock_ctx_accept: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("APPLE_MAIL_MCP_DELETE_STAGING", "off")
+        mock_mail.delete_messages.return_value = 1
+        result = await delete_messages(["1"], ctx=mock_ctx_accept)
+        assert result["success"] is True
+        mock_ctx_accept.elicit.assert_awaited_once()
+        mock_mail.stage_messages_for_deletion.assert_not_called()
+
+    async def test_env_names_the_staging_mailbox(
+        self, mock_mail: MagicMock, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("APPLE_MAIL_MCP_DELETE_STAGING", "Review Later")
+        mock_mail.stage_messages_for_deletion.return_value = 1
+        result = await delete_messages(
+            ["1"], account="Work", source_mailbox="INBOX", ctx=None,
+        )
+        assert result["staged_to"] == "Review Later"
+
+    async def test_mcpb_checkbox_true_means_the_default_mailbox(
+        self, mock_mail: MagicMock, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("APPLE_MAIL_MCP_DELETE_STAGING", "true")
+        mock_mail.stage_messages_for_deletion.return_value = 1
+        result = await delete_messages(
+            ["1"], account="Work", source_mailbox="INBOX", ctx=None,
+        )
+        assert result["staged_to"] == "To Delete"
+
+    @pytest.mark.parametrize("raw", ["A/B", "..", "[Gmail]"])
+    async def test_unusable_env_name_falls_back_to_default(
+        self, raw: str, mock_mail: MagicMock, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("APPLE_MAIL_MCP_DELETE_STAGING", raw)
+        mock_mail.stage_messages_for_deletion.return_value = 1
+        result = await delete_messages(
+            ["1"], account="Work", source_mailbox="INBOX", ctx=None,
+        )
+        assert result["staged_to"] == "To Delete"
+
+    async def test_test_mode_gate_still_blocks_staging(
+        self, mock_mail: MagicMock, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "apple_mail_fast_mcp.server.check_test_mode_safety",
+            lambda *a, **kw: {
+                "success": False, "error": "blocked",
+                "error_type": "safety_violation",
+            },
+        )
+        result = await delete_messages(
+            ["1"], account="RealAccount", source_mailbox="INBOX", ctx=None,
+        )
+        assert result["error_type"] == "safety_violation"
+        mock_mail.stage_messages_for_deletion.assert_not_called()
+
+    async def test_delete_mailbox_stages_without_confirmation(
+        self, mock_mail: MagicMock, mock_logger: MagicMock,
+    ) -> None:
+        mock_mail.stage_mailbox_for_deletion.return_value = "To Delete/Spam"
+        result = await delete_mailbox(account="Work", name="Spam", ctx=None)
+        assert result == {
+            "success": True, "account": "Work", "name": "Spam",
+            "staged_to": "To Delete/Spam",
+        }
+        mock_mail.stage_mailbox_for_deletion.assert_called_once_with(
+            account="Work", name="Spam", staging_mailbox="To Delete",
+        )
+        mock_mail.delete_mailbox.assert_not_called()
+        mock_logger.log_operation.assert_called_once_with(
+            "delete_mailbox",
+            {"account": "Work", "name": "Spam", "staged_to": "To Delete/Spam"},
+            "staged",
+        )
+
+    @pytest.mark.parametrize("name", ["To Delete", "To Delete/Spam"])
+    async def test_staging_mailbox_and_its_children_are_really_deleted(
+        self, name: str, mock_mail: MagicMock, mock_ctx_accept: MagicMock,
+    ) -> None:
+        mock_mail.delete_mailbox.return_value = 0
+        result = await delete_mailbox(
+            account="Work", name=name, delete_messages=True, ctx=mock_ctx_accept,
+        )
+        assert result["success"] is True
+        assert result["deleted_message_count"] == 0
+        mock_ctx_accept.elicit.assert_awaited_once()
+        mock_mail.stage_mailbox_for_deletion.assert_not_called()
+
+    async def test_delete_mailbox_maps_imap_required(
+        self, mock_mail: MagicMock,
+    ) -> None:
+        from apple_mail_fast_mcp.exceptions import MailImapRequiredError
+
+        mock_mail.stage_mailbox_for_deletion.side_effect = MailImapRequiredError("no creds")
+        result = await delete_mailbox(account="Work", name="Spam", ctx=None)
+        assert result["error_type"] == "imap_required"
+
+
+# ---------------------------------------------------------------------------
 # Async tools must not run blocking I/O on the event loop
 #
 # FastMCP moves plain `def` tools to a worker thread itself, but runs
@@ -384,6 +552,7 @@ def _blocking_call_names(tree: ast.Module) -> set[str]:
         blocking = grown
 
 
+@pytest.mark.usefixtures("real_deletes")
 class TestAsyncToolsDoNotBlockEventLoop:
     def test_no_direct_connector_calls_in_async_functions(self) -> None:
         """Static ratchet over every ``async def`` in server.py: a connector
@@ -3000,6 +3169,7 @@ class TestUpdateMailboxTool:
         assert result["error_type"] == "unsupported_gmail_system_label"
 
 
+@pytest.mark.usefixtures("real_deletes")
 class TestDeleteMailboxTool:
     """Tests for the delete_mailbox MCP tool (#162, IMAP-dispatched)."""
 
@@ -3185,6 +3355,7 @@ class TestDeleteMailboxTool:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("real_deletes")
 class TestDeleteMessages:
     @pytest.mark.asyncio
     async def test_success(

@@ -36,7 +36,8 @@
       ],
       "env": {
         "APPLE_MAIL_MCP_READ_ONLY": "${user_config.read_only}",
-        "APPLE_MAIL_MCP_LOCAL_DB": "${user_config.local_db}"
+        "APPLE_MAIL_MCP_LOCAL_DB": "${user_config.local_db}",
+        "APPLE_MAIL_MCP_DELETE_STAGING": "${user_config.delete_staging}"
       }
     }
   },
@@ -50,6 +51,13 @@
     }
   },
   "user_config": {
+    "delete_staging": {
+      "type": "boolean",
+      "title": "Stage deletes for review",
+      "description": "Deletes move mail and mailboxes into a \"To Delete\" mailbox for you to review and delete in Mail, with no confirmation prompt. Turn off for confirmed deletes to Trash (these fail on hosts that cannot show confirmation prompts).",
+      "default": true,
+      "required": false
+    },
     "read_only": {
       "type": "boolean",
       "title": "Read-only mode",

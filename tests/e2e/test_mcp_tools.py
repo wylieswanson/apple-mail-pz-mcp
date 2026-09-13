@@ -216,17 +216,25 @@ INVOCATION_CASES: list[tuple[str, dict[str, Any], str, Any]] = [
         "update_mailbox",
         True,
     ),
+    # Deletes stage into "To Delete" by default (no confirmation).
     (
         "delete_mailbox",
         {"account": "TestAccount", "name": "Empty"},
-        "delete_mailbox",
-        0,
+        "stage_mailbox_for_deletion",
+        "To Delete/Empty",
     ),
     (
         "delete_messages",
-        {"message_ids": ["msg-1"]},
-        "delete_messages",
+        {"message_ids": ["msg-1"], "account": "TestAccount", "source_mailbox": "INBOX"},
+        "stage_messages_for_deletion",
         1,
+    ),
+    # A mailbox already inside "To Delete" is really deleted.
+    (
+        "delete_mailbox",
+        {"account": "TestAccount", "name": "To Delete"},
+        "delete_mailbox",
+        0,
     ),
 ]
 
@@ -307,7 +315,7 @@ class TestElicitationOverLiveSession:
         mock_mail.delete_mailbox.return_value = 0
         async with Client(server.mcp, elicitation_handler=_accept) as client:
             result = await client.call_tool(
-                "delete_mailbox", {"account": "Gmail", "name": "Spam"}
+                "delete_mailbox", {"account": "Gmail", "name": "To Delete"}
             )
         assert result.structured_content is not None
         assert result.structured_content["success"] is True
@@ -340,7 +348,7 @@ class TestElicitationOverLiveSession:
         async with Client(server.mcp, elicitation_handler=_late_accept) as client:
             result = await asyncio.wait_for(
                 client.call_tool(
-                    "delete_mailbox", {"account": "Gmail", "name": "Spam"}
+                    "delete_mailbox", {"account": "Gmail", "name": "To Delete"}
                 ),
                 timeout=10,
             )
@@ -353,6 +361,26 @@ class TestElicitationOverLiveSession:
             )
             assert after.structured_content is not None
             assert after.structured_content["success"] is True
+
+
+class TestDeleteStagingOverLiveSession:
+    async def test_host_without_elicitation_can_stage_a_delete(
+        self, mock_mail: MagicMock, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Claude Desktop / Cowork advertise no elicitation, so a confirmed
+        delete can never succeed there. A staged one needs no confirmation."""
+        from fastmcp import Client
+
+        monkeypatch.delenv("APPLE_MAIL_MCP_DELETE_STAGING", raising=False)
+        mock_mail.stage_messages_for_deletion.return_value = 2
+        async with Client(server.mcp) as client:  # no elicitation_handler
+            result = await client.call_tool(
+                "delete_messages",
+                {"message_ids": ["1", "2"], "account": "Work", "source_mailbox": "INBOX"},
+            )
+        assert result.structured_content == {
+            "success": True, "count": 2, "staged_to": "To Delete",
+        }
 
 
 class TestVersionIntrospection:
@@ -432,14 +460,15 @@ class TestStringifiedParamCoercion:
     async def test_delete_messages_stringified_message_ids(
         self, mock_mail: MagicMock
     ) -> None:
-        mock_mail.delete_messages.return_value = 1
+        mock_mail.stage_messages_for_deletion.return_value = 2
         result = await server.mcp.call_tool(
-            "delete_messages", {"message_ids": '["msg-1", "msg-2"]'}
+            "delete_messages",
+            {"message_ids": '["msg-1", "msg-2"]', "account": "A", "source_mailbox": "INBOX"},
         )
         assert result.structured_content["success"] is True
-        mock_mail.delete_messages.assert_called_once()
+        mock_mail.stage_messages_for_deletion.assert_called_once()
         assert ["msg-1", "msg-2"] in self._call_values(
-            mock_mail.delete_messages.call_args
+            mock_mail.stage_messages_for_deletion.call_args
         )
 
     async def test_stringified_null_optional_means_omitted(
@@ -512,13 +541,14 @@ class TestStringifiedParamCoercion:
 
     async def test_real_list_still_works(self, mock_mail: MagicMock) -> None:
         # Well-behaved clients send real lists — coercion is a no-op.
-        mock_mail.delete_messages.return_value = 1
+        mock_mail.stage_messages_for_deletion.return_value = 1
         result = await server.mcp.call_tool(
-            "delete_messages", {"message_ids": ["msg-1"]}
+            "delete_messages",
+            {"message_ids": ["msg-1"], "account": "A", "source_mailbox": "INBOX"},
         )
         assert result.structured_content["success"] is True
         assert ["msg-1"] in self._call_values(
-            mock_mail.delete_messages.call_args
+            mock_mail.stage_messages_for_deletion.call_args
         )
 
     async def test_advertised_schema_stays_array(self) -> None:

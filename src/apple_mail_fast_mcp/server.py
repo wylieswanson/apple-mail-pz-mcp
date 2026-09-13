@@ -2328,6 +2328,96 @@ def update_mailbox(
         }
 
 
+DEFAULT_DELETE_STAGING_MAILBOX = "To Delete"
+_DELETE_STAGING_OFF = frozenset({"", "0", "off", "false", "no", "none"})
+_DELETE_STAGING_ON = frozenset({"1", "on", "true", "yes"})
+
+
+def _delete_staging_mailbox() -> str | None:
+    """The mailbox deletes are staged into, or None when staging is off.
+
+    Staging is the default: delete_messages / delete_mailbox move their
+    target under this top-level mailbox for the owner to review and delete,
+    so nothing is destroyed and no confirmation is needed — which is what
+    lets deletes work on hosts that can't elicit. Resolved at use time from
+    APPLE_MAIL_MCP_DELETE_STAGING: unset or on/1/true/yes means "To Delete"
+    (the .mcpb checkbox sends true/false); off/0/false/no/none turns staging
+    off (confirmed delete to Trash); anything else names the mailbox. A
+    nested, path-traversing, or Gmail-system name falls back to the default."""
+    import os
+
+    from .utils import is_gmail_system_label, sanitize_mailbox_name
+
+    raw = os.getenv("APPLE_MAIL_MCP_DELETE_STAGING")
+    if raw is None:
+        return DEFAULT_DELETE_STAGING_MAILBOX
+    value = raw.strip()
+    if value.lower() in _DELETE_STAGING_OFF:
+        return None
+    if value.lower() in _DELETE_STAGING_ON:
+        return DEFAULT_DELETE_STAGING_MAILBOX
+    if sanitize_mailbox_name(value) != value or is_gmail_system_label(value):
+        logger.warning(
+            "Ignoring unusable APPLE_MAIL_MCP_DELETE_STAGING=%r; staging into %r",
+            raw,
+            DEFAULT_DELETE_STAGING_MAILBOX,
+        )
+        return DEFAULT_DELETE_STAGING_MAILBOX
+    return value
+
+
+_NOT_FOUND_OR_IMAP_ERROR_TYPES: dict[type[Exception], str] = {
+    MailImapRequiredError: "imap_required",
+    MailMailboxNotFoundError: "mailbox_not_found",
+    MailAccountNotFoundError: "account_not_found",
+}
+
+
+def _in_staging_mailbox(path: str | None, staging: str) -> bool:
+    """True when ``path`` is the staging mailbox or inside it — the only
+    targets a delete really destroys."""
+    if path is None:
+        return False
+    folded, root = path.strip().casefold(), staging.casefold()
+    return folded == root or folded.startswith(root + "/")
+
+
+def _stage_messages(
+    message_ids: list[str],
+    account: str | None,
+    source_mailbox: str | None,
+    staging: str,
+) -> dict[str, Any]:
+    """delete_messages' staging branch: move into the staging mailbox."""
+    if account is None or source_mailbox is None:
+        return {
+            "success": False,
+            "error": (
+                f"Deletes are staged into {staging!r} for the owner to review, "
+                "which needs account and source_mailbox (the account and "
+                "mailbox fields of a search result)."
+            ),
+            "error_type": "validation_error",
+        }
+    count = mail.stage_messages_for_deletion(
+        message_ids,
+        account=account,
+        source_mailbox=source_mailbox,
+        staging_mailbox=staging,
+    )
+    operation_logger.log_operation(
+        "delete_messages",
+        {
+            "count": count,
+            "account": account,
+            "source_mailbox": source_mailbox,
+            "staged_to": staging,
+        },
+        "staged",
+    )
+    return {"success": True, "count": count, "staged_to": staging}
+
+
 @_tool(
     {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True},
     mutating=True,
@@ -2338,31 +2428,24 @@ async def delete_mailbox(
     delete_messages: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Delete a mailbox via IMAP.
+    """Delete a mailbox. By default it is staged, not destroyed: moved
+    with its messages and child mailboxes under the account's "To Delete"
+    mailbox for the owner to delete, with no confirmation prompt.
 
-    Mail.app's AppleScript dictionary doesn't expose a working delete
-    primitive for mailboxes, so this operation goes through IMAP. Requires
-    IMAP credentials in Keychain (#73 opt-in flow) — returns
-    ``error_type: "imap_required"`` when missing.
-
-    Always elicits user confirmation (destructive). By default refuses
-    non-empty mailboxes to prevent accidental data loss; pass
-    ``delete_messages=True`` to cascade.
-
-    Refused (#164): targeting the bare ``[Gmail]`` parent or any
-    ``[Gmail]/...`` child path returns ``error_type:
-    "unsupported_gmail_system_label"``. Gmail's IMAP server doesn't
-    support DELETE for these paths.
+    Deleting "To Delete" itself, or a mailbox inside it, really deletes it
+    (IMAP DELETE) after user confirmation. Either way needs IMAP credentials
+    (``error_type: "imap_required"``). INBOX and Gmail system labels are
+    refused.
 
     Args:
         account: Mail.app account display name or UUID.
-        name: Mailbox name. Slash-separated for nested mailboxes.
-        delete_messages: When False (default), refuse if the mailbox
-            contains messages. When True, cascade-delete the mailbox
-            and its contents.
+        name: Mailbox path, slash-separated for nested mailboxes.
+        delete_messages: Real deletes only. False (default) refuses a
+            non-empty mailbox; True deletes its messages too.
 
     Returns:
-        ``{success, account, name, deleted_message_count}`` on success.
+        ``{success, account, name, staged_to}`` when staged;
+        ``{success, account, name, deleted_message_count}`` when deleted.
     """
     try:
         safety_err = check_test_mode_safety("delete_mailbox", account=account)
@@ -2382,6 +2465,21 @@ async def delete_mailbox(
         )
         if rate_err:
             return rate_err
+
+        staging = _delete_staging_mailbox()
+        if staging is not None and not _in_staging_mailbox(name, staging):
+            staged_to = await _run_blocking(
+                mail.stage_mailbox_for_deletion,
+                account=account,
+                name=name,
+                staging_mailbox=staging,
+            )
+            operation_logger.log_operation(
+                "delete_mailbox",
+                {"account": account, "name": name, "staged_to": staged_to},
+                "staged",
+            )
+            return {"success": True, "account": account, "name": name, "staged_to": staged_to}
 
         verb = "delete (cascading messages)" if delete_messages else "delete (refuse if non-empty)"
         summary = (
@@ -2475,38 +2573,23 @@ async def delete_messages(
     source_mailbox: str | None = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """
-    Delete messages (always moves to the account's Trash mailbox).
+    """Delete messages. By default they are staged, not destroyed: moved to
+    the account's "To Delete" mailbox for the owner to delete, with no
+    confirmation prompt. Staging needs ``account`` and ``source_mailbox``
+    (the account and mailbox fields of a search result).
 
-    Destructive: gated behind user confirmation via MCP elicitation
-    (issue #239), matching delete_rule / delete_mailbox / delete_template.
+    Messages already in "To Delete" are really deleted (moved to Trash)
+    after user confirmation. Max 100 ids per call.
 
     Args:
-        message_ids: List of message IDs to delete
-        permanent: Reserved; currently a no-op. Mail.app's AppleScript
-            dictionary exposes no path to permanent-delete that bypasses
-            Trash (issue #111). Passing True emits a DeprecationWarning;
-            messages still go to Trash. Recoverable from the account's
-            Trash mailbox until that mailbox is emptied.
-        account: Optional account name (or UUID) the messages live in.
-            Must be provided together with `source_mailbox`. When both
-            are given, the operation is much faster.
-        source_mailbox: Optional source mailbox name; see `account`.
+        message_ids: Message ids to delete.
+        permanent: Ignored; real deletes always go to Trash (#111).
+        account: Account name or UUID the messages live in.
+        source_mailbox: Mailbox the messages live in.
 
     Returns:
-        Dictionary with success status and number of messages deleted
-
-    Example:
-        delete_messages(
-            message_ids=["12345"],
-            account="Gmail",
-            source_mailbox="INBOX",
-        )
-
-    Note:
-        Bulk deletions are limited to 100 messages for safety.
-        All deletes are recoverable from Trash; there is currently no
-        AppleScript path to bypass it. See issue #111.
+        ``{success, count, staged_to}`` when staged; ``{success, count,
+        permanent}`` when deleted.
     """
     try:
         if not message_ids:
@@ -2535,6 +2618,12 @@ async def delete_messages(
                 "error": f"Cannot delete {len(message_ids)} messages at once (max: 100)",
                 "error_type": "validation_error",
             }
+
+        staging = _delete_staging_mailbox()
+        if staging is not None and not _in_staging_mailbox(source_mailbox, staging):
+            return await _run_blocking(
+                _stage_messages, message_ids, account, source_mailbox, staging
+            )
 
         # Destructive: confirm before moving to Trash. Show the count and
         # source (not every message-id — too noisy for 100-item calls).
@@ -2603,6 +2692,12 @@ async def delete_messages(
             "success": False,
             "error": str(e),
             "error_type": "message_not_found",
+        }
+    except (MailImapRequiredError, MailMailboxNotFoundError, MailAccountNotFoundError) as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": _NOT_FOUND_OR_IMAP_ERROR_TYPES[type(e)],
         }
     except Exception as e:
         logger.error(f"Error deleting messages: {e}")

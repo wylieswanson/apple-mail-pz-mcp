@@ -48,6 +48,7 @@ from .exceptions import (
     MailAttachmentIndexError,
     MailImapMoveUnsupportedError,
     MailImapTrashNotFoundError,
+    MailMailboxNotFoundError,
     MailMessageNotFoundError,
 )
 from .utils import parse_rfc822_ids
@@ -74,6 +75,30 @@ would otherwise kill a legitimate server-side SEARCH (10–20s on a large
 iCloud mailbox) mid-operation, silently dropping the IMAP fast path to the
 slower AppleScript fallback. We connect fast (offline detection) then raise
 the timeout for real work. (#249)"""
+
+
+def _to_server_folder_name(path: str, delimiter: str, prefix: str) -> str:
+    """Translate a Mail-style mailbox path to the IMAP server's name for it.
+
+    Mail shows every mailbox as a ``/``-separated path and hides the server's
+    personal namespace prefix, so ``To Delete/Spam`` in Mail is
+    ``INBOX.To Delete.Spam`` on a Dovecot/Cyrus server with prefix
+    ``INBOX.`` and delimiter ``.``. INBOX itself is never prefixed.
+
+    Raises:
+        ValueError: ``path`` is nested but the server has no hierarchy
+            delimiter (a flat mailbox namespace).
+    """
+    if path.upper() == "INBOX":
+        return path
+    if "/" in path and not delimiter:
+        raise ValueError(
+            f"cannot create {path!r}: the server has no mailbox hierarchy"
+        )
+    name = path.replace("/", delimiter) if delimiter else path
+    if prefix and not name.startswith(prefix):
+        name = prefix + name
+    return name
 
 
 def _apply_operation_timeout(client: IMAPClient) -> None:
@@ -1917,6 +1942,90 @@ class ImapConnector:
         _reject_control_chars(new_name, "new_name")
         with self._session() as client:
             client.rename_folder(old_name, new_name)
+
+    def _folder_layout(self, client: IMAPClient) -> tuple[set[str], str, str]:
+        """One LIST (plus NAMESPACE when advertised): the server's mailbox
+        names, its hierarchy delimiter (``""`` for a flat server, which LISTs
+        a NIL delimiter), and its personal namespace prefix."""
+        present: set[str] = set()
+        delimiter = ""
+        for _flags, delim, raw_name in client.list_folders():
+            present.add(
+                raw_name.decode("utf-8", errors="replace")
+                if isinstance(raw_name, (bytes, bytearray))
+                else raw_name
+            )
+            if not delimiter and delim:
+                delimiter = delim.decode() if isinstance(delim, bytes) else delim
+        prefix = ""
+        if self._has_capability(client, b"NAMESPACE"):
+            try:
+                personal = client.namespace()[0]
+            except IMAPClientError:
+                personal = None
+            if personal:
+                raw_prefix = personal[0][0]
+                prefix = (
+                    raw_prefix.decode() if isinstance(raw_prefix, bytes) else raw_prefix
+                ) or ""
+        return present, delimiter, prefix
+
+    def ensure_folder(self, path: str) -> str:
+        """Create the Mail-style mailbox ``path`` unless it exists, and
+        return its server name. Used to materialize the delete-staging
+        mailbox, synchronously on the server, so a MOVE into it right after
+        doesn't bounce off a Mail.app sync lag."""
+        _reject_control_chars(path, "path")
+        with self._session() as client:
+            present, delimiter, prefix = self._folder_layout(client)
+            return self._ensure_folder(client, path, present, delimiter, prefix)
+
+    @staticmethod
+    def _ensure_folder(
+        client: IMAPClient, path: str, present: set[str], delimiter: str, prefix: str
+    ) -> str:
+        if path in present:
+            return path
+        name = _to_server_folder_name(path, delimiter, prefix)
+        if name not in present:
+            client.create_folder(name)
+            present.add(name)
+        return name
+
+    _STAGE_SUFFIX_LIMIT = 100
+
+    def stage_mailbox(self, name: str, staging_path: str) -> str:
+        """Move the mailbox ``name`` under ``staging_path`` (created if
+        absent) with IMAP RENAME, which carries its messages and child
+        mailboxes along (RFC 3501 §6.3.5). A taken destination gets
+        `` 2``, `` 3``, … appended. Returns the new Mail-style path.
+
+        Raises:
+            MailMailboxNotFoundError: ``name`` doesn't exist on the server.
+            ValueError: No free destination name, or a flat server.
+            IMAPClientError: Server-side refusal.
+        """
+        _reject_control_chars(name, "name")
+        _reject_control_chars(staging_path, "staging_path")
+        with self._session() as client:
+            present, delimiter, prefix = self._folder_layout(client)
+            source = name if name in present else _to_server_folder_name(
+                name, delimiter, prefix
+            )
+            if source not in present:
+                raise MailMailboxNotFoundError(f"mailbox {name!r} not found")
+            self._ensure_folder(client, staging_path, present, delimiter, prefix)
+            leaf = name.rsplit("/", 1)[-1]
+            for n in range(1, self._STAGE_SUFFIX_LIMIT + 1):
+                staged = f"{staging_path}/{leaf}" if n == 1 else f"{staging_path}/{leaf} {n}"
+                destination = _to_server_folder_name(staged, delimiter, prefix)
+                if staged not in present and destination not in present:
+                    client.rename_folder(source, destination)
+                    return staged
+            raise ValueError(
+                f"no free name for {leaf!r} under {staging_path!r} after "
+                f"{self._STAGE_SUFFIX_LIMIT} tries"
+            )
 
     def _resolve_uids_batch(
         self,

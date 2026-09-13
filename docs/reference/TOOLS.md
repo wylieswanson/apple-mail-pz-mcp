@@ -948,13 +948,20 @@ labels behave normally. Tracked as #164.
 
 ### delete_mailbox
 
-Delete a mailbox via IMAP. Mail.app's AppleScript dictionary doesn't
-expose a working delete primitive for mailboxes (verified by probe), so
-this operation requires IMAP credentials in Keychain (#73 opt-in flow).
+**Staged by default.** The mailbox — messages and child mailboxes included —
+is moved under the account's `To Delete` mailbox (created if missing) with IMAP
+RENAME, for the owner to review and delete. Nothing is destroyed, so there is
+no confirmation prompt, and it works on hosts without elicitation. If
+`To Delete/<name>` is taken, a numeric suffix is added (`To Delete/Spam 2`).
+See [Delete staging](#delete-staging).
 
-**Always elicits user confirmation** (destructive). Refuses non-empty
-mailboxes by default to prevent accidental data loss; pass
-`delete_messages=True` to cascade.
+**Real delete** happens only for `To Delete` itself or a mailbox inside it (or
+when staging is turned off): IMAP DELETE, after user confirmation, refusing a
+non-empty mailbox unless `delete_messages=True`.
+
+Both paths need IMAP credentials in Keychain (#73 opt-in flow) — Mail.app's
+AppleScript can neither delete nor re-parent a mailbox. INBOX and Gmail system
+labels are refused.
 
 **Parameters:**
 
@@ -962,15 +969,26 @@ mailboxes by default to prevent accidental data loss; pass
 |-----------|------|----------|---------|-------------|
 | `account` | string | Yes | - | Mail.app account name or UUID |
 | `name` | string | Yes | - | Mailbox name. Slash-separated for nested. |
-| `delete_messages` | boolean | No | False | When False, refuses if the mailbox contains messages. When True, cascade-deletes the mailbox and its contents. |
+| `delete_messages` | boolean | No | False | Real deletes only. When False, refuses if the mailbox contains messages. When True, cascade-deletes the mailbox and its contents. |
 
-**Returns:**
+**Returns (staged):**
 
 ```json
 {
   "success": true,
   "account": "Gmail",
   "name": "Old/Archive",
+  "staged_to": "To Delete/Archive"
+}
+```
+
+**Returns (real delete):**
+
+```json
+{
+  "success": true,
+  "account": "Gmail",
+  "name": "To Delete/Archive",
   "deleted_message_count": 0
 }
 ```
@@ -981,19 +999,19 @@ mailboxes by default to prevent accidental data loss; pass
 **Examples:**
 
 ```python
-# Safe delete (refuses if any messages)
-delete_mailbox(account="Gmail", name="Old/Empty")
+# Stage for the owner (default): moves under "To Delete"
+delete_mailbox(account="Gmail", name="Old/Archive")
 
-# Cascade-delete a non-empty mailbox
+# Really delete something already staged (confirmation prompt)
 delete_mailbox(
-    account="Gmail", name="Old/Archive", delete_messages=True,
+    account="Gmail", name="To Delete/Archive", delete_messages=True,
 )
 ```
 
 **Error Codes:**
 
-- `cancelled`: User declined the elicitation prompt.
-- `validation_error`: Empty `name`.
+- `cancelled`: User declined the elicitation prompt (real delete).
+- `validation_error`: Empty `name`, or `INBOX`.
 - `imap_required`: No IMAP credentials in Keychain for `account`.
 - `mailbox_not_empty`: Mailbox contains messages and `delete_messages=False`.
 - `mailbox_not_found`: No mailbox at `name`.
@@ -1004,7 +1022,17 @@ delete_mailbox(
 
 ### delete_messages
 
-Delete messages — always moves them to the account's Trash mailbox.
+**Staged by default.** Messages are moved to the account's `To Delete`
+mailbox (created if missing) for the owner to review and delete — the same
+verified move as `update_message(destination_mailbox=...)`, so no
+confirmation prompt, and it works on hosts without elicitation. Staging needs
+`account` and `source_mailbox` (the `account`/`mailbox` fields of a search
+result); without them it returns `validation_error`. See
+[Delete staging](#delete-staging).
+
+**Real delete** — a move to the account's Trash, after user confirmation —
+happens only for messages already in `To Delete` (`source_mailbox="To Delete"`),
+or when staging is turned off.
 
 **Parameters:**
 
@@ -1015,7 +1043,17 @@ Delete messages — always moves them to the account's Trash mailbox.
 | `account` | string \| null | No | null | Account name (or UUID). Pair with `source_mailbox` to narrow the scan and unlock the IMAP fast path (#150). |
 | `source_mailbox` | string \| null | No | null | Mailbox the messages live in. Required to unlock the IMAP fast path (#150) — without it, the delete runs via AppleScript even when IMAP is configured. Either alone (without `account`) raises `validation_error`. |
 
-**Returns:**
+**Returns (staged):**
+
+```json
+{
+  "success": true,
+  "count": 2,
+  "staged_to": "To Delete"
+}
+```
+
+**Returns (real delete):**
 
 ```json
 {
@@ -1028,20 +1066,22 @@ Delete messages — always moves them to the account's Trash mailbox.
 **Examples:**
 
 ```python
-# Move messages to trash (cross-scan; finds them across all mailboxes)
-delete_messages(
-    message_ids=["12345", "12346"],
-)
-
-# Faster: narrow-scan or IMAP fast path when source is known
+# Stage for the owner (default)
 delete_messages(
     message_ids=["12345", "12346"],
     account="iCloud",
     source_mailbox="INBOX",
 )
+
+# Really delete messages already staged (confirmation prompt)
+delete_messages(
+    message_ids=["12345", "12346"],
+    account="iCloud",
+    source_mailbox="To Delete",
+)
 ```
 
-**Performance — IMAP fast path (#150):** When invoked with `account` and `source_mailbox`, the delete runs server-side via IMAP `UID MOVE` to the account's Trash folder. On a 47k-message Gmail INBOX this drops the operation from ~57s to <1s — the AppleScript path uses `whose message id is`, which is a linear scan against RFC 5322 Message-IDs. Trash folder is resolved via RFC 6154 SPECIAL-USE `\Trash`; falls back to conventional names (`Trash`, `[Gmail]/Trash`, `Deleted Messages`, `Deleted Items`). Capability fallback chain: `MOVE` → `UID COPY` + `UID STORE +FLAGS \Deleted` + `UID EXPUNGE` (UIDPLUS only) → AppleScript. Requires Keychain credentials per the IMAP setup flow (`apple-mail-pz-mcp setup-imap --account <name>`); falls back to AppleScript transparently when IMAP isn't configured or the server lacks both `MOVE` and `UIDPLUS`.
+**Performance — IMAP fast path (#150):** A real delete invoked with `account` and `source_mailbox`, the delete runs server-side via IMAP `UID MOVE` to the account's Trash folder. On a 47k-message Gmail INBOX this drops the operation from ~57s to <1s — the AppleScript path uses `whose message id is`, which is a linear scan against RFC 5322 Message-IDs. Trash folder is resolved via RFC 6154 SPECIAL-USE `\Trash`; falls back to conventional names (`Trash`, `[Gmail]/Trash`, `Deleted Messages`, `Deleted Items`). Capability fallback chain: `MOVE` → `UID COPY` + `UID STORE +FLAGS \Deleted` + `UID EXPUNGE` (UIDPLUS only) → AppleScript. Requires Keychain credentials per the IMAP setup flow (`apple-mail-pz-mcp setup-imap --account <name>`); falls back to AppleScript transparently when IMAP isn't configured or the server lacks both `MOVE` and `UIDPLUS`.
 
 **Note on `permanent`:**
 
@@ -1050,6 +1090,30 @@ Mail.app's AppleScript dictionary exposes no path to permanent-delete that bypas
 **Safety Notes:**
 - Bulk deletions limited to 100 messages for safety
 - All deletes are recoverable from the account's Trash mailbox until that mailbox is emptied (typically by Mail.app's per-account "empty trash" schedule, configurable in Mail's preferences)
+
+### Delete staging
+
+Agents don't destroy mail by default. `delete_messages` and `delete_mailbox`
+move their target into a per-account `To Delete` mailbox; the owner reviews it
+in Mail and deletes what they agree with (or drags things back out). Because
+nothing is lost, staging skips the confirmation prompt — the same reasoning
+that leaves `update_message` moves unprompted — so deletes work in Claude
+Desktop, Cowork, and headless agents, where elicitation can't be answered.
+
+Only a target already inside the staging mailbox takes the real, confirmed
+delete path.
+
+`APPLE_MAIL_MCP_DELETE_STAGING` configures it:
+
+| Value | Effect |
+|-------|--------|
+| unset, `on`, `1`, `true`, `yes` | Stage into `To Delete` (the `.mcpb` **Stage deletes for review** checkbox sends `true`/`false`) |
+| `off`, `0`, `false`, `no`, `none` | No staging: confirmed delete to Trash / IMAP DELETE |
+| any other name | Stage into that top-level mailbox (a nested, `..`, or Gmail system name falls back to `To Delete`) |
+
+On Gmail the staging mailbox is a label: staging a message swaps the label it
+was moved out of for `To Delete`. What the owner's delete from there does
+follows the account's Mail settings (normally a move to Gmail's Trash).
 
 ---
 

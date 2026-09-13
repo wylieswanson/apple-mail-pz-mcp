@@ -3,7 +3,7 @@
 An MCP server bridging AI agents and Apple Mail via AppleScript on macOS.
 
 **Stack:** Python 3.10+, FastMCP, AppleScript (via `osascript`)
-**Version:** v0.11.1 | **Tests:** 1754 unit / 39 e2e / 73 integration | **Coverage:** 91%
+**Version:** v0.11.1 | **Tests:** 1793 unit / 41 e2e / 75 integration | **Coverage:** 91%
 
 This file is the canonical agent guide. Codex reads it directly; Claude Code
 reaches it via [`.claude/CLAUDE.md`](.claude/CLAUDE.md). Edit it here.
@@ -78,6 +78,12 @@ Two consequences drive real code:
   `--read-only`. Do not "fix" this by letting the gate pass silently; that was
   the pre-#226 bypass. A confirm-token second call is the design worth exploring
   if writes must work on elicitation-less hosts.
+- **Deletes are staged, so they need no gate.** `delete_messages` /
+  `delete_mailbox` move their target under the account's `To Delete` mailbox
+  (`APPLE_MAIL_MCP_DELETE_STAGING`; `off` disables) for the owner to delete.
+  Nothing is destroyed, so no confirmation — which is what makes deletes work
+  on elicitation-less hosts. Only a target already inside the staging mailbox
+  takes the real, gated delete. Keep it that way: staging must never destroy.
 - **A host can take the prompt and never answer.** Claude Code in print mode
   (`-p`) logs the elicitation request and sends nothing back; unbounded, that
   hung `delete_mailbox` for 70 minutes. The wait is capped at 120s

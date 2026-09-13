@@ -3152,3 +3152,81 @@ class TestSaveAttachmentsByteCapSizeSource:
         # Meaningfully populated for real content (not all zero), so the
         # per-attachment / aggregate caps have a real size to gate on.
         assert any(a["size"] > 0 for a in atts)
+
+
+class TestDeleteStagingIntegration:
+    """Staged deletes against real Mail / IMAP. Unique ZZZ-AMM-* names keep
+    the fixtures clear of the real "To Delete" mailbox."""
+
+    def test_ensure_mailbox_applescript_fallback_is_idempotent(
+        self,
+        connector: AppleMailConnector,
+        test_account: str,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """The AppleScript branch of _ensure_mailbox (no IMAP): creates the
+        mailbox once, and a second call finds it instead of erroring."""
+        import uuid as _uuid
+
+        from apple_mail_fast_mcp.exceptions import MailKeychainEntryNotFoundError
+
+        def no_imap(account: str) -> tuple[str, int, str]:
+            raise MailKeychainEntryNotFoundError("forced AppleScript path")
+
+        monkeypatch.setattr(connector, "_resolve_imap_config", no_imap)
+        box = f"ZZZ-AMM-STAGE-AS-{_uuid.uuid4().hex[:8]}"
+        try:
+            connector._ensure_mailbox(test_account, box)
+            connector._ensure_mailbox(test_account, box)
+            names = {m["name"] for m in connector.list_mailboxes(test_account)}
+            assert box in names
+        finally:
+            monkeypatch.undo()
+            try:
+                connector.delete_mailbox(account=test_account, name=box)
+            except Exception:
+                pass
+
+    def test_stage_mailbox_moves_it_under_the_staging_mailbox(
+        self,
+        connector: AppleMailConnector,
+        test_account: str,
+    ) -> None:
+        """IMAP RENAME under a freshly created staging mailbox; verified on
+        the server, since Mail's mailbox list lags IMAP by minutes."""
+        import uuid as _uuid
+
+        from imapclient import IMAPClient
+
+        from apple_mail_fast_mcp.keychain import get_imap_password
+
+        tag = _uuid.uuid4().hex[:8]
+        staging = f"ZZZ-AMM-STAGING-{tag}"
+        box = f"ZZZ-AMM-STAGED-{tag}"
+        assert connector.create_mailbox(account=test_account, name=box)
+        staged = None
+        try:
+            staged = connector.stage_mailbox_for_deletion(
+                account=test_account, name=box, staging_mailbox=staging
+            )
+            assert staged == f"{staging}/{box}"
+
+            host, port, email = connector._resolve_imap_config(test_account)
+            client = IMAPClient(host, port=port, ssl=True, timeout=30)
+            client.login(email, get_imap_password(test_account, email))
+            try:
+                folders = {f[2] for f in client.list_folders()}
+            finally:
+                client.logout()
+            assert box not in folders
+            assert any(f.endswith(box) and staging in f for f in folders)
+        finally:
+            for name in (staged, box, staging):
+                if name is None:
+                    continue
+                try:
+                    connector.delete_mailbox(
+                        account=test_account, name=name, delete_messages=True
+                    )
+                except Exception:
+                    pass
