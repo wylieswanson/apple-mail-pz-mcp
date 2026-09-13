@@ -585,12 +585,12 @@ async def delete_rule(
 
         summary = f"Delete Mail.app rule '{rule_name}' (index {rule_index})? This cannot be undone."
         cancel_err = await _elicit_confirmation(
-            ctx, summary, "delete_rule", {"rule_index": rule_index}
+            ctx, summary, "delete_rule", {"rule_index": rule_index, "rule_name": rule_name}
         )
         if cancel_err:
             return cancel_err
 
-        deleted = await _run_blocking(mail.delete_rule, rule_index)
+        deleted = await _run_blocking(mail.delete_rule, rule_index, expected_name=rule_name)
         operation_logger.log_operation(
             "delete_rule",
             {"rule_index": rule_index, "deleted_name": deleted},
@@ -806,7 +806,7 @@ async def update_rule(
                 f"Previous condition/action state cannot be recovered."
             )
             cancel_err = await _elicit_confirmation(
-                ctx, summary, "update_rule", {"rule_index": rule_index}
+                ctx, summary, "update_rule", {"rule_index": rule_index, "rule_name": rule_name}
             )
             if cancel_err:
                 return cancel_err
@@ -819,6 +819,7 @@ async def update_rule(
             conditions=conditions,
             actions=actions,
             match_logic=match_logic,
+            expected_name=rule_name,
         )
         operation_logger.log_operation(
             "update_rule",

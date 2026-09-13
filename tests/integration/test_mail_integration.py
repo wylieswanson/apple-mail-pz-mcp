@@ -2562,6 +2562,38 @@ class TestRuleCRUDIntegration:
             self._delete_test_rule_if_present(connector)
 
 
+class TestRuleNameGuardIntegration:
+    """delete_rule / update_rule re-check the confirmed name inside the
+    mutating script, so a shifted index can't hit a different rule."""
+
+    def test_wrong_expected_name_changes_nothing(
+        self, connector: AppleMailConnector
+    ) -> None:
+        import uuid as _uuid
+
+        from apple_mail_fast_mcp.exceptions import MailRuleNotFoundError
+
+        name = f"ZZZ-AMM-GUARD-{_uuid.uuid4().hex[:8]}"
+        index = connector.create_rule(
+            name=name,
+            conditions=[{"field": "subject", "operator": "contains", "value": name}],
+            actions={"mark_read": True},
+            enabled=False,
+        )
+        try:
+            with pytest.raises(MailRuleNotFoundError):
+                connector.update_rule(
+                    rule_index=index, enabled=True, expected_name=name + "-other"
+                )
+            with pytest.raises(MailRuleNotFoundError):
+                connector.delete_rule(rule_index=index, expected_name=name + "-other")
+            rules = {r["index"]: r for r in connector.list_rules()}
+            assert rules[index]["name"] == name
+            assert rules[index]["enabled"] is False
+        finally:
+            connector.delete_rule(rule_index=index, expected_name=name)
+
+
 class TestTemplateIntegration:
     """End-to-end: save a template referencing reply-context placeholders,
     render it against a real message from the test inbox, verify the

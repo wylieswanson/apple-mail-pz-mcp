@@ -3,7 +3,7 @@
 An MCP server bridging AI agents and Apple Mail via AppleScript on macOS.
 
 **Stack:** Python 3.10+, FastMCP 4 / MCP SDK 2, AppleScript (via `osascript`)
-**Version:** v0.11.1 | **Tests:** 1804 unit / 44 e2e / 75 integration | **Coverage:** 91%
+**Version:** v0.12.0 | **Tests:** 1812 unit / 44 e2e / 76 integration | **Coverage:** 90%
 
 This file is the canonical agent guide. Codex reads it directly; Claude Code
 reaches it via [`.claude/CLAUDE.md`](.claude/CLAUDE.md). Edit it here.
