@@ -3,7 +3,7 @@
 An MCP server bridging AI agents and Apple Mail via AppleScript on macOS.
 
 **Stack:** Python 3.10+, FastMCP, AppleScript (via `osascript`)
-**Version:** v0.11.1 | **Tests:** 1579 unit / 37 e2e / 62 integration | **Coverage:** 91%
+**Version:** v0.11.1 | **Tests:** 1593 unit / 39 e2e / 62 integration | **Coverage:** 91%
 
 This file is the canonical agent guide. Codex reads it directly; Claude Code
 reaches it via [`.claude/CLAUDE.md`](.claude/CLAUDE.md). Edit it here.
@@ -78,6 +78,11 @@ Two consequences drive real code:
   `--read-only`. Do not "fix" this by letting the gate pass silently; that was
   the pre-#226 bypass. A confirm-token second call is the design worth exploring
   if writes must work on elicitation-less hosts.
+- **A host can take the prompt and never answer.** Claude Code in print mode
+  (`-p`) logs the elicitation request and sends nothing back; unbounded, that
+  hung `delete_mailbox` for 70 minutes. The wait is capped at 120s
+  (`APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S`) and returns
+  `error_type: "confirmation_timeout"` — still fail-closed.
 - **Hosts that stringify args** are handled by the `BeforeValidator` aliases at
   the top of `server.py`. Optional params must use the `Opt*` aliases
   (`OptStrList`, not `StrList | None`) — annotating the union is what lets a
@@ -114,6 +119,7 @@ this budget; keep only prose that changes what the model does.
 - **Backend + frontend together** — Every feature touches `mail_connector.py` AND `server.py`. Verify with `check_client_server_parity.sh`.
 - **Sanitize everything twice** — All user input: `sanitize_input()` then `escape_applescript_string()` before AppleScript.
 - **Structured responses** — Every tool returns `{"success": bool, ...}`. Errors include `error` and `error_type`.
+- **Async tools never block the event loop** — FastMCP threads plain `def` tools but runs `async def` ones on the loop. Inside an async tool, every connector call (or sync helper that makes one) goes through `await _run_blocking(fn, ...)`. `test_server.py` ratchets this statically.
 - **Security checklist per feature** — see [`docs/guides/SECURITY_CHECKLIST.md`](docs/guides/SECURITY_CHECKLIST.md) for the canonical reference (5 concerns: input sanitization, AppleScript escaping, path-traversal-safe name validation, rate limiting, audit logging). Don't duplicate guidance here; link out instead.
 - **If you touched AppleScript, write integration tests** — Unit tests mock `_run_applescript()` and CANNOT catch AppleScript bugs.
 

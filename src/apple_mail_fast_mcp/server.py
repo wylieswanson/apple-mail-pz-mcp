@@ -4,14 +4,18 @@ FastMCP server for Apple Mail integration.
 
 import argparse
 import atexit
+import functools
 import logging
+import math
 import sys
 import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Any, TypeVar, cast
+from typing import Annotated, Any, ParamSpec, TypeVar, cast
 
+import anyio
+import anyio.to_thread
 from fastmcp import Context, FastMCP
 from fastmcp.server.elicitation import AcceptedElicitation
 from pydantic import BeforeValidator
@@ -124,6 +128,24 @@ OptAnyDict = Annotated[dict[str, Any] | None, BeforeValidator(coerce_json_dict)]
 
 
 F = TypeVar("F", bound=Callable[..., Any])
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+async def _run_blocking(
+    fn: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs
+) -> R:
+    """Run blocking connector work on a worker thread from an async tool.
+
+    FastMCP moves plain ``def`` tools to a worker thread itself, but runs
+    ``async def`` tools on the event loop. The confirmation-gated tools must
+    be async to await elicitation, so any osascript or IMAP call made inline
+    in one froze the whole server for its duration — no pings, no
+    cancellation, no other tool calls. Uses anyio's thread pool, the same one
+    FastMCP uses for sync tools. ``test_server.py`` ratchets that every
+    connector call in an ``async def`` goes through here.
+    """
+    return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
 
 
 def _tool(
@@ -237,6 +259,36 @@ def _warn_if_local_db_unavailable() -> None:
     _local_db_startup_warning_emitted = True
 
 
+DEFAULT_ELICITATION_TIMEOUT_S = 120.0
+
+
+def _elicitation_timeout_s() -> float:
+    """Resolve how long to wait for a confirmation answer, at use time,
+    honoring APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S (mirrors the body-cap
+    override pattern). Invalid, non-positive, or non-finite values fall back
+    to DEFAULT_ELICITATION_TIMEOUT_S."""
+    import os
+
+    raw = os.getenv("APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S")
+    if raw is None:
+        return DEFAULT_ELICITATION_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "Ignoring non-numeric APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S=%r", raw
+        )
+        return DEFAULT_ELICITATION_TIMEOUT_S
+    if not math.isfinite(value) or value <= 0:
+        logger.warning(
+            "Ignoring non-positive or non-finite "
+            "APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S=%r",
+            raw,
+        )
+        return DEFAULT_ELICITATION_TIMEOUT_S
+    return value
+
+
 async def _elicit_confirmation(
     ctx: Context | None, summary: str, operation: str, params: dict[str, Any]
 ) -> dict[str, Any] | None:
@@ -258,6 +310,13 @@ async def _elicit_confirmation(
           unsupported, IO error). Pre-#226 these paths silently
           proceeded; the silent-pass was a real bypass of the
           confirmation gate.
+        - ``{"error_type": "confirmation_timeout"}`` when the client took
+          the request but no answer arrived within
+          ``_elicitation_timeout_s()``. Claude Code in print mode does
+          exactly that — it logs the request and never replies — and an
+          unbounded wait hung gated tools until the host killed the server.
+          A late answer is discarded; the client's prompt may linger, since
+          the MCP SDK sends no cancellation for an abandoned request.
     """
     if ctx is None:
         operation_logger.log_operation(
@@ -271,6 +330,7 @@ async def _elicit_confirmation(
             ),
             "error_type": "confirmation_required",
         }
+    timeout_s = _elicitation_timeout_s()
     try:
         # mypy 1.20.x collapses every ctx.elicit overload to the
         # response_type=None variant (the inter-overload docstrings break
@@ -278,14 +338,30 @@ async def _elicit_confirmation(
         # types result.data as dict[str, Any] below — hence the ignore and
         # the cast. At runtime FastMCP wraps the bool and returns a real
         # bool in result.data.
-        result = await ctx.elicit(
-            summary,
-            response_type=bool,  # type: ignore[arg-type]
-            response_title="Confirm",
-            response_description=(
-                "Set to true to proceed with this operation."
-            ),
+        with anyio.fail_after(timeout_s):
+            result = await ctx.elicit(
+                summary,
+                response_type=bool,  # type: ignore[arg-type]
+                response_title="Confirm",
+                response_description=(
+                    "Set to true to proceed with this operation."
+                ),
+            )
+    except TimeoutError:
+        logger.warning(
+            "No confirmation answer within %gs; blocking %s", timeout_s, operation
         )
+        operation_logger.log_operation(operation, params, "confirmation_timeout")
+        return {
+            "success": False,
+            "error": (
+                f"No answer to the confirmation prompt within {timeout_s:g}s, "
+                "so nothing was changed. The MCP client may be "
+                "non-interactive, or nobody was at the prompt. Operators can "
+                "raise the wait with APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S."
+            ),
+            "error_type": "confirmation_timeout",
+        }
     except Exception as e:
         logger.warning(
             "Elicitation unavailable; blocking %s: %s", operation, e
@@ -447,7 +523,7 @@ async def delete_rule(
         if rate_err:
             return rate_err
 
-        rule_name = _resolve_rule_name(rule_index)
+        rule_name = await _run_blocking(_resolve_rule_name, rule_index)
         if rule_name is None:
             return {
                 "success": False,
@@ -471,7 +547,7 @@ async def delete_rule(
         if cancel_err:
             return cancel_err
 
-        deleted = mail.delete_rule(rule_index)
+        deleted = await _run_blocking(mail.delete_rule, rule_index)
         operation_logger.log_operation(
             "delete_rule",
             {"rule_index": rule_index, "deleted_name": deleted},
@@ -574,7 +650,8 @@ async def create_rule(
             if cancel_err:
                 return cancel_err
 
-        new_index = mail.create_rule(
+        new_index = await _run_blocking(
+            mail.create_rule,
             name=name,
             conditions=conditions,
             actions=actions,
@@ -660,7 +737,7 @@ async def update_rule(
         if rate_err:
             return rate_err
 
-        rule_name = _resolve_rule_name(rule_index)
+        rule_name = await _run_blocking(_resolve_rule_name, rule_index)
         if rule_name is None:
             return {
                 "success": False,
@@ -695,7 +772,8 @@ async def update_rule(
             if cancel_err:
                 return cancel_err
 
-        mail.update_rule(
+        await _run_blocking(
+            mail.update_rule,
             rule_index=rule_index,
             name=name,
             enabled=enabled,
@@ -2356,7 +2434,8 @@ async def delete_mailbox(
         if cancel_err:
             return cancel_err
 
-        count = mail.delete_mailbox(
+        count = await _run_blocking(
+            mail.delete_mailbox,
             account=account, name=name, delete_messages=delete_messages
         )
         operation_logger.log_operation(
@@ -2516,7 +2595,8 @@ async def delete_messages(
         logger.info(f"Deleting {len(message_ids)} message(s) to trash")
 
         # Delete the messages
-        count = mail.delete_messages(
+        count = await _run_blocking(
+            mail.delete_messages,
             message_ids=message_ids,
             permanent=permanent,
             skip_bulk_check=False,  # Enforce limit
@@ -3283,7 +3363,8 @@ async def create_draft(
         # Template resolution (#191: pulled out to _maybe_apply_template).
         # ----------------------------------------------------------------
         try:
-            subject, body = _maybe_apply_template(
+            subject, body = await _run_blocking(
+                _maybe_apply_template,
                 template_name, template_vars, seed_id, subject, body,
             )
         except MailTemplateError as e:
@@ -3332,7 +3413,8 @@ async def create_draft(
             else None
         )
         warnings: list[str] = []
-        result = mail.create_draft(
+        result = await _run_blocking(
+            mail.create_draft,
             seed=seed_kind,
             seed_id=seed_id,
             seed_mailbox=seed_mailbox,
@@ -3458,12 +3540,13 @@ async def update_draft(
             return common_err
 
         try:
-            state = mail.get_draft_state(draft_id)
+            state = await _run_blocking(mail.get_draft_state, draft_id)
         except MailDraftError as e:
             return _draft_error_response(e)
 
         store = _get_draft_state_store()
-        seed_kind, seed_id, reply_all = _resolve_draft_seed(
+        seed_kind, seed_id, reply_all = await _run_blocking(
+            _resolve_draft_seed,
             draft_id, state, store
         )
         if body_html is not None and seed_kind != "new":
@@ -3477,7 +3560,8 @@ async def update_draft(
             }
 
         try:
-            final_subject, final_body = _resolve_update_subject_body(
+            final_subject, final_body = await _run_blocking(
+                _resolve_update_subject_body,
                 subject, body, template_name, template_vars, seed_id, state,
             )
         except MailTemplateError as e:
@@ -3488,7 +3572,8 @@ async def update_draft(
         )
 
         # tempdir (if any) is cleaned up in the finally block.
-        final_attachments, tempdir = _resolve_draft_attachments(
+        final_attachments, tempdir = await _run_blocking(
+            _resolve_draft_attachments,
             draft_id, attachment_paths, state.get("attachment_names", []) or []
         )
 
@@ -3516,14 +3601,15 @@ async def update_draft(
         # Delete + recreate. Clear stale state first so a connector failure
         # doesn't leave orphan entries.
         try:
-            mail.delete_draft(draft_id)
+            await _run_blocking(mail.delete_draft, draft_id)
         except MailDraftNotFoundError:
             return _draft_error_response(
                 MailDraftNotFoundError(f"no draft with id {draft_id!r}")
             )
         store.delete(draft_id)
 
-        result = mail.create_draft(
+        result = await _run_blocking(
+            mail.create_draft,
             seed=seed_kind,
             seed_id=seed_id,
             to=final_to,

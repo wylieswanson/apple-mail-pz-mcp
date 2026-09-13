@@ -33,6 +33,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "anyio>=4.0",
     "fastmcp>=3.3.1",
     "imapclient>=3.1.0",
 ]

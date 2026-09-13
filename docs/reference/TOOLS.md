@@ -577,6 +577,8 @@ All tools return a consistent error format:
 - `validation_error`: Invalid parameters
 - `permission_error`: Insufficient permissions
 - `cancelled`: User cancelled the operation
+- `confirmation_required`: A destructive tool could not ask for confirmation (the client has no elicitation support)
+- `confirmation_timeout`: The client took the confirmation prompt but sent no answer within 120s (for example Claude Code in non-interactive `-p` mode); nothing was changed. Override the wait with `APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S` (seconds)
 - `unknown`: Unexpected error
 
 ---
