@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-09-13
+
+This release is about **deletes that don't hang and don't destroy.** It began with a `delete_mailbox` that sat for 70 minutes and a `delete_messages` that waited 15, both before touching Mail or IMAP: the host had taken the confirmation prompt and never answered. That is fixed, and more fundamentally, agents no longer delete mail at all by default — they stage it for you.
+
+> **Breaking:**
+> - **`delete_messages` and `delete_mailbox` stage by default.** They move their target into a per-account `To Delete` mailbox instead of deleting it, and staging `delete_messages` requires `account` + `source_mailbox`. Set `APPLE_MAIL_MCP_DELETE_STAGING=off` for the previous behavior. See [Delete staging](docs/reference/TOOLS.md#delete-staging).
+> - **Dependencies move up a major:** fastmcp 4, MCP SDK 2, imapclient 4.
+> - **IMAP `get_messages` returns decoded body text by default** ([upstream #389](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/389)); `body_format="raw"` restores the undecoded MIME body.
+
+### Added
+
+**Delete staging.** `delete_messages` moves messages to the account's `To Delete` mailbox (created on demand, over IMAP when configured so the move lands immediately); `delete_mailbox` IMAP-renames the mailbox, with its messages and children, to `To Delete/<name>`, adding ` 2`, ` 3`… on a collision. Nothing is destroyed, so staging asks for no confirmation — the same reasoning that leaves `update_message` moves unprompted — which makes deletes work in Claude Desktop, Cowork, and headless agents, where confirmation can't be answered. Only a target already inside `To Delete` is really deleted, after confirmation. New mailbox paths are translated to the server's delimiter and personal namespace (`INBOX.To Delete.Spam` on Dovecot-style servers). `APPLE_MAIL_MCP_DELETE_STAGING` names the mailbox or turns staging off; the `.mcpb` bundle exposes it as a **Stage deletes for review** checkbox.
+
+**Confirmation on MCP 2026-07-28.** That protocol removed server-initiated requests, so a confirmation prompt could never be shown there. On those connections a gated tool now returns an input-required result and the client retries the call with the answer. The answer is bound to a digest of exactly what was shown, sealed in the request state, so a "yes" can't be carried onto a different call; the asking round doesn't count against rate limits. Hosts on the 2025-11-25 handshake (Claude Code and Claude Desktop today) keep the existing prompt.
+
+**`make install-tool`** installs the CLI from a checkout with the versions in `uv.lock`. A bare `uv tool install .` ignores the lockfile.
+
+**From upstream** ([apple-mail-fast-mcp](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp) through its v0.11.0): wrapper-free `send_now` over SMTP ([upstream #322](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/322)); decoded IMAP bodies with `To`/`Cc` and reliable attachments ([upstream #389](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/389)); `setup-imap --host/--port` ([upstream #405](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/405)); a partial-thread signal on `get_thread` ([upstream #420](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/420)).
+
+### Fixed
+
+**A confirmation the host never answered hung the tool forever.** Claude Code in print mode takes the elicitation request and sends nothing back. The wait is now capped at 120s (`APPLE_MAIL_MCP_ELICITATION_TIMEOUT_S`) and returns `error_type: "confirmation_timeout"` — still fail-closed, and a late "yes" is discarded.
+
+**A slow Mail or IMAP call froze the whole server.** The confirmation-gated tools are `async`, and FastMCP runs those on the event loop, so their osascript and IMAP calls blocked pings, cancellation, and every other tool for their duration. They now run on worker threads, and a test fails if a connector call ever appears directly inside an `async` function again.
+
+**Overlapping AppleScript calls timed each other out.** Mail answers Apple Events one at a time, so parallel osascript calls only queued inside Mail, where the wait counted against each caller's timeout and a killed bulk mutation was left half-applied. Calls are now serialized in the server, waiting before the timeout clock starts. A timeout now says Mail may still be applying the change; a missing macOS Automation grant (-1743) says which System Settings pane to open; and a missing rule is no longer reported as a generic AppleScript error.
+
+**A confirmed rule change could hit a different rule.** Rules are addressed by position, and the confirmation covered only the index. Confirm deleting rules 3 and 4, and the first delete shifted the rest up: the second deleted a rule nobody approved. The confirmation now covers the rule's name, and `delete_rule` / `update_rule` re-check it inside the same AppleScript before changing anything.
+
+**Mail.app froze on large mailboxes** (from upstream): bulk mutations ([upstream #437](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/437), [upstream #432](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/432), [upstream #425](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/425)) and `get_thread` ([upstream #415](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/415), [upstream #419](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/419)) no longer run unindexed `message id` scans on Mail's UI thread.
+
+**Also from upstream:** drafts on localized Mail.app and Gmail ([upstream #407](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/407), [upstream #421](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/421)); locale-dependent AppleScript date literals ([upstream #436](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/436)); a reverse-DNS stall on every draft ([upstream #408](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/408)); a lockfile refresh clearing pip-audit advisories ([upstream #348](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/348)).
+
+### Changed
+
+**Tool surface:** +206 bytes per request for `get_messages`' `body_format` (upstream's description, trimmed), −439 for rewritten delete descriptions, and +697 because fastmcp 4 always sends a tool `title` (some clients drop untitled tools). `scripts/schema_budget.py` now measures the JSON actually sent.
+
+### Known issues
+
+- **The integration suite was not run for this release** — no test Mail account on the release machine. It covers upstream's AppleScript changes and the new staging paths ([#2](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/2)).
+- **Bulk mutations on the AppleScript fallback cost ~16s per RFC Message-ID** (upstream's measurement, [upstream #450](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp/issues/450)). Staging stays off that path by requiring `account` + `source_mailbox`.
+- **The benchmark baseline and blind-eval snapshot are waived again** ([#2](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/2), [#3](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/3)).
+
 ## [0.11.1] - 2026-07-09
 
 A packaging patch. **The v0.11.0 `.mcpb` bundle could not start** — install it in Claude Desktop and the server fails to launch. If you installed that bundle, replace it with this one. Nothing else in v0.11.0 is affected: the Claude Code plugin, `uv tool install`, and source installs were all fine.
