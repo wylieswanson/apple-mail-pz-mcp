@@ -10642,13 +10642,54 @@ class TestSaveMessageAsEml:
         assert Path(result["message_file"]).read_bytes() == raw
         assert result["message_file"] != result["files"][0]
 
+    @pytest.mark.parametrize(
+        ("subject", "expected"),
+        [
+            ("Weekly summary for Sat, 10/10 is ready", "Weekly summary for Sat, 10_10 is ready.eml"),
+            ("Q3 / Q4 plan", "Q3 _ Q4 plan.eml"),
+            ("C:\\temp\\x", "C__temp_x.eml"),
+            ("a/b/..", "a_b_...eml"),
+            ("/", "_.eml"),
+        ],
+    )
+    def test_a_slash_in_the_subject_is_a_character_not_a_path(
+        self, connector: AppleMailConnector, tmp_path: Path, subject: str, expected: str
+    ) -> None:
+        """A subject is a title, not a filename someone chose. Taking its
+        basename, as is right for an attachment name, kept only what
+        followed the last slash: a digest dated 10/10 was saved as
+        ``10 is ready.eml``. Separators become ``_`` and the rest stays."""
+        raw = f"Subject: {subject}\r\nMessage-ID: <att-test@example.com>\r\n\r\nbody\r\n".encode()
+
+        target = Path(self._save(connector, raw, tmp_path, include_message=True)["message_file"])
+
+        assert target == tmp_path / expected
+        assert target.read_bytes() == raw
+
+    def test_subjects_that_differ_before_a_slash_get_different_files(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        one = b"Subject: Alpha 10/10 report\r\nMessage-ID: <1@x>\r\n\r\none\r\n"
+        two = b"Subject: Beta 10/10 report\r\nMessage-ID: <2@x>\r\n\r\ntwo\r\n"
+
+        a = self._save(connector, one, tmp_path, include_message=True)["message_file"]
+        b = self._save(connector, two, tmp_path, include_message=True)["message_file"]
+
+        assert [Path(a).name, Path(b).name] == ["Alpha 10_10 report.eml", "Beta 10_10 report.eml"]
+
     def test_unsafe_or_missing_subject_still_gets_a_safe_name(
         self, connector: AppleMailConnector, tmp_path: Path
     ) -> None:
         raw = b"Subject: ../../etc/x\r\nMessage-ID: <att-test@example.com>\r\n\r\nbody\r\n"
+        target = Path(self._save(connector, raw, tmp_path, include_message=True)["message_file"])
+        assert target == tmp_path / "_.._etc_x.eml"
+        assert target.parent == tmp_path
+
+        raw = b"Subject: ..\r\nMessage-ID: <att-test@example.com>\r\n\r\nbody\r\n"
         assert Path(
             self._save(connector, raw, tmp_path, include_message=True)["message_file"]
-        ) == tmp_path / "x.eml"
+        ) == tmp_path / "message.eml"
+        (tmp_path / "message.eml").unlink()
 
         raw = b"Message-ID: <att-test@example.com>\r\n\r\nbody\r\n"
         assert Path(

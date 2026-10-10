@@ -432,7 +432,8 @@ def _require_real_mailbox(mailbox: str | None) -> None:
 def _eml_target(raw: bytes, save_directory: Path, taken: set[Path]) -> Path:
     """Where a message's ``.eml`` goes: named after its Subject, inside
     ``save_directory``. The subject is as attacker-controlled as an attachment
-    name, so it takes the same :func:`sanitize_filename` route to a path.
+    name, so once its path separators are neutralized it takes the same
+    :func:`sanitize_filename` route to a path.
 
     It never lands on another file. Every reply in a thread has the same
     subject, so a name already in use — by an attachment written in this
@@ -441,7 +442,11 @@ def _eml_target(raw: bytes, save_directory: Path, taken: set[Path]) -> Path:
     file that already holds exactly these bytes is reused.
     """
     subject = str(BytesHeaderParser(policy=_email_policy).parsebytes(raw)["Subject"] or "")
-    name = sanitize_filename(f"{subject.strip()}.eml") if subject.strip() else "message.eml"
+    # A subject is a title, not a path. sanitize_filename takes the basename,
+    # which is right for an attachment's filename and wrong here: "Digest for
+    # 10/10 is ready" became "10 is ready". Separators become a character.
+    subject = re.sub(r"[/\\:]", "_", subject).strip()
+    name = sanitize_filename(f"{subject}.eml") if subject else "message.eml"
     if not name.endswith(".eml") or name == ".eml":
         name = "message.eml"
     # Room for the counter within the 255-byte name limit.

@@ -1949,7 +1949,7 @@ def save_attachments(
 
     Args:
         message_id: Message ID from search results
-        save_directory: Directory path to save attachments to
+        save_directory: Existing directory to save into (not created)
         attachment_indices: 0-based positions in the message's
             ``attachments`` list from ``get_messages``; None saves all.
             An out-of-range index fails the call.
