@@ -2039,6 +2039,74 @@ class TestDraftsLifecycleIntegration:
             except Exception:
                 pass
 
+    def test_eml_export_matches_the_server_and_leaves_flags_alone(
+        self,
+        connector: AppleMailConnector,
+        test_account: str,
+        tmp_path: Path,
+    ) -> None:
+        """save_attachments(include_message=True) against a real server: the
+        .eml is the message byte for byte, ``message_source`` agrees with the
+        server about its size, and the flags are the same on both sides of
+        the fetch — including a keyword, which the read tools don't expose."""
+        import uuid as _uuid
+        from datetime import datetime, timezone
+        from email.utils import format_datetime
+
+        from imapclient import IMAPClient
+
+        from apple_mail_fast_mcp.keychain import get_imap_password
+
+        suffix = _uuid.uuid4().hex[:8]
+        src = f"ZZZ-AMM-EML-SRC-{suffix}"
+        msg_id_local = f"{_uuid.uuid4().hex}@apple-mail-pz-mcp-test.invalid"
+
+        host, port, email = connector._resolve_imap_config(test_account)
+        pw = get_imap_password(test_account, email)
+
+        assert connector.create_mailbox(account=test_account, name=src)
+        try:
+            now = format_datetime(datetime.now(tz=timezone.utc))
+            raw = (
+                f"From: sender@apple-mail-pz-mcp-test.invalid\r\n"
+                f"To: rcpt@apple-mail-pz-mcp-test.invalid\r\n"
+                f"Subject: AMM export 10/10 test\r\n"
+                f"Date: {now}\r\n"
+                f"Message-ID: <{msg_id_local}>\r\n"
+                f"\r\n"
+                f"body\r\n"
+            ).encode()
+
+            append_client = IMAPClient(host, port=port, ssl=True, timeout=30)
+            append_client.login(email, pw)
+            try:
+                append_client.append(src, raw, flags=[b"\\Flagged", b"$AMMTest"])
+            finally:
+                append_client.logout()
+
+            result = connector.save_attachments(
+                msg_id_local, tmp_path, [], account=test_account, mailbox=src,
+                include_message=True,
+            )
+
+            eml = Path(result["message_file"])
+            assert eml.name == "AMM export 10_10 test.eml"
+            assert eml.read_bytes() == raw
+            source = result["message_source"]
+            assert source["mailbox"] == src
+            assert source["rfc822_size"] == source["bytes_written"] == len(raw)
+            assert isinstance(source["uid"], int) and isinstance(source["uidvalidity"], int)
+            assert "\\Flagged" in source["flags_before"]
+            assert "\\Seen" not in source["flags_after"]
+            assert source["flags_before"] == source["flags_after"]
+        finally:
+            try:
+                connector.delete_mailbox(
+                    account=test_account, name=src, delete_messages=True
+                )
+            except Exception:
+                pass
+
     def test_update_message_flagged_status_via_imap_round_trip(
         self,
         connector: AppleMailConnector,

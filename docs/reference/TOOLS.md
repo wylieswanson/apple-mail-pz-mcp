@@ -713,7 +713,7 @@ Save attachments from a message to a directory.
 | `attachment_indices` | list[int] | No | None | 0-based positions in the message's `attachments` list from `get_messages` (None = all). An out-of-range index fails the whole call with `error_type: "attachment_index_out_of_range"` and writes nothing. |
 | `account` | string | No | None | Mail.app account name or UUID. With `mailbox`, takes the IMAP fast path (one fetch). Pass the same values you read the message with so attachment ordering matches. |
 | `mailbox` | string | No | None | Folder the message lives in (e.g. "INBOX"), used with `account` for the IMAP fast path. |
-| `include_message` | boolean | No | false | Also write the message itself as an `.eml` file: the RFC 822 bytes exactly as the server holds them, named after the subject, with `/`, `\` and `:` in it written as `_`. It never overwrites a different file: a name already in use gets ` 2`, ` 3`… appended, and a file that already holds the same bytes is reused, so saving a whole thread into one directory leaves one file per message. IMAP only — requires `account` + `mailbox`, else `error_type: "imap_required"` and nothing is written. With `attachment_indices=[]` the `.eml` is the only file. The response gains `message_file` (the path). The `.eml` counts against the same byte caps as an attachment. |
+| `include_message` | boolean | No | false | Also write the message itself as an `.eml` file: the RFC 822 bytes exactly as the server holds them, named after the subject, with `/`, `\` and `:` in it written as `_`. It never overwrites a different file: a name already in use gets ` 2`, ` 3`… appended, and a file that already holds the same bytes is reused, so saving a whole thread into one directory leaves one file per message. IMAP only — requires `account` + `mailbox`, else `error_type: "imap_required"` and nothing is written. With `attachment_indices=[]` the `.eml` is the only file. The response gains `message_file` (the path) and `message_source` (its provenance, below). The `.eml` counts against the same byte caps as an attachment. |
 
 **Performance (#371):** pass `account` + `mailbox` to fetch the message once over IMAP and write the bytes straight to disk. Without them, `save_attachments` falls back to an O(accounts × mailboxes) AppleScript scan whose unindexed `message id` lookup is ~20s/mailbox — on Gmail (dozens of labels) that can run for minutes and time out. Mirrors `get_attachment_content`'s fast path.
 
@@ -742,6 +742,24 @@ therefore count whether the sender marked them `inline; filename=` (Apple Mail) 
 content-type `name` and a Content-ID (Outlook). The same rule drives `get_messages` /
 `search_messages(include_attachments=true)`, the `has_attachment` filter, `get_attachment_content`
 and `save_attachments`, so an index means the same part in all of them.
+
+**`message_source`** (with `include_message`). Where the exported bytes came from, for filing the `.eml` as evidence:
+
+```json
+{
+  "host": "imap.mail.me.com",
+  "mailbox": "INBOX",
+  "uidvalidity": 1700000000,
+  "uid": 1207,
+  "rfc822_size": 48213,
+  "bytes_written": 48213,
+  "flags_before": ["\\Seen", "$Forwarded"],
+  "flags_after": ["\\Seen", "$Forwarded"],
+  "fetched_at": "2026-10-10T22:13:57+00:00"
+}
+```
+
+`uidvalidity` + `uid` identify the message on that server for as long as the mailbox keeps its UIDVALIDITY. `rfc822_size` is the size the server states and `bytes_written` the size of the file, so the two can be compared without a stat. `flags_before` / `flags_after` are the full IMAP flag lists, system flags and keywords, each read in its own command on either side of the body fetch: equal lists are the record that the export changed nothing. `flags_after` is `null` if the message was moved or expunged in between. `fetched_at` is UTC. The object costs two IMAP round-trips beyond the fetch itself and is only produced with `include_message`.
 
 `rejected` lists any attachments skipped by the byte
 caps (per-attachment default 100 MB, aggregate 500 MB per call — disk-fill DoS protection, #236),

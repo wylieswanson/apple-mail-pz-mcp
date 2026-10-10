@@ -10573,6 +10573,13 @@ class TestSearchAllMailboxesDispatch:
         mock_local_search.assert_not_called()
 
 
+_SOURCE = {
+    "host": "imap.example.com", "mailbox": "INBOX", "uidvalidity": 7, "uid": 42,
+    "rfc822_size": 123, "flags_before": ["\\Seen"], "flags_after": ["\\Seen"],
+    "fetched_at": "2026-01-02T03:04:05+00:00",
+}
+
+
 class TestSaveMessageAsEml:
     """save_attachments(include_message=True) writes the message itself."""
 
@@ -10586,8 +10593,11 @@ class TestSaveMessageAsEml:
         mock_imap = MagicMock()
         if isinstance(raw, Exception):
             mock_imap.fetch_raw_message.side_effect = raw
+            mock_imap.fetch_message_with_source.side_effect = raw
         else:
             mock_imap.fetch_raw_message.return_value = raw
+            mock_imap.fetch_message_with_source.return_value = (raw, dict(_SOURCE))
+        self.mock_imap = mock_imap
         with contextlib.ExitStack() as stack:
             for p in TestSaveAttachmentsImapFastPath._imap_patches(self, mock_imap):
                 stack.enter_context(p)
@@ -10610,6 +10620,28 @@ class TestSaveMessageAsEml:
         assert eml.read_bytes() == raw
         assert result["saved"] == 1
         assert [Path(f).name for f in result["files"]] == ["a.pdf"]
+
+    def test_the_export_says_where_its_bytes_came_from(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        raw = _raw_with_attachments([("a.pdf", "pdf", b"AAA")])
+
+        result = self._save(connector, raw, tmp_path, include_message=True)
+
+        assert result["message_source"] == {**_SOURCE, "bytes_written": len(raw)}
+        self.mock_imap.fetch_message_with_source.assert_called_once_with(
+            "att-test@example.com", "INBOX"
+        )
+        self.mock_imap.fetch_raw_message.assert_not_called()
+
+    def test_a_plain_save_pays_nothing_for_provenance(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        """The source costs two extra round-trips. Only an export asks for it."""
+        result = self._save(connector, _raw_with_attachments([("a.pdf", "pdf", b"A")]), tmp_path)
+
+        assert "message_source" not in result
+        self.mock_imap.fetch_message_with_source.assert_not_called()
 
     def test_empty_indices_saves_the_message_alone(
         self, connector: AppleMailConnector, tmp_path: Path
@@ -10705,6 +10737,7 @@ class TestSaveMessageAsEml:
         result = self._save(connector, raw, tmp_path, include_message=True)
 
         assert "message_file" not in result
+        assert "message_source" not in result
         assert result["rejected"] == [
             {"name": "big.eml", "size": len(raw), "reason": "per_attachment_cap"}
         ]

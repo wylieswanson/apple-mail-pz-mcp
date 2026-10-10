@@ -1357,6 +1357,87 @@ class TestGetMessage:
         for call in mock_cls.return_value.fetch.call_args_list:
             assert not [k for k in call[0][1] if k.startswith(b"BODY[")]
 
+    def _source_client(self, mock_cls: MagicMock, *, after: dict | None = None) -> MagicMock:
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.select_folder.return_value = {b"UIDVALIDITY": 1700000000, b"EXISTS": 3}
+        client.search.return_value = [42]
+        client.fetch.side_effect = [
+            {42: {b"FLAGS": (b"\\Flagged", b"$Forwarded"), b"RFC822.SIZE": 19}},
+            {42: {b"BODY[]": b"Subject: x\r\n\r\nhi\r\n"}},
+            {42: {b"FLAGS": (b"\\Flagged", b"$Forwarded")}} if after is None else after,
+        ]
+        return client
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_fetch_with_source_records_where_the_bytes_came_from(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """An exported message carries its provenance: which message on which
+        server, the size the server states, and the flags on either side of
+        the fetch — the evidence that capturing it changed nothing."""
+        client = self._source_client(mock_cls)
+
+        raw, source = ImapConnector("imap.example.com", 993, "u@e.com", "pw").fetch_message_with_source(
+            "abc@x", "Filed",
+        )
+
+        assert raw == b"Subject: x\r\n\r\nhi\r\n"
+        fetched_at = source.pop("fetched_at")
+        assert source == {
+            "host": "imap.example.com",
+            "mailbox": "Filed",
+            "uidvalidity": 1700000000,
+            "uid": 42,
+            "rfc822_size": 19,
+            "flags_before": ["\\Flagged", "$Forwarded"],
+            "flags_after": ["\\Flagged", "$Forwarded"],
+        }
+        assert datetime.fromisoformat(fetched_at).tzinfo is not None
+        client.select_folder.assert_called_once_with("Filed", readonly=True)
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_fetch_with_source_reads_the_flags_apart_from_the_body(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """Flags reported in the same FETCH as the body already reflect that
+        fetch, so they prove nothing about it. Before and after are each
+        their own command, and the body is still a peek."""
+        client = self._source_client(mock_cls)
+
+        ImapConnector("h", 993, "u@e.com", "pw").fetch_message_with_source("abc@x", "INBOX")
+
+        assert [call[0][1] for call in client.fetch.call_args_list] == [
+            [b"FLAGS", b"RFC822.SIZE"],
+            [b"BODY.PEEK[]"],
+            [b"FLAGS"],
+        ]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_fetch_with_source_survives_the_message_vanishing_afterwards(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """Another client can move the message between our commands. The
+        bytes are already in hand; the after-state is simply unknown."""
+        self._source_client(mock_cls, after={})
+
+        raw, source = ImapConnector("h", 993, "u@e.com", "pw").fetch_message_with_source(
+            "abc@x", "INBOX",
+        )
+
+        assert raw
+        assert source["flags_after"] is None
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_fetch_with_source_not_found(self, mock_cls: MagicMock) -> None:
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.select_folder.return_value = {b"UIDVALIDITY": 1}
+        client.search.return_value = []
+
+        with pytest.raises(MailMessageNotFoundError):
+            ImapConnector("h", 993, "u@e.com", "pw").fetch_message_with_source("abc@x", "INBOX")
+
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_fetch_raw_message_peeks(self, mock_cls: MagicMock) -> None:
         """The raw fetch behind save_attachments / get_attachment_content /

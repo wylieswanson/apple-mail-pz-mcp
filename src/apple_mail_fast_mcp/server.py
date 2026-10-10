@@ -1971,7 +1971,10 @@ def save_attachments(
         that name is unsafe as a path or collides with another), and
         ``rejected`` (attachments skipped by the per-attachment / aggregate
         byte caps, each ``{name, size, reason}``; #236). With
-        ``include_message``, also ``message_file``: the ``.eml`` path.
+        ``include_message``, also ``message_file`` (the ``.eml`` path) and
+        ``message_source`` (its provenance: ``host``, ``mailbox``,
+        ``uidvalidity``, ``uid``, ``rfc822_size``, ``bytes_written``,
+        ``flags_before``, ``flags_after``, ``fetched_at``).
 
     Example:
         >>> save_attachments("12345", "/Users/me/Downloads")
@@ -2038,8 +2041,9 @@ def save_attachments(
             # Attachments skipped/removed by the byte caps (#236), if any.
             "rejected": result["rejected"],
         }
-        if "message_file" in result:
-            response["message_file"] = result["message_file"]
+        for key in ("message_file", "message_source"):
+            if key in result:
+                response[key] = result[key]
         return response
 
     except MailAttachmentIndexError as e:

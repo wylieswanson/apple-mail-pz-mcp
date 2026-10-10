@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from datetime import date as _date
 from datetime import datetime as _datetime
 from datetime import timedelta as _timedelta
+from datetime import timezone as _timezone
 from email import message_from_bytes, policy
 from email.header import decode_header, make_header
 from email.utils import collapse_rfc2231_value, decode_params, unquote
@@ -1016,6 +1017,14 @@ def _envelope_to_dict(
     }
 
 
+def _flag_names(flags: Any) -> list[str] | None:
+    """A FETCH ``FLAGS`` value as strings, in the server's order — system
+    flags and keywords alike. ``None`` when the server sent none at all."""
+    if flags is None:
+        return None
+    return [_decode(flag) for flag in flags]
+
+
 def _peek(section_key: bytes) -> bytes:
     """``BODY[...]`` → ``BODY.PEEK[...]``: the form of a section fetch that
     does not set ``\\Seen``.
@@ -1546,6 +1555,61 @@ class ImapConnector:
                     f"empty body on {self._host}."
                 )
             return bytes(raw)
+
+    def fetch_message_with_source(
+        self, message_id: str, mailbox: str = "INBOX"
+    ) -> tuple[bytes, dict[str, Any]]:
+        """Fetch a message's raw RFC 822 bytes together with where they came
+        from: the provenance an exported ``.eml`` is filed with.
+
+        The source dict holds ``host``, ``mailbox``, ``uidvalidity`` and
+        ``uid`` (which message, on which server), ``rfc822_size`` (the size
+        the server states, to compare with the bytes received),
+        ``flags_before`` / ``flags_after`` (the full flag list on either side
+        of the fetch) and ``fetched_at`` (UTC, ISO 8601).
+
+        The flags are read in their own commands, before and after the body.
+        Flags returned in the same FETCH as the body already reflect that
+        fetch, so they could not show whether it changed anything. That is
+        two round-trips more than :meth:`fetch_raw_message`, which stays the
+        path for callers that only want the bytes. A value the server did not
+        give is ``None``; ``flags_after`` is ``None`` if the message was moved
+        or expunged in between.
+
+        Raises:
+            MailMessageNotFoundError: No message in ``mailbox`` matches.
+            IMAPClientError: Login / SELECT / SEARCH / FETCH failed.
+        """
+        bracketed = _bracket_message_id(message_id)
+        _reject_control_chars(mailbox, "mailbox")
+        with self._session() as client:
+            info = client.select_folder(mailbox, readonly=True)
+            uids = client.search(["HEADER", "Message-ID", bracketed])
+            if not uids:
+                raise MailMessageNotFoundError(
+                    f"Message-ID {message_id!r} not found in mailbox "
+                    f"{mailbox!r} on {self._host}."
+                )
+            uid = uids[0]
+            before = client.fetch([uid], [b"FLAGS", b"RFC822.SIZE"]).get(uid) or {}
+            fetched_at = _datetime.now(_timezone.utc).isoformat(timespec="seconds")
+            raw = (client.fetch([uid], [_peek(b"BODY[]")]).get(uid) or {}).get(b"BODY[]")
+            if not raw:
+                raise MailMessageNotFoundError(
+                    f"Message-ID {message_id!r} in {mailbox!r} returned an "
+                    f"empty body on {self._host}."
+                )
+            after = client.fetch([uid], [b"FLAGS"]).get(uid)
+            return bytes(raw), {
+                "host": self._host,
+                "mailbox": mailbox,
+                "uidvalidity": info.get(b"UIDVALIDITY"),
+                "uid": uid,
+                "rfc822_size": before.get(b"RFC822.SIZE"),
+                "flags_before": _flag_names(before.get(b"FLAGS")),
+                "flags_after": _flag_names(after.get(b"FLAGS")) if after else None,
+                "fetched_at": fetched_at,
+            }
 
     def fetch_attachment_payload(
         self,
