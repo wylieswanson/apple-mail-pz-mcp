@@ -233,3 +233,34 @@ def test_search_messages_rejects_bad_dates(envelope_index: Path) -> None:
         connector.search_messages(
             LocalDbSearch(account_uuid="ACC-1", mailbox="INBOX", date_from="last week")
         )
+
+
+def test_search_all_mailboxes_of_one_account_names_each_rows_mailbox(
+    envelope_index: Path,
+) -> None:
+    """``mailbox="*"`` is every mailbox of the account and no other account's.
+    Each row says where it lives, so the caller can read the message without
+    a second search to find it."""
+    connector = LocalDbConnector(envelope_index)
+
+    rows = connector.search_messages(LocalDbSearch(account_uuid="ACC-1", mailbox="*", limit=10))
+
+    assert [(row["id"], row["mailbox"]) for row in rows] == [
+        ("111", "INBOX"),
+        ("222", "INBOX"),
+        ("333", "Sent Messages"),
+    ]
+
+
+def test_search_all_mailboxes_applies_filters_and_limit_across_them(
+    envelope_index: Path,
+) -> None:
+    connector = LocalDbConnector(envelope_index)
+
+    rows = connector.search_messages(
+        LocalDbSearch(account_uuid="ACC-1", mailbox="*", subject_contains="budget", limit=10)
+    )
+    assert [row["id"] for row in rows] == ["111", "333"]
+
+    newest = connector.search_messages(LocalDbSearch(account_uuid="ACC-1", mailbox="*", limit=1))
+    assert [row["id"] for row in newest] == ["111"]

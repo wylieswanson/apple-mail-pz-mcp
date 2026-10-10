@@ -1957,6 +1957,88 @@ class TestDraftsLifecycleIntegration:
             except Exception:
                 pass
 
+    def test_reads_leave_an_unread_message_unread(
+        self,
+        connector: AppleMailConnector,
+        test_account: str,
+    ) -> None:
+        """Every IMAP read path peeks: get_message (text / raw / headers
+        only) and the raw fetch behind save_attachments must not set
+        ``\\Seen``. iCloud sets it on a plain ``BODY[]`` even under EXAMINE,
+        so only a real server can prove this — a mock can't."""
+        import uuid as _uuid
+        from datetime import datetime, timezone
+        from email.utils import format_datetime
+
+        from imapclient import IMAPClient
+
+        from apple_mail_fast_mcp.imap_connector import ImapConnector
+        from apple_mail_fast_mcp.keychain import get_imap_password
+
+        suffix = _uuid.uuid4().hex[:8]
+        src = f"ZZZ-AMM-PEEK-SRC-{suffix}"
+        msg_id_local = f"{_uuid.uuid4().hex}@apple-mail-pz-mcp-test.invalid"
+        bracketed = f"<{msg_id_local}>"
+
+        host, port, email = connector._resolve_imap_config(test_account)
+        pw = get_imap_password(test_account, email)
+
+        assert connector.create_mailbox(account=test_account, name=src)
+
+        def seen() -> bool:
+            verify = IMAPClient(host, port=port, ssl=True, timeout=30)
+            verify.login(email, pw)
+            try:
+                verify.select_folder(src, readonly=True)
+                uids = verify.search(["HEADER", "Message-ID", bracketed])
+                assert len(uids) == 1, f"message missing: {uids}"
+                return b"\\Seen" in verify.get_flags(uids)[uids[0]]
+            finally:
+                verify.logout()
+
+        try:
+            now = format_datetime(datetime.now(tz=timezone.utc))
+            raw = (
+                f"From: sender@apple-mail-pz-mcp-test.invalid\r\n"
+                f"To: rcpt@apple-mail-pz-mcp-test.invalid\r\n"
+                f"Subject: AMM peek-read test\r\n"
+                f"Date: {now}\r\n"
+                f"Message-ID: {bracketed}\r\n"
+                f"\r\n"
+                f"body\r\n"
+            ).encode()
+
+            append_client = IMAPClient(host, port=port, ssl=True, timeout=30)
+            append_client.login(email, pw)
+            try:
+                append_client.append(src, raw, flags=[])
+            finally:
+                append_client.logout()
+            assert not seen()
+
+            for kwargs in (
+                {},
+                {"body_format": "raw"},
+                {"headers_only": True},
+                {"include_attachments": True},
+            ):
+                msg = connector.get_message(
+                    msg_id_local, account=test_account, mailbox=src, **kwargs
+                )
+                assert msg["read_status"] is False
+                assert not seen(), f"get_message({kwargs}) set \\Seen"
+
+            imap = ImapConnector(host, port, email, pw)
+            assert imap.fetch_raw_message(msg_id_local, src)
+            assert not seen(), "fetch_raw_message set \\Seen"
+        finally:
+            try:
+                connector.delete_mailbox(
+                    account=test_account, name=src, delete_messages=True
+                )
+            except Exception:
+                pass
+
     def test_update_message_flagged_status_via_imap_round_trip(
         self,
         connector: AppleMailConnector,

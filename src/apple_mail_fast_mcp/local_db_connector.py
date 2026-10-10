@@ -16,9 +16,9 @@ from datetime import date, datetime, timedelta, timezone
 from datetime import time as dt_time
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
-from apple_mail_fast_mcp.utils import env_flag
+from apple_mail_fast_mcp.utils import ALL_MAILBOXES, env_flag
 
 _DEFAULT_LIMIT = 999_999_999
 _REQUIRED_TABLES = frozenset(
@@ -152,12 +152,20 @@ def _like_pattern(value: str) -> str:
 
 
 def _mailbox_patterns(account_uuid: str, mailbox: str) -> list[str]:
+    if mailbox == ALL_MAILBOXES:
+        return [f"%://{account_uuid}/%"]
     raw = f"%://{account_uuid}/{mailbox}%"
     encoded_mailbox = quote(mailbox, safe="/[]")
     encoded = f"%://{account_uuid}/{encoded_mailbox}%"
     if encoded == raw:
         return [raw]
     return [raw, encoded]
+
+
+def _mailbox_name_from_url(url: str | None, account_uuid: str) -> str:
+    """``imap://<uuid>/Sent%20Messages`` → ``Sent Messages``: the name the
+    other tools take as ``mailbox``."""
+    return unquote((url or "").split(f"://{account_uuid}/", 1)[-1])
 
 
 def _mailbox_url_where_clause(patterns: list[str]) -> tuple[str, list[Any]]:
@@ -370,6 +378,14 @@ class LocalDbConnector:
                 return []
             return self._search_messages_in_mailboxes(conn, query, mailbox_ids)
 
+    @staticmethod
+    def _named(message: dict[str, Any], row: sqlite3.Row, query: LocalDbSearch) -> dict[str, Any]:
+        """Add the row's mailbox for an all-mailbox search. A single-mailbox
+        search leaves it off: the caller named it, and it is bytes per row."""
+        if query.mailbox == ALL_MAILBOXES:
+            message["mailbox"] = _mailbox_name_from_url(row["mailbox_url"], query.account_uuid)
+        return message
+
     def _search_messages_in_mailboxes(
         self,
         conn: sqlite3.Connection,
@@ -386,8 +402,10 @@ class LocalDbConnector:
                 m.date_received AS date_received,
                 m.read AS read_status,
                 m.flagged AS flagged,
-                m.mailbox AS mailbox_id
+                m.mailbox AS mailbox_id,
+                mb.url AS mailbox_url
             FROM messages m
+            LEFT JOIN mailboxes mb ON mb.ROWID = m.mailbox
             LEFT JOIN subjects s ON s.ROWID = m.subject
             LEFT JOIN addresses a ON a.ROWID = m.sender
             LEFT JOIN message_global_data g ON g.message_id = m.message_id
@@ -434,7 +452,10 @@ class LocalDbConnector:
         sql += " ORDER BY m.date_received DESC LIMIT ?"
         params.append(int(query.limit) if query.limit is not None else _DEFAULT_LIMIT)
 
-        return [self._row_to_message(row) for row in conn.execute(sql, params)]
+        return [
+            self._named(self._row_to_message(row), row, query)
+            for row in conn.execute(sql, params)
+        ]
 
     @staticmethod
     def _row_to_message(row: sqlite3.Row) -> dict[str, Any]:

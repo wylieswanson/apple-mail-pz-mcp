@@ -1,11 +1,11 @@
 {
   "_comment": "Fixed token cost of the tools/list payload. Bytes are exact; a regression means every request to this server got more expensive. Regenerate deliberately with scripts/schema_budget.py --update.",
-  "read_only_bytes": 17832,
+  "read_only_bytes": 17921,
   "read_only_tools": 13,
-  "full_bytes": 41349,
+  "full_bytes": 42075,
   "full_tools": 27,
   "per_tool_bytes": {
-    "create_draft": 4338,
+    "create_draft": 4535,
     "create_mailbox": 820,
     "create_rule": 2013,
     "delete_draft": 764,
@@ -25,10 +25,10 @@
     "list_rules": 616,
     "list_templates": 443,
     "render_template": 1279,
-    "save_attachments": 1397,
+    "save_attachments": 1678,
     "save_template": 719,
-    "search_messages": 5028,
-    "update_draft": 3054,
+    "search_messages": 5117,
+    "update_draft": 3213,
     "update_mailbox": 1955,
     "update_message": 2784,
     "update_rule": 2218

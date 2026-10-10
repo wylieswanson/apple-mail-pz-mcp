@@ -164,6 +164,104 @@ class TestSearchHappyPath:
         mock_client.logout.assert_called_once()
 
 
+class TestSearchAllMailboxes:
+    """``mailbox="*"``: one search over every selectable folder."""
+
+    def _client(self, mock_cls: MagicMock, per_folder: dict[str, list[tuple[bytes, datetime]]]):
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.list_folders.return_value = [
+            ((b"\\HasNoChildren",), b"/", "INBOX"),
+            ((b"\\Noselect", b"\\HasChildren"), b"/", "Parent"),
+            ((b"\\HasNoChildren",), b"/", b"Parent/Filed"),
+            ((b"\\All",), b"/", "All Mail"),
+        ]
+        state = {"folder": None}
+
+        def select(folder: str, readonly: bool = False) -> dict:
+            state["folder"] = folder
+            return {b"EXISTS": len(per_folder.get(folder, []))}
+
+        def search(criteria: list, *args: Any) -> list[int]:
+            return list(range(1, len(per_folder.get(state["folder"], [])) + 1))
+
+        def fetch(uids: list[int], keys: list[bytes]) -> dict:
+            msgs = per_folder.get(state["folder"], [])
+            return {
+                uid: {
+                    b"ENVELOPE": _fake_envelope(message_id=msgs[uid - 1][0], date=msgs[uid - 1][1]),
+                    b"FLAGS": (),
+                }
+                for uid in uids
+            }
+
+        client.select_folder.side_effect = select
+        client.search.side_effect = search
+        client.fetch.side_effect = fetch
+        return client
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_searches_each_selectable_folder_read_only(self, mock_cls: MagicMock) -> None:
+        client = self._client(mock_cls, {
+            "INBOX": [(b"<a@x>", datetime(2026, 1, 3))],
+            "Parent/Filed": [(b"<b@x>", datetime(2026, 1, 5))],
+        })
+
+        rows = ImapConnector("h", 993, "u@e.com", "pw").search_messages(
+            mailbox="*", subject_contains="invoice",
+        )
+
+        selected = [c.args[0] for c in client.select_folder.call_args_list]
+        assert selected == ["INBOX", "Parent/Filed", "All Mail"]
+        assert all(c.kwargs == {"readonly": True} for c in client.select_folder.call_args_list)
+        assert all(c.args[0] == ["SUBJECT", "invoice"] for c in client.search.call_args_list)
+        # An empty folder (All Mail here) costs its EXAMINE and nothing more.
+        assert client.search.call_count == 2
+        # Same order as a single-mailbox search: oldest first.
+        assert [(r["id"], r["mailbox"]) for r in rows] == [
+            ("a@x", "INBOX"),
+            ("b@x", "Parent/Filed"),
+        ]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_limit_keeps_the_newest_across_folders(self, mock_cls: MagicMock) -> None:
+        self._client(mock_cls, {
+            "INBOX": [(b"<old@x>", datetime(2026, 1, 1)), (b"<mid@x>", datetime(2026, 1, 4))],
+            "Parent/Filed": [(b"<new@x>", datetime(2026, 1, 9))],
+        })
+
+        rows = ImapConnector("h", 993, "u@e.com", "pw").search_messages(mailbox="*", limit=2)
+
+        assert [r["id"] for r in rows] == ["mid@x", "new@x"]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_a_message_also_in_all_mail_is_listed_once_under_its_folder(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """Gmail shows every message in All Mail too. The copy in the real
+        folder wins; a message only in All Mail (archived) is still found."""
+        self._client(mock_cls, {
+            "INBOX": [(b"<a@x>", datetime(2026, 1, 3))],
+            "All Mail": [(b"<a@x>", datetime(2026, 1, 3)), (b"<archived@x>", datetime(2026, 1, 2))],
+        })
+
+        rows = ImapConnector("h", 993, "u@e.com", "pw").search_messages(mailbox="*")
+
+        assert [(r["id"], r["mailbox"]) for r in rows] == [
+            ("archived@x", "All Mail"),
+            ("a@x", "INBOX"),
+        ]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_single_mailbox_rows_carry_no_mailbox_field(self, mock_cls: MagicMock) -> None:
+        """The caller already knows it; repeating it on every row is bytes."""
+        self._client(mock_cls, {"INBOX": [(b"<a@x>", datetime(2026, 1, 3))]})
+
+        rows = ImapConnector("h", 993, "u@e.com", "pw").search_messages(mailbox="INBOX")
+
+        assert "mailbox" not in rows[0]
+
+
 class TestTextFilters:
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_sender_contains_maps_to_from(self, mock_cls):
@@ -1163,6 +1261,48 @@ class TestGetMessage:
         assert result["content"] == "hello world"
         assert result["read_status"] is True
 
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {},
+            {"body_format": "raw"},
+            {"headers_only": True},
+            {"include_attachments": True},
+        ],
+    )
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_read_never_asks_for_a_seen_setting_section(
+        self, mock_cls: MagicMock, kwargs: dict[str, Any]
+    ) -> None:
+        """A read must not mark the message read. A plain ``BODY[...]``
+        fetch sets ``\\Seen`` — and iCloud does so even in an EXAMINE'd
+        (read-only) session, so only ``BODY.PEEK[...]`` is safe."""
+        self._setup_client(mock_cls)
+
+        ImapConnector("h", 993, "u@e.com", "pw").get_message(
+            "abc@x", mailbox="INBOX", **kwargs,
+        )
+
+        for call in mock_cls.return_value.fetch.call_args_list:
+            assert not [k for k in call[0][1] if k.startswith(b"BODY[")]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_fetch_raw_message_peeks(self, mock_cls: MagicMock) -> None:
+        """The raw fetch behind save_attachments / get_attachment_content /
+        reply drafts is a read too: it must peek, and still find the bytes
+        under the ``BODY[]`` key the server answers with."""
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.search.return_value = [42]
+        client.fetch.return_value = {42: {b"BODY[]": b"Subject: x\r\n\r\nhi"}}
+
+        raw = ImapConnector("h", 993, "u@e.com", "pw").fetch_raw_message(
+            "abc@x", "INBOX",
+        )
+
+        assert client.fetch.call_args[0][1] == [b"BODY.PEEK[]"]
+        assert raw == b"Subject: x\r\n\r\nhi"
+
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_default_fetch_keys_include_full_body(
         self, mock_cls: MagicMock
@@ -1179,9 +1319,9 @@ class TestGetMessage:
         fetch_keys = mock_cls.return_value.fetch.call_args[0][1]
         assert b"ENVELOPE" in fetch_keys
         assert b"FLAGS" in fetch_keys
-        assert b"BODY[]" in fetch_keys
-        assert b"BODY[TEXT]" not in fetch_keys
-        assert b"BODY[HEADER]" not in fetch_keys
+        assert b"BODY.PEEK[]" in fetch_keys
+        assert b"BODY.PEEK[TEXT]" not in fetch_keys
+        assert b"BODY.PEEK[HEADER]" not in fetch_keys
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_raw_body_format_fetches_legacy_body_text(
@@ -1196,8 +1336,8 @@ class TestGetMessage:
         )
 
         fetch_keys = mock_cls.return_value.fetch.call_args[0][1]
-        assert b"BODY[TEXT]" in fetch_keys
-        assert b"BODY[]" not in fetch_keys
+        assert b"BODY.PEEK[TEXT]" in fetch_keys
+        assert b"BODY.PEEK[]" not in fetch_keys
         # raw mode returns the bytes verbatim (charset-decoded only).
         assert result["content"] == "--b\r\nraw mime\r\n--b--"
 
@@ -1336,8 +1476,7 @@ class TestGetMessage:
         )
 
         fetch_keys = mock_cls.return_value.fetch.call_args[0][1]
-        assert b"BODY[TEXT]" not in fetch_keys
-        assert b"BODY[HEADER]" not in fetch_keys
+        assert not [k for k in fetch_keys if k.startswith(b"BODY")]
         # content empty when not requested.
         assert result["content"] == ""
 
@@ -1358,8 +1497,8 @@ class TestGetMessage:
         )
 
         fetch_keys = mock_cls.return_value.fetch.call_args[0][1]
-        assert b"BODY[HEADER]" in fetch_keys
-        assert b"BODY[TEXT]" not in fetch_keys
+        assert b"BODY.PEEK[HEADER]" in fetch_keys
+        assert b"BODY.PEEK[TEXT]" not in fetch_keys
         assert result["content"] == ""
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
@@ -1470,6 +1609,27 @@ _BS_LEGACY_NAME_PARAM_ONLY = (
     b"application", b"zip",
     (b"name", b"old.zip"),
     None, None, b"base64", 1024,
+)
+
+# Inline image whose only name is an RFC 2231 extended parameter. Shape as
+# iCloud returns it for a macOS screenshot (the name holds U+202F): the key
+# arrives as ``FILENAME*`` and the value is still percent-encoded.
+_BS_INLINE_FILENAME_STAR = (
+    b"image", b"png",
+    (b"X-UNIX-MODE", b"0644"),
+    None, None, b"base64", 4096,
+    (b"INLINE", (b"FILENAME*", b"utf-8''Shot%203.14%E2%80%AFPM.png")),
+)
+
+# RFC 2231 continuations: one name split across numbered, encoded segments.
+_BS_FILENAME_CONTINUATIONS = (
+    b"application", b"pdf",
+    (),
+    None, None, b"base64", 100,
+    (b"attachment", (
+        b"filename*0*", b"utf-8''r%C3%A9sum%C3%A9",
+        b"filename*1*", b"%20final.pdf",
+    )),
 )
 
 # Unicode filename via UTF-8 bytes.
@@ -1840,14 +2000,13 @@ class TestGetAttachments:
         assert result[0]["name"] == ""
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
-    def test_legacy_name_param_without_disposition_is_not_an_attachment(
+    def test_named_part_without_disposition_is_an_attachment(
         self, mock_cls: MagicMock
     ) -> None:
-        """A leaf with `name` in content-type params but no disposition
-        and not message/rfc822: matches the existing has_attachment
-        helper's behavior (which only triggers on disposition). Skipping
-        this case keeps both helpers consistent — if we want to broaden
-        attachment detection, we do it for both at once."""
+        """A leaf named only by its content-type ``name`` param, with no
+        Content-Disposition, is a file the sender attached: Outlook sends
+        cid-referenced images this way. It was unlistable and unsavable
+        while the same image sent ``inline; filename=`` was both."""
         bs = (_BS_PLAIN_TEXT, _BS_LEGACY_NAME_PARAM_ONLY, b"mixed")
         self._setup_client(mock_cls, bodystructure=bs)
 
@@ -1855,7 +2014,78 @@ class TestGetAttachments:
             "abc@x", mailbox="INBOX",
         )
 
-        assert result == []
+        assert [a["name"] for a in result] == ["old.zip"]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_rfc2231_filename_star_is_listed_and_decoded(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """A non-ASCII filename travels as ``filename*`` (RFC 2231), and
+        iCloud passes that key through verbatim. Looking only for
+        ``filename`` saw an inline part with no name and dropped it — an
+        empty attachment list for a message with a screenshot."""
+        self._setup_client(
+            mock_cls, bodystructure=([_BS_PLAIN_TEXT, _BS_INLINE_FILENAME_STAR], b"mixed"),
+        )
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").get_attachments(
+            "abc@x", mailbox="INBOX",
+        )
+
+        assert [a["name"] for a in result] == ["Shot 3.14\u202fPM.png"]
+        assert result[0]["mime_type"] == "image/png"
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_rfc2231_continuations_are_joined(
+        self, mock_cls: MagicMock
+    ) -> None:
+        self._setup_client(
+            mock_cls, bodystructure=([_BS_PLAIN_TEXT, _BS_FILENAME_CONTINUATIONS], b"mixed"),
+        )
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").get_attachments(
+            "abc@x", mailbox="INBOX",
+        )
+
+        assert [a["name"] for a in result] == ["r\u00e9sum\u00e9 final.pdf"]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_rfc2047_encoded_word_filename_is_decoded(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """Outlook and Gmail put an encoded-word in a plain ``filename``."""
+        leaf = (
+            b"application", b"pdf", (), None, None, b"base64", 100,
+            (b"attachment", (b"filename", b"=?UTF-8?B?csOpc3Vtw6kucGRm?=")),
+        )
+        self._setup_client(mock_cls, bodystructure=([_BS_PLAIN_TEXT, leaf], b"mixed"))
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").get_attachments(
+            "abc@x", mailbox="INBOX",
+        )
+
+        assert [a["name"] for a in result] == ["r\u00e9sum\u00e9.pdf"]
+
+    @pytest.mark.parametrize(
+        "leaf",
+        ["_BS_LEGACY_NAME_PARAM_ONLY", "_BS_INLINE_FILENAME_STAR",
+         "_BS_INLINE_IMAGE_WITH_FILENAME", "_BS_PDF_ATTACHMENT",
+         "_BS_FORWARDED_EMAIL_NO_DISP", "_BS_INLINE_BODY_NO_FILENAME",
+         "_BS_PLAIN_TEXT"],
+    )
+    def test_has_attachment_filter_agrees_with_the_listing(self, leaf: str) -> None:
+        """The ``has_attachment`` search filter and the attachment list are
+        one rule: a message can't be filtered out as attachment-less and
+        then list an attachment, or the reverse."""
+        from apple_mail_fast_mcp.imap_connector import (
+            _bodystructure_extract_attachments,
+            _bodystructure_has_attachment,
+        )
+
+        structure = ([_BS_PLAIN_TEXT, globals()[leaf]], b"mixed")
+        assert _bodystructure_has_attachment(structure) is bool(
+            _bodystructure_extract_attachments(structure)
+        )
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_unicode_filename_is_decoded(

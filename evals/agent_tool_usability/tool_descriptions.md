@@ -51,6 +51,7 @@ it for later or send it now.
 - `template_name` (string, optional): Optional template to render for ``subject`` and ``body``. Caller-supplied ``subject``/``body`` override the rendered output. ``template_vars`` override auto-fills.
 - `template_vars` (object, optional): Variables to pass to the template renderer. Requires ``template_name``.
 - `from_account` (string, optional): Mail.app account name or UUID. ``None`` uses Mail's default; on a save-as-draft with exactly one enabled account, that account is adopted so the clean (no iOS quote bug) IMAP draft path can engage.
+- `from_address` (string, optional): Which of the account's addresses to send From (default: its first). Alone, it also selects the account.
 - `send_now` (boolean, optional) (default: False): ``False`` (default) saves as draft. ``True`` sends immediately and elicits user confirmation.
 
 ### create_mailbox
@@ -336,9 +337,10 @@ Save attachments from a message to a directory.
 
 - `message_id` (string, required): Message ID from search results
 - `save_directory` (string, required): Directory path to save attachments to
-- `attachment_indices` (list[integer], optional): Specific attachment indices to save (0-based), None for all
+- `attachment_indices` (list[integer], optional): 0-based positions in the message's ``attachments`` list from ``get_messages``; None saves all. An out-of-range index fails the call.
 - `account` (string, optional): Mail.app account name or UUID. Supply it (with ``mailbox``) to take the faster IMAP path — one fetch instead of an account×mailbox AppleScript scan. Pass the same values you read the message with so attachment ordering matches (#371). Strongly recommended on Gmail, where the AppleScript fallback's unindexed cross-scan can take minutes and time out.
 - `mailbox` (string, optional): Folder the message lives in (e.g. "INBOX"), used with ``account`` for the IMAP fast path.
+- `include_message` (boolean, optional) (default: False): Also save the message itself as an ``.eml`` file (needs ``account`` + ``mailbox``). With ``attachment_indices=[]``, only the ``.eml``.
 
 ### save_template
 
@@ -377,7 +379,7 @@ anchor into thread member ids, then optionally pipe those ids into
 **Parameters:**
 
 - `account` (string, optional): Mail.app account display name (e.g., "Gmail", "iCloud") or UUID (from list_accounts). Required when ``source is None``; ignored when ``source`` is a list. Names are convenient but unstable across renames; UUIDs are stable.
-- `mailbox` (string, optional) (default: 'INBOX'): Mailbox name (default: "INBOX"). Ignored when ``source`` is a list.
+- `mailbox` (string, optional) (default: 'INBOX'): Mailbox name (default: "INBOX"). ``"*"`` searches every mailbox of the account; each row then carries its ``mailbox``. Ignored when ``source`` is a list.
 - `sender_contains` (string, optional): Filter by sender email/domain substring.
 - `subject_contains` (string, optional): Filter by subject keywords substring.
 - `read_status` (boolean, optional): Filter by read status (true=read, false=unread).
@@ -426,6 +428,7 @@ explicit body if so.
 - `template_name` (string, optional)
 - `template_vars` (object, optional)
 - `from_account` (string, optional): Override sender.
+- `from_address` (string, optional): As in ``create_draft``; pass it again to keep a non-default From.
 - `send_now` (boolean, optional) (default: False): ``False`` (default) saves new draft. ``True`` sends after eliciting confirmation.
 
 ### update_mailbox

@@ -15,6 +15,8 @@ from collections.abc import Callable
 from datetime import date as _date
 from datetime import datetime as _datetime
 from datetime import timedelta as _timedelta
+from email.parser import BytesHeaderParser
+from email.policy import default as _email_policy
 from pathlib import Path
 from typing import Any, cast
 
@@ -32,6 +34,7 @@ from .draft_builder import (
 )
 from .drafts import _validate_draft_id
 from .exceptions import (
+    MailAccountAddressesUnavailableError,
     MailAccountNotFoundError,
     MailAnchorLookupIncompleteError,
     MailAppleScriptError,
@@ -74,6 +77,7 @@ from .local_db_connector import (
 from .security import send_recipients_test_violation
 from .smtp_sender import SmtpSender
 from .utils import (
+    ALL_MAILBOXES,
     applescript_account_clause,
     escape_applescript_string,
     get_flag_index,
@@ -385,6 +389,96 @@ def _select_attachments_within_caps(
         total += size
         allowed.append(i)
     return allowed, rejected
+
+
+def _require_attachment_indices_in_range(
+    attachment_indices: list[int] | None, count: int
+) -> None:
+    """Reject a save that names an attachment the message doesn't have.
+
+    Dropping the bad index and reporting ``saved: 0`` as a success left the
+    caller with nothing on disk and no reason. Raised before anything is
+    written, so a mixed request saves nothing rather than half.
+    """
+    bad = [i for i in attachment_indices or [] if not 0 <= i < count]
+    if not bad:
+        return
+    valid = f"valid indices are 0-{count - 1}" if count else "it has none"
+    raise MailAttachmentIndexError(
+        f"attachment_indices {bad} out of range: message has {count} "
+        f"attachment(s), so {valid}. Indices are 0-based positions in the "
+        "`attachments` list get_messages returns for this message."
+    )
+
+
+def _eml_target(raw: bytes, save_directory: Path, taken: set[Path]) -> Path:
+    """Where a message's ``.eml`` goes: named after its Subject, inside
+    ``save_directory``, and never on top of an attachment written by the same
+    call (``taken``). The subject is as attacker-controlled as an attachment
+    name, so it takes the same :func:`sanitize_filename` route to a path."""
+    subject = str(BytesHeaderParser(policy=_email_policy).parsebytes(raw)["Subject"] or "")
+    name = sanitize_filename(f"{subject.strip()}.eml") if subject.strip() else "message.eml"
+    if not name.endswith(".eml") or name == ".eml":
+        name = "message.eml"
+    target = (save_directory / name).resolve()
+    if target in taken:
+        target = (save_directory / f"message_{name}").resolve()
+    return target
+
+
+_SENDER_LOOKUP_RETRY_DELAY_S = 0.5
+"""Pause before asking Mail a second time for an account's addresses."""
+
+
+def _match_sender_account(
+    accounts: list[dict[str, Any]], account: str | None, from_address: str | None
+) -> dict[str, Any] | None:
+    """The account a draft is sent from, or ``None`` when Mail's answer
+    doesn't settle it: the named account lists no addresses, or no enabled
+    account lists ``from_address``. Both are worth asking Mail once more.
+
+    Raises:
+        MailAccountNotFoundError: ``account`` matches no name or UUID.
+        ValueError: ``from_address`` alone is listed by several accounts.
+    """
+    if account is not None:
+        for acc in accounts:
+            if account in (acc.get("id"), acc.get("name")):
+                return acc if acc.get("email_addresses") else None
+        raise MailAccountNotFoundError(
+            f"Account {account!r} not found in Mail.app configured accounts."
+        )
+    wanted = (from_address or "").strip().casefold()
+    owners = [
+        acc
+        for acc in accounts
+        if acc.get("enabled")
+        and any(str(e).casefold() == wanted for e in acc.get("email_addresses") or [])
+    ]
+    if len(owners) > 1:
+        names = ", ".join(repr(acc.get("name")) for acc in owners)
+        raise ValueError(
+            f"{from_address!r} is an address of several accounts ({names}); "
+            "pass from_account to choose one."
+        )
+    return owners[0] if owners else None
+
+
+def _pick_sender_address(acc: dict[str, Any], from_address: str | None) -> str:
+    """``from_address`` as the account lists it, or the account's first
+    address when none was asked for. Never an address the account doesn't
+    own — and the value returned is Mail's string, not the caller's."""
+    emails = [str(e) for e in acc["email_addresses"]]
+    if from_address is None:
+        return emails[0]
+    wanted = from_address.strip().casefold()
+    for email in emails:
+        if email.casefold() == wanted:
+            return email
+    raise ValueError(
+        f"{from_address!r} is not an address of account {acc.get('name')!r}; "
+        f"its addresses are: {', '.join(emails)}."
+    )
 
 
 def _prune_oversized_written(
@@ -1219,14 +1313,15 @@ class AppleMailConnector:
                 acc["full_name"] = None
         return accounts
 
-    def _resolve_account_to_sender(self, account: str) -> str:
+    def _resolve_account_to_sender(self, account: str, from_address: str | None = None) -> str:
         """Resolve an account name or UUID to a sender string for the
         AppleScript ``sender`` property.
 
         Returns ``"Display Name <email>"`` when the account has a
         ``full_name`` configured (#158), or bare ``email`` as a graceful
         fallback when no full name is set. The Display-Name form is what
-        recipients see in their inbox's From column.
+        recipients see in their inbox's From column. ``email`` is
+        ``from_address`` when given, else the account's first address.
 
         Used by the draft lifecycle (``create_draft`` / ``update_draft``)
         per #155. Accepts either name or UUID, matching the convention on
@@ -1234,21 +1329,48 @@ class AppleMailConnector:
 
         Raises:
             MailAccountNotFoundError: No account matches the given name/UUID.
-            ValueError: Account exists but has no email addresses configured.
+            MailAccountAddressesUnavailableError: Mail returned no addresses
+                for the account (a ``ValueError``).
+            ValueError: ``from_address`` is not one of the account's addresses.
         """
-        for acc in self.list_accounts():
-            if acc.get("id") == account or acc.get("name") == account:
-                emails = acc.get("email_addresses") or []
-                if not emails:
-                    raise ValueError(f"Account {account!r} has no email addresses configured.")
-                email = cast(str, emails[0])
-                full_name = (acc.get("full_name") or "").strip()
-                if full_name:
-                    return f"{full_name} <{email}>"
-                return email
-        raise MailAccountNotFoundError(
-            f"Account {account!r} not found in Mail.app configured accounts."
-        )
+        return cast(str, self._resolve_draft_sender(account, from_address)[1])
+
+    def _resolve_draft_sender(
+        self, account: str | None, from_address: str | None
+    ) -> tuple[str | None, str | None]:
+        """``(account, sender)`` for a draft.
+
+        ``account`` comes back as given (name or UUID); with ``from_address``
+        alone it is the name of the one enabled account that owns the address.
+        ``(None, None)`` when neither is given — Mail's default sender applies.
+
+        Mail has been seen to return an empty address list for an account that
+        has addresses, so an answer that settles nothing is asked for once
+        more before it becomes an error.
+
+        Raises: as :meth:`_resolve_account_to_sender`.
+        """
+        if account is None and from_address is None:
+            return None, None
+        acc = _match_sender_account(self.list_accounts(), account, from_address)
+        if acc is None:
+            time.sleep(_SENDER_LOOKUP_RETRY_DELAY_S)
+            acc = _match_sender_account(self.list_accounts(), account, from_address)
+        if acc is None and account is None:
+            raise ValueError(
+                f"No enabled Mail account has the address {from_address!r}. "
+                "list_accounts shows each account's addresses."
+            )
+        if acc is None:
+            raise MailAccountAddressesUnavailableError(
+                f"Mail.app returned no email addresses for account {account!r} "
+                "(asked twice), so the draft has no From. If list_accounts "
+                "shows addresses for it, this is Mail not answering: retry."
+            )
+        email = _pick_sender_address(acc, from_address)
+        full_name = (acc.get("full_name") or "").strip()
+        sender = f"{full_name} <{email}>" if full_name else email
+        return account or cast(str, acc.get("name")), sender
 
     def list_rules(self) -> list[dict[str, Any]]:
         """List all Mail.app rules.
@@ -2249,6 +2371,14 @@ class AppleMailConnector:
             except _IMAP_FALLBACK_EXCS as exc:
                 self._log_imap_fallback(account, exc)
                 # fall through to AppleScript
+
+        if mailbox == ALL_MAILBOXES:
+            # Every mailbox by AppleScript is the scan that freezes Mail.
+            raise ValueError(
+                'mailbox="*" needs IMAP or the local index for this account, '
+                "and neither answered. Run `apple-mail-pz-mcp setup-imap "
+                f"--account {account!r}`, or search one mailbox at a time."
+            )
 
         # We're committed to the AppleScript path. Warn proactively if a
         # body/text search is set — that's the multi-order-of-magnitude
@@ -3936,6 +4066,7 @@ class AppleMailConnector:
         *,
         account: str | None = None,
         mailbox: str | None = None,
+        include_message: bool = False,
     ) -> dict[str, Any]:
         """
         Save attachments from a message to a directory.
@@ -3959,17 +4090,31 @@ class AppleMailConnector:
             message_id: Message ID
             save_directory: Directory to save attachments to
             attachment_indices: Indices of attachments to save (None = all)
+            include_message: Also write the message itself as an ``.eml``
+                file — the RFC 822 bytes as the server holds them — named
+                after its subject. IMAP only, so it needs ``account`` +
+                ``mailbox``. With ``attachment_indices=[]`` the ``.eml`` is
+                the only file written.
 
         Returns:
-            ``{"saved": int, "rejected": list[dict]}`` — count actually
-            written, and per-rejection records ``{name, size, reason}`` where
-            reason is ``per_attachment_cap`` / ``aggregate_cap`` (pre-check) or
-            ``*_postwrite`` (post-write net).
+            ``{"saved": int, "rejected": list[dict], "files": list[str]}`` —
+            count actually written, per-rejection records ``{name, size,
+            reason}`` where reason is ``per_attachment_cap`` /
+            ``aggregate_cap`` (pre-check) or ``*_postwrite`` (post-write net),
+            and the paths written, in selection order. With
+            ``include_message``, also ``message_file`` — the ``.eml`` path
+            (absent if the message went over the per-attachment cap, which
+            then appears in ``rejected``).
 
         Raises:
             FileNotFoundError: If save directory doesn't exist
             ValueError: If path validation fails
             MailMessageNotFoundError: If message doesn't exist
+            MailAttachmentIndexError: An index in ``attachment_indices`` is
+                out of range. Nothing is written.
+            MailImapRequiredError: ``include_message`` without ``account`` +
+                ``mailbox``, or IMAP couldn't fetch the message. Nothing is
+                written — the AppleScript path can't produce the ``.eml``.
         """
         # Validate save directory
         if not save_directory.exists():
@@ -4004,6 +4149,7 @@ class AppleMailConnector:
                     message_id=message_id,
                     save_directory=save_directory,
                     attachment_indices=attachment_indices,
+                    include_message=include_message,
                 )
                 self._imap_clear_breaker(account)
                 return imap_result
@@ -4011,7 +4157,17 @@ class AppleMailConnector:
                 self._log_imap_fallback(account, exc)
                 # fall through to AppleScript
 
+        if include_message:
+            # AppleScript can save attachments but not the message's bytes:
+            # falling back would report success without the file asked for.
+            raise MailImapRequiredError(
+                "include_message fetches the message over IMAP: pass `account` "
+                "and `mailbox` (both are on the search result), and make sure "
+                "IMAP is set up for the account (`apple-mail-pz-mcp setup-imap`)."
+            )
+
         attachments = self._get_attachments_applescript(message_id)
+        _require_attachment_indices_in_range(attachment_indices, len(attachments))
 
         # Pre-check byte caps (#236): drop oversized attachments before saving.
         allowed, rejected = _select_attachments_within_caps(
@@ -4021,7 +4177,7 @@ class AppleMailConnector:
             total_cap=self.max_total_attachment_bytes,
         )
         if not allowed:
-            return {"saved": 0, "rejected": rejected}
+            return {"saved": 0, "rejected": rejected, "files": []}
 
         targets = _compute_attachment_save_targets(
             [str(a.get("name", "")) for a in attachments],
@@ -4029,7 +4185,7 @@ class AppleMailConnector:
             allowed,
         )
         if not targets:
-            return {"saved": 0, "rejected": rejected}
+            return {"saved": 0, "rejected": rejected, "files": []}
 
         # Accept BOTH id spaces so a row from the IMAP search path pipes
         self._reject_rfc_id_scan(message_id)
@@ -4084,7 +4240,13 @@ class AppleMailConnector:
             total_cap=self.max_total_attachment_bytes,
         )
         rejected.extend(post_rejected)
-        return {"saved": max(0, saved - removed), "rejected": rejected}
+        return {
+            "saved": max(0, saved - removed),
+            "rejected": rejected,
+            # What is actually on disk: a per-attachment save failure inside
+            # the script, or the post-write net, leaves no file behind.
+            "files": [str(path) for _, path in targets if path.is_file()],
+        }
 
     def _imap_save_attachments(
         self,
@@ -4094,6 +4256,7 @@ class AppleMailConnector:
         message_id: str,
         save_directory: Path,
         attachment_indices: list[int] | None,
+        include_message: bool = False,
     ) -> dict[str, Any]:
         """IMAP path for save_attachments (#371): fetch the raw message once
         and write the selected attachment bytes to disk. Reuses
@@ -4124,16 +4287,19 @@ class AppleMailConnector:
             }
             for (filename, maintype, subtype, payload) in parsed
         ]
+        _require_attachment_indices_in_range(attachment_indices, len(attachments))
+
+        # The .eml is the whole message: it answers to the same caps, and is
+        # budgeted first so asking for it can't push the total over.
+        write_message = include_message and len(raw) <= self.max_attachment_bytes
+        total_cap = self.max_total_attachment_bytes - (len(raw) if write_message else 0)
 
         allowed, rejected = _select_attachments_within_caps(
             attachments,
             attachment_indices,
             per_cap=self.max_attachment_bytes,
-            total_cap=self.max_total_attachment_bytes,
+            total_cap=max(0, total_cap),
         )
-        if not allowed:
-            return {"saved": 0, "rejected": rejected}
-
         targets = _compute_attachment_save_targets(
             [a["name"] for a in attachments], save_directory, allowed
         )
@@ -4151,7 +4317,21 @@ class AppleMailConnector:
             total_cap=self.max_total_attachment_bytes,
         )
         rejected.extend(post_rejected)
-        return {"saved": max(0, saved - removed), "rejected": rejected}
+        result: dict[str, Any] = {
+            "saved": max(0, saved - removed),
+            "rejected": rejected,
+            "files": [str(path) for _, path in targets if path.is_file()],
+        }
+        if include_message:
+            eml = _eml_target(raw, save_directory, {path for _, path in targets})
+            if write_message:
+                eml.write_bytes(raw)
+                result["message_file"] = str(eml)
+            else:
+                rejected.append(
+                    {"name": eml.name, "size": len(raw), "reason": "per_attachment_cap"}
+                )
+        return result
 
     def move_messages(
         self,
@@ -5597,6 +5777,7 @@ class AppleMailConnector:
         body: str,
         attachment_paths: list[Path] | None,
         body_html: str | None = None,
+        from_address: str | None = None,
     ) -> dict[str, str]:
         """Create a save-as-draft by APPENDing a clean RFC822 message over
         IMAP (issue #245), instead of Mail.app's AppleScript ``content``
@@ -5612,7 +5793,7 @@ class AppleMailConnector:
         from sender resolution are NOT caught — they are caller/config
         errors and must surface.
         """
-        sender = self._resolve_account_to_sender(from_account)
+        sender = self._resolve_account_to_sender(from_account, from_address)
         host, port, email = self._resolve_imap_config(from_account)
         password = self._get_imap_password_with_fallback(from_account, email)
         message_id, raw = build_draft_mime(
@@ -5644,6 +5825,7 @@ class AppleMailConnector:
         body: str,
         reply_all: bool,
         attachment_paths: list[Path] | None,
+        from_address: str | None = None,
     ) -> dict[str, str]:
         """Create a clean reply/forward save-as-draft via IMAP APPEND
         (issue #245 follow-up).
@@ -5660,7 +5842,7 @@ class AppleMailConnector:
         the AppleScript path — AppleScript resolves the message across all
         folders, so a folder-guess miss degrades gracefully.
         """
-        sender = self._resolve_account_to_sender(from_account)
+        sender = self._resolve_account_to_sender(from_account, from_address)
         host, port, email = self._resolve_imap_config(from_account)
         password = self._get_imap_password_with_fallback(from_account, email)
         imap = ImapConnector(host, port, email, password, pool=self._imap_pool)
@@ -5825,6 +6007,7 @@ class AppleMailConnector:
         body: str,
         attachment_paths: list[Path] | None,
         body_html: str | None = None,
+        from_address: str | None = None,
     ) -> dict[str, str] | None:
         """IMAP-APPEND path for a ``seed="new"`` save-as-draft (issue #245).
 
@@ -5844,6 +6027,7 @@ class AppleMailConnector:
             return None
         try:
             return self._create_draft_via_imap(
+                from_address=from_address,
                 from_account=from_account,
                 to=to or [],
                 cc=cc,
@@ -5872,6 +6056,7 @@ class AppleMailConnector:
         body: str,
         reply_all: bool,
         attachment_paths: list[Path] | None,
+        from_address: str | None = None,
     ) -> dict[str, str] | None:
         """IMAP-APPEND path for a reply/forward save-as-draft (issue #245
         follow-up).
@@ -5895,6 +6080,7 @@ class AppleMailConnector:
             return None
         try:
             return self._create_reply_forward_draft_via_imap(
+                from_address=from_address,
                 seed=seed,
                 seed_id=seed_id,
                 seed_mailbox=seed_mailbox or "INBOX",
@@ -6029,11 +6215,12 @@ class AppleMailConnector:
         body: str,
         attachment_paths: list[Path] | None,
         smtp_config: tuple[str, int, str],
+        from_address: str | None = None,
     ) -> dict[str, str]:
         """Build a clean fresh-compose RFC 822 message and SMTP-send it
         (issue #322 — the ``seed="new"`` send analog of the #246 draft path).
         """
-        sender = self._resolve_account_to_sender(from_account)
+        sender = self._resolve_account_to_sender(from_account, from_address)
         _message_id, raw = build_draft_mime(
             sender=sender,
             to=to,
@@ -6064,12 +6251,13 @@ class AppleMailConnector:
         reply_all: bool,
         attachment_paths: list[Path] | None,
         smtp_config: tuple[str, int, str],
+        from_address: str | None = None,
     ) -> dict[str, str]:
         """Rebuild a clean reply/forward from the original (fetched over IMAP)
         and SMTP-send it (issue #322 — the send analog of the #292 draft
         path). Recipient derivation and the transport-boundary safety guard
         both run against the fully-resolved recipient set."""
-        sender = self._resolve_account_to_sender(from_account)
+        sender = self._resolve_account_to_sender(from_account, from_address)
         host, port, email = self._resolve_imap_config(from_account)
         password = self._get_imap_password_with_fallback(from_account, email)
         imap = ImapConnector(host, port, email, password, pool=self._imap_pool)
@@ -6196,6 +6384,7 @@ class AppleMailConnector:
         body_html: str | None,
         reply_all: bool,
         attachment_paths: list[Path] | None,
+        from_address: str | None = None,
     ) -> dict[str, str] | None:
         """Try the clean, wrapper-free paths in order and return the first
         that engages, or ``None`` to fall through to AppleScript.
@@ -6209,6 +6398,7 @@ class AppleMailConnector:
         method stays under the complexity ceiling.
         """
         imap_result = self._try_imap_draft_paths(
+            from_address=from_address,
             seed=seed,
             seed_id=seed_id,
             seed_mailbox=seed_mailbox,
@@ -6232,6 +6422,7 @@ class AppleMailConnector:
         # implicit account for send_now (#321), so an implicit-account send
         # stays on the AppleScript path — pass `from_account` for clean SMTP.
         smtp_result = self._try_smtp_send(
+            from_address=from_address,
             seed=seed,
             seed_id=seed_id,
             seed_mailbox=seed_mailbox,
@@ -6265,6 +6456,7 @@ class AppleMailConnector:
         body: str,
         reply_all: bool,
         attachment_paths: list[Path] | None,
+        from_address: str | None = None,
     ) -> dict[str, str] | None:
         """Clean SMTP send path for ``send_now=True`` (issue #322).
 
@@ -6295,6 +6487,7 @@ class AppleMailConnector:
                 return None  # No SMTP server configured — fall through.
             if is_compose:
                 return self._send_new_via_smtp(
+                    from_address=from_address,
                     from_account=from_account,
                     to=to or [],
                     cc=cc,
@@ -6305,6 +6498,7 @@ class AppleMailConnector:
                     smtp_config=smtp_config,
                 )
             return self._send_reply_forward_via_smtp(
+                from_address=from_address,
                 seed=seed,
                 seed_id=cast(str, seed_id),
                 seed_mailbox=seed_mailbox or "INBOX",
@@ -6341,6 +6535,7 @@ class AppleMailConnector:
         attachment_paths: list[Path] | None = None,
         reply_all: bool = False,
         from_account: str | None = None,
+        from_address: str | None = None,
         send_now: bool = False,
         on_warning: Callable[[str], None] | None = None,
     ) -> dict[str, str]:
@@ -6407,6 +6602,10 @@ class AppleMailConnector:
                 that account is adopted so the clean IMAP path can engage
                 (it is Mail's default sender anyway, so the From is
                 unchanged). (#321)
+            from_address: Which of the account's own addresses the draft is
+                From; ``None`` uses the account's first. Given without
+                ``from_account``, it also selects the account: the one
+                enabled account that lists the address.
             on_warning: Optional callback invoked with a human-readable
                 string when a save-as-draft falls back to the AppleScript
                 path (whose body carries Mail.app's cite-blockquote wrapper,
@@ -6432,13 +6631,14 @@ class AppleMailConnector:
         # engage (it must name the account for creds + From); adopt the
         # sole enabled account when there is one (it's Mail's default
         # sender anyway, so the From is unchanged).
-        effective_account = self._effective_from_account(from_account, send_now)
+        effective_account = self._effective_from_account(from_account, send_now, from_address)
 
         # Clean (wrapper-free) paths that avoid Mail.app's cite-blockquote
         # (bug FB11734014): IMAP-APPEND for save-as-draft (#245), SMTP submit
         # for send_now (#322). Returns a result dict, or None to fall through
         # to the AppleScript path below.
         clean_result = self._try_clean_create_or_send(
+            from_address=from_address,
             seed=seed,
             seed_id=seed_id,
             seed_mailbox=seed_mailbox,
@@ -6496,7 +6696,7 @@ class AppleMailConnector:
         # characters can appear here. (#173)
         sender_clause = ""
         if effective_account is not None:
-            sender_email = self._resolve_account_to_sender(effective_account)
+            sender_email = self._resolve_account_to_sender(effective_account, from_address)
             sender_safe = escape_applescript_string(sanitize_input(sender_email))
             sender_clause = f'set sender of theMessage to "{sender_safe}"'
 
@@ -6752,16 +6952,23 @@ class AppleMailConnector:
         budget = min(_DRAFT_POLL_MAX_S, self.timeout * 0.5)
         return max(1, int(budget / _DRAFT_POLL_INTERVAL_S))
 
-    def _effective_from_account(self, from_account: str | None, send_now: bool) -> str | None:
+    def _effective_from_account(
+        self, from_account: str | None, send_now: bool, from_address: str | None = None
+    ) -> str | None:
         """Resolve the account create_draft should act under (#321).
 
-        Honors an explicit ``from_account``; otherwise, for a save-as-draft,
-        adopts the sole enabled account so the clean IMAP path can engage.
-        ``send_now`` stays on the AppleScript send path, so it isn't
-        auto-resolved.
+        Honors an explicit ``from_account``. Without one, a ``from_address``
+        names its account: the one enabled account that lists it. Otherwise,
+        for a save-as-draft, adopts the sole enabled account so the clean
+        IMAP path can engage. ``send_now`` stays on the AppleScript send
+        path, so it isn't auto-resolved.
         """
-        if from_account is not None or send_now:
+        if from_account is not None:
             return from_account
+        if from_address is not None:
+            return self._resolve_draft_sender(None, from_address)[0]
+        if send_now:
+            return None
         return self._resolve_implicit_account()
 
     def _try_imap_draft_paths(
@@ -6780,6 +6987,7 @@ class AppleMailConnector:
         reply_all: bool,
         attachment_paths: list[Path] | None,
         body_html: str | None = None,
+        from_address: str | None = None,
     ) -> dict[str, str] | None:
         """Try the clean IMAP-APPEND draft paths (compose, then
         reply/forward), returning a draft dict or ``None`` to fall through
@@ -6789,6 +6997,7 @@ class AppleMailConnector:
         reply/forward HTML is out of scope for #251.
         """
         result = self._try_imap_compose_draft(
+            from_address=from_address,
             seed=seed,
             send_now=send_now,
             from_account=effective_account,
@@ -6803,6 +7012,7 @@ class AppleMailConnector:
         if result is not None:
             return result
         return self._try_imap_reply_forward_draft(
+            from_address=from_address,
             seed=seed,
             seed_id=seed_id,
             seed_mailbox=seed_mailbox,

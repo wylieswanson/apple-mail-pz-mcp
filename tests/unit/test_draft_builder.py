@@ -681,3 +681,55 @@ def test_message_id_domain_falls_back_when_sender_has_no_domain():
         body="body",
     )
     assert msgid.endswith("@localhost>")
+
+
+def test_extract_payloads_includes_named_part_without_disposition():
+    """Outlook sends cid-referenced images with a content-type ``name`` and
+    no Content-Disposition at all. They are files in the message: the
+    attachment list and the byte fetch must both count them, in MIME order,
+    so an index taken from one means the same part in the other."""
+    from apple_mail_fast_mcp.draft_builder import extract_attachment_payloads
+
+    raw = (
+        b"Subject: c\r\nMIME-Version: 1.0\r\n"
+        b'Content-Type: multipart/mixed; boundary="m"\r\n\r\n'
+        b'--m\r\nContent-Type: multipart/related; boundary="r"\r\n\r\n'
+        b"--r\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<img src=cid:a>\r\n"
+        b'--r\r\nContent-Type: image/jpeg; name="image001.jpg"\r\n'
+        b"Content-ID: <a>\r\nContent-Transfer-Encoding: base64\r\n\r\nSlBH\r\n"
+        b'--r\r\nContent-Type: image/gif; name="image002.gif"\r\n'
+        b"Content-ID: <b>\r\nContent-Transfer-Encoding: base64\r\n\r\nR0lG\r\n"
+        b"--r--\r\n"
+        b'--m\r\nContent-Type: text/html; name="report.html"\r\n'
+        b'Content-Disposition: attachment; filename="report.html"\r\n\r\n<p>r</p>\r\n'
+        b"--m--\r\n"
+    )
+
+    atts = extract_attachment_payloads(raw)
+
+    assert _names_types(atts) == [
+        ("image001.jpg", "image/jpeg"),
+        ("image002.gif", "image/gif"),
+        ("report.html", "text/html"),
+    ]
+    assert atts[0][3] == b"JPG"
+
+
+def test_extract_payloads_decodes_rfc2231_filename():
+    """Same message shape as the BODYSTRUCTURE ``filename*`` case, so the two
+    walkers agree on the name as well as on membership."""
+    from apple_mail_fast_mcp.draft_builder import extract_attachment_payloads
+
+    raw = (
+        b"Subject: c\r\nMIME-Version: 1.0\r\n"
+        b'Content-Type: multipart/mixed; boundary="m"\r\n\r\n'
+        b"--m\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+        b"--m\r\nContent-Type: image/png\r\n"
+        b"Content-Disposition: inline; filename*=utf-8''Shot%203.14%E2%80%AFPM.png\r\n"
+        b"Content-Transfer-Encoding: base64\r\n\r\niVBO\r\n"
+        b"--m--\r\n"
+    )
+
+    atts = extract_attachment_payloads(raw)
+
+    assert _names_types(atts) == [("Shot 3.14\u202fPM.png", "image/png")]

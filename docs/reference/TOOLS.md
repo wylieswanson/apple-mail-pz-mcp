@@ -104,7 +104,7 @@ Search for messages matching specified criteria.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `account` | string | Conditional | None | Account name (e.g., "Gmail", "iCloud"). Required when `source` is None; ignored when `source` is a list. |
-| `mailbox` | string | No | "INBOX" | Mailbox/folder name. Ignored when `source` is a list. |
+| `mailbox` | string | No | "INBOX" | Mailbox/folder name, or `"*"` for every mailbox of the account (see below). Ignored when `source` is a list. |
 | `sender_contains` | string | No | None | Filter by sender email or domain |
 | `subject_contains` | string | No | None | Filter by subject keywords |
 | `read_status` | boolean | No | None | Filter by read status (true=read, false=unread) |
@@ -121,6 +121,7 @@ Search for messages matching specified criteria.
 
 **Notes:**
 - Returns metadata-only rows (id, subject, sender, date_received, read_status, flagged). For full bodies, pipe the result ids into `get_messages([ids])`.
+- **All mailboxes (`mailbox="*"`).** One call searches every mailbox of the account, and each row carries the `mailbox` it lives in — pass that, with `account`, to `get_messages` / `save_attachments`. `limit` is the newest N across all of them. A metadata-only query is answered by the local Envelope Index when it is enabled (one SQL query); anything else, including `body_contains` / `text_contains` / attachments, runs over IMAP folder by folder on one connection. A message that also appears in a Gmail-style `\All` folder is listed once, under its real folder. There is no AppleScript fallback for `"*"` — that scan is the one that freezes Mail — so with neither backend the call returns `validation_error` naming `setup-imap`.
 - Malformed `date_from` / `date_to` raise `error_type: validation_error`. Only ISO 8601 YYYY-MM-DD is accepted; relative dates like "7 days ago" are not supported.
 - `has_attachment` is filtered after the initial server-side match because Mail.app rejects attachment predicates inside its `whose` clause.
 - `source=[ids]` (folded-in `get_selected_messages` and the `thread_of` use case) scopes the search to a specific id list. Filter parameters (`sender_contains`, `read_status`, etc.) compose with `source` — the resolved messages are post-filtered. The literal token `"SELECTED"` may appear in the list and is server-resolved to Mail.app's current UI selection (zero-or-more ids); mixed lists like `["SELECTED", "12345"]` are valid. Returns `account: null` and `mailbox: null` in the response. Missing ids drop out silently (partial-results convention).
@@ -248,6 +249,7 @@ Retrieve full details of one or more messages, with bodies. Returns a list (alwa
 
 **Notes:**
 - Missing ids drop out silently — the response contains whatever was found (partial-results convention).
+- **Reading never marks a message read.** The IMAP path fetches with `BODY.PEEK`, so `read_status` is unchanged by `get_messages`, `save_attachments` and `get_attachment_content`. Use `update_message(read_status=true)` to mark read.
 - The `"SELECTED"` sentinel is resolved server-side via `mail.get_selected_messages()` at call time. Empty selection expands to nothing.
 - Pair with `search_messages` (metadata-only, criteria-based) and `get_thread` (thread member ids) to fetch bodies for specific messages.
 - **Body bounding (#365):** each `content` is scrubbed of transport-hostile characters (control bytes, non-UTF8-encodable codepoints) and capped at **1 MB** of UTF-8 text so a single large or malformed body can't crash the stdio server. When a body is truncated, the message carries `content_truncated: true` and `content_original_bytes: <int>`. Override the cap with `APPLE_MAIL_MCP_MAX_BODY_BYTES` (positive integer bytes).
@@ -707,9 +709,10 @@ Save attachments from a message to a directory.
 |-----------|------|----------|---------|-------------|
 | `message_id` | string | Yes | - | Message ID to save attachments from |
 | `save_directory` | string | Yes | - | Directory path to save attachments |
-| `attachment_indices` | list[int] | No | None | Specific attachment indices (None = all) |
+| `attachment_indices` | list[int] | No | None | 0-based positions in the message's `attachments` list from `get_messages` (None = all). An out-of-range index fails the whole call with `error_type: "attachment_index_out_of_range"` and writes nothing. |
 | `account` | string | No | None | Mail.app account name or UUID. With `mailbox`, takes the IMAP fast path (one fetch). Pass the same values you read the message with so attachment ordering matches. |
 | `mailbox` | string | No | None | Folder the message lives in (e.g. "INBOX"), used with `account` for the IMAP fast path. |
+| `include_message` | boolean | No | false | Also write the message itself as an `.eml` file: the RFC 822 bytes exactly as the server holds them, named after the subject. IMAP only — requires `account` + `mailbox`, else `error_type: "imap_required"` and nothing is written. With `attachment_indices=[]` the `.eml` is the only file. The response gains `message_file` (the path). The `.eml` counts against the same byte caps as an attachment. |
 
 **Performance (#371):** pass `account` + `mailbox` to fetch the message once over IMAP and write the bytes straight to disk. Without them, `save_attachments` falls back to an O(accounts × mailboxes) AppleScript scan whose unindexed `message id` lookup is ~20s/mailbox — on Gmail (dozens of labels) that can run for minutes and time out. Mirrors `get_attachment_content`'s fast path.
 
@@ -720,11 +723,26 @@ Save attachments from a message to a directory.
   "success": true,
   "saved": 2,
   "directory": "/Users/me/Downloads",
+  "files": ["/Users/me/Downloads/Offer.pdf", "/Users/me/Downloads/Budget Report (1).pdf"],
   "rejected": []
 }
 ```
 
-`saved` is the number of attachments written. `rejected` lists any attachments skipped by the byte
+`saved` is the number of attachments written and `files` their paths, in selection order. A file
+keeps the sender's filename — spaces, punctuation and non-ASCII letters included. Only what is
+unsafe as a path is changed (path components, control and invisible formatting characters, a
+leading dot), and a name that collides with an earlier one in the same call is prefixed with its
+index.
+
+**What counts as an attachment.** A MIME part is an attachment if its disposition is `attachment`,
+or it has a filename (a disposition `filename` or a content-type `name`, in plain or RFC 2231
+`filename*` form, whatever the disposition), or it is a forwarded `message/rfc822`. Inline images
+therefore count whether the sender marked them `inline; filename=` (Apple Mail) or gave only a
+content-type `name` and a Content-ID (Outlook). The same rule drives `get_messages` /
+`search_messages(include_attachments=true)`, the `has_attachment` filter, `get_attachment_content`
+and `save_attachments`, so an index means the same part in all of them.
+
+`rejected` lists any attachments skipped by the byte
 caps (per-attachment default 100 MB, aggregate 500 MB per call — disk-fill DoS protection, #236),
 each as `{"name", "size", "reason"}` where reason is `per_attachment_cap` / `aggregate_cap` (pre-check)
 or `*_postwrite` (an oversized file deleted after writing). Override the caps with
@@ -1149,6 +1167,7 @@ Create a draft (fresh, reply, or forward). Optionally send immediately.
 | `template_name` | string | No | None | Optional template to render for `subject` + `body`. Caller-supplied `subject`/`body` override the rendered output. |
 | `template_vars` | object | No | None | Variables for the template renderer. Requires `template_name`. |
 | `from_account` | string | No | None | Mail.app account name or UUID. None = Mail's default. On a save-as-draft with exactly one enabled account, that account is adopted so the clean (no iOS quote bug) IMAP draft path can engage — it's Mail's default sender anyway, so the From is unchanged (#321). |
+| `from_address` | string | No | None | Which of the account's own addresses the draft is From; None = the account's first. Matched case-insensitively against the addresses `list_accounts` shows; an address the account doesn't own is rejected (`validation_error`, listing the ones it does). Given without `from_account`, it also selects the account: the one enabled account that lists the address. |
 | `send_now` | boolean | No | False | `False` saves as draft. `True` sends immediately and elicits confirmation. When the account has SMTP + IMAP credentials configured, the send goes out over a clean **SMTP** submission (#322) — a wrapper-free RFC 822 message — so sent mail avoids the iOS cite-blockquote (Mail.app bug FB11734014); it falls back to Mail's AppleScript send (which does apply the wrapper) when SMTP isn't available. Unlike a save-as-draft, a `send_now` with no `from_account` is **not** auto-resolved to the sole account (#321) — pass `from_account` to get the clean SMTP path. |
 
 **Returns:**
@@ -1230,6 +1249,7 @@ create_draft(
 - `validation_error`: Mutually exclusive seeds, missing required fields, `template_vars` without `template_name`, or `body_html` combined with `send_now` / `reply_to` / `forward_of`.
 - `message_not_found`: `reply_to` / `forward_of` doesn't match any Mail.app message.
 - `account_not_found`: `from_account` doesn't match.
+- `account_addresses_unavailable`: Mail.app returned no email addresses for the account (asked twice), so there is no From. If `list_accounts` shows addresses for it, retry.
 - `file_not_found`: An attachment path doesn't exist.
 - `html_requires_imap`: `body_html` was set but the clean IMAP path couldn't engage (no Keychain opt-in / IMAP credentials). HTML drafts are never silently downgraded to plain text.
 - `cancelled`: User declined the elicitation prompt (when `send_now=True`).
@@ -1260,6 +1280,7 @@ after this call. Callers caching the id must re-read the response.
 | `attachment_paths` | array[string] | No | None | Override attachments: `None` **preserves existing** (extracted to a temp dir and re-attached); `[]` clears; populated list replaces. |
 | `template_name` / `template_vars` | string / object | No | None | Optional template render. User-supplied `subject`/`body` override the rendered output. |
 | `from_account` | string | No | None | Override sender. |
+| `from_address` | string | No | None | As in `create_draft`. The draft is recreated, so pass it again to keep a non-default From. |
 | `send_now` | boolean | No | False | `False` saves new draft. `True` sends after eliciting confirmation. |
 
 **Returns:**

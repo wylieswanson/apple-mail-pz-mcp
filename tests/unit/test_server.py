@@ -27,6 +27,7 @@ from fastmcp.server.elicitation import (
 from apple_mail_fast_mcp.exceptions import (
     MailAccountNotFoundError,
     MailAppleScriptError,
+    MailAttachmentIndexError,
     MailMailboxNotFoundError,
     MailMessageNotFoundError,
 )
@@ -2986,6 +2987,63 @@ class TestSaveAttachments:
         assert kwargs["account"] == "Gmail"
         assert kwargs["mailbox"] == "INBOX"
 
+    def test_out_of_range_index_names_the_error(
+        self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
+    ) -> None:
+        mock_mail.save_attachments.side_effect = MailAttachmentIndexError(
+            "attachment_indices [2] out of range: message has 1 attachment(s)."
+        )
+
+        result = save_attachments("1", str(tmp_path), [2])
+
+        assert result["success"] is False
+        assert result["error_type"] == "attachment_index_out_of_range"
+        assert "1 attachment" in result["error"]
+
+    def test_returns_saved_file_paths(
+        self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
+    ) -> None:
+        files = [str(tmp_path / "a b.pdf")]
+        mock_mail.save_attachments.return_value = {"saved": 1, "rejected": [], "files": files}
+
+        result = save_attachments("1", str(tmp_path))
+
+        assert result["files"] == files
+
+    def test_include_message_returns_the_eml_path(
+        self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
+    ) -> None:
+        eml = str(tmp_path / "Hello.eml")
+        mock_mail.save_attachments.return_value = {
+            "saved": 0, "rejected": [], "files": [], "message_file": eml,
+        }
+
+        result = save_attachments(
+            "1", str(tmp_path), [], account="iCloud", mailbox="INBOX", include_message=True
+        )
+
+        assert mock_mail.save_attachments.call_args.kwargs["include_message"] is True
+        assert result["message_file"] == eml
+
+    def test_no_message_file_key_unless_one_was_written(
+        self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
+    ) -> None:
+        mock_mail.save_attachments.return_value = {"saved": 1, "rejected": [], "files": ["x"]}
+
+        assert "message_file" not in save_attachments("1", str(tmp_path))
+
+    def test_include_message_without_imap_names_the_error(
+        self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
+    ) -> None:
+        from apple_mail_fast_mcp.exceptions import MailImapRequiredError
+
+        mock_mail.save_attachments.side_effect = MailImapRequiredError("needs account + mailbox")
+
+        result = save_attachments("1", str(tmp_path), include_message=True)
+
+        assert result["success"] is False
+        assert result["error_type"] == "imap_required"
+
     def test_surfaces_rejected_attachments(
         self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
     ) -> None:
@@ -3984,6 +4042,46 @@ class TestCreateDraftTool:
         assert kwargs["seed"] == "new"
         assert kwargs["seed_id"] is None
         assert kwargs["send_now"] is False
+
+    @pytest.mark.asyncio
+    async def test_from_address_threads_to_connector(
+        self,
+        isolated_drafts: Any,
+        mock_mail: MagicMock,
+        mock_logger: MagicMock,
+    ) -> None:
+        from apple_mail_fast_mcp.server import create_draft
+
+        mock_mail.create_draft.return_value = {
+            "draft_id": "161100", "sent_message_id": "", "from_account": "iCloud",
+        }
+        result = await create_draft(
+            to=["a@example.com"], subject="hi", body="x",
+            from_address="alice@icloud.com",
+        )
+        assert result["success"] is True
+        assert mock_mail.create_draft.call_args.kwargs["from_address"] == "alice@icloud.com"
+        assert result["details"]["from_account"] == "iCloud"
+
+    @pytest.mark.asyncio
+    async def test_sender_lookup_failures_are_named(
+        self,
+        isolated_drafts: Any,
+        mock_mail: MagicMock,
+        mock_logger: MagicMock,
+    ) -> None:
+        """Neither is "unknown": one is Mail not answering, the other is the
+        caller naming an address the account doesn't have."""
+        from apple_mail_fast_mcp.exceptions import MailAccountAddressesUnavailableError
+        from apple_mail_fast_mcp.server import create_draft
+
+        mock_mail.create_draft.side_effect = MailAccountAddressesUnavailableError("none")
+        result = await create_draft(to=["a@example.com"], subject="hi", from_account="iCloud")
+        assert result["error_type"] == "account_addresses_unavailable"
+
+        mock_mail.create_draft.side_effect = ValueError("not an address of account")
+        result = await create_draft(to=["a@example.com"], subject="hi", from_address="x@y.example")
+        assert result["error_type"] == "validation_error"
 
     @pytest.mark.asyncio
     async def test_body_html_threads_to_connector(

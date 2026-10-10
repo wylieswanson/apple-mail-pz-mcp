@@ -27,6 +27,7 @@ from pydantic import BeforeValidator
 from . import __version__
 from .drafts import DraftStateStore, SeedRecord
 from .exceptions import (
+    MailAccountAddressesUnavailableError,
     MailAccountNotFoundError,
     MailAnchorLookupIncompleteError,
     MailAppleScriptError,
@@ -1217,8 +1218,9 @@ def search_messages(
             UUID (from list_accounts). Required when ``source is None``;
             ignored when ``source`` is a list. Names are convenient but
             unstable across renames; UUIDs are stable.
-        mailbox: Mailbox name (default: "INBOX"). Ignored when ``source``
-            is a list.
+        mailbox: Mailbox name (default: "INBOX"). ``"*"`` searches every
+            mailbox of the account; each row then carries its ``mailbox``.
+            Ignored when ``source`` is a list.
         sender_contains: Filter by sender email/domain substring.
         subject_contains: Filter by subject keywords substring.
         read_status: Filter by read status (true=read, false=unread).
@@ -1933,6 +1935,7 @@ def save_attachments(
     attachment_indices: OptIntList = None,
     account: str | None = None,
     mailbox: str | None = None,
+    include_message: bool = False,
 ) -> dict[str, Any]:
     """
     Save attachments from a message to a directory.
@@ -1940,7 +1943,9 @@ def save_attachments(
     Args:
         message_id: Message ID from search results
         save_directory: Directory path to save attachments to
-        attachment_indices: Specific attachment indices to save (0-based), None for all
+        attachment_indices: 0-based positions in the message's
+            ``attachments`` list from ``get_messages``; None saves all.
+            An out-of-range index fails the call.
         account: Mail.app account name or UUID. Supply it (with ``mailbox``)
             to take the faster IMAP path — one fetch instead of an
             account×mailbox AppleScript scan. Pass the same values you read
@@ -1949,19 +1954,27 @@ def save_attachments(
             cross-scan can take minutes and time out.
         mailbox: Folder the message lives in (e.g. "INBOX"), used with
             ``account`` for the IMAP fast path.
+        include_message: Also save the message itself as an ``.eml`` file
+            (needs ``account`` + ``mailbox``). With
+            ``attachment_indices=[]``, only the ``.eml``.
 
     Returns:
-        Dict with ``success``, ``saved`` (count written), ``directory``, and
+        Dict with ``success``, ``saved`` (count written), ``directory``,
+        ``files`` (the paths written — a file keeps the sender's name unless
+        that name is unsafe as a path or collides with another), and
         ``rejected`` (attachments skipped by the per-attachment / aggregate
-        byte caps, each ``{name, size, reason}``; #236).
+        byte caps, each ``{name, size, reason}``; #236). With
+        ``include_message``, also ``message_file``: the ``.eml`` path.
 
     Example:
         >>> save_attachments("12345", "/Users/me/Downloads")
         {"success": True, "saved": 2, "directory": "/Users/me/Downloads",
+         "files": ["/Users/me/Downloads/a.pdf", "/Users/me/Downloads/b (1).pdf"],
          "rejected": []}
 
         >>> save_attachments("12345", "/Users/me/Downloads", [0, 2])
         {"success": True, "saved": 1, "directory": "/Users/me/Downloads",
+         "files": ["/Users/me/Downloads/a.pdf"],
          "rejected": [{"name": "huge.bin", "size": 2147483648,
                        "reason": "per_attachment_cap"}]}
     """
@@ -1997,6 +2010,7 @@ def save_attachments(
             attachment_indices=attachment_indices,
             account=account,
             mailbox=mailbox,
+            include_message=include_message,
         )
 
         operation_logger.log_operation(
@@ -2009,14 +2023,26 @@ def save_attachments(
             "success",
         )
 
-        return {
+        response: dict[str, Any] = {
             "success": True,
             "saved": result["saved"],
             "directory": save_directory,
+            "files": result.get("files", []),
             # Attachments skipped/removed by the byte caps (#236), if any.
             "rejected": result["rejected"],
         }
+        if "message_file" in result:
+            response["message_file"] = result["message_file"]
+        return response
 
+    except MailAttachmentIndexError as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "attachment_index_out_of_range",
+        }
+    except MailImapRequiredError as e:
+        return {"success": False, "error": str(e), "error_type": "imap_required"}
     except (FileNotFoundError, ValueError) as e:
         logger.error(f"Validation error: {e}")
         return {
@@ -3030,6 +3056,8 @@ def _draft_action_error(op: str, e: Exception) -> dict[str, Any] | None:
         return {"success": False, "error": str(e), "error_type": "message_not_found"}
     if isinstance(e, MailAccountNotFoundError):
         return {"success": False, "error": str(e), "error_type": "account_not_found"}
+    if isinstance(e, MailAccountAddressesUnavailableError):
+        return {"success": False, "error": str(e), "error_type": "account_addresses_unavailable"}
     if isinstance(e, MailSafetyError):
         # Test-mode reserved-domain violation raised by the clean SMTP send
         # path's transport-boundary guard (#322/#175). Surface it as a
@@ -3037,6 +3065,8 @@ def _draft_action_error(op: str, e: Exception) -> dict[str, Any] | None:
         return {"success": False, "error": str(e), "error_type": "safety_violation"}
     if isinstance(e, FileNotFoundError):
         return {"success": False, "error": str(e), "error_type": "file_not_found"}
+    if isinstance(e, ValueError):
+        return {"success": False, "error": str(e), "error_type": "validation_error"}
     if isinstance(e, MailDraftError):
         return _draft_error_response(e)
     if isinstance(e, MailAppleScriptError):
@@ -3392,6 +3422,7 @@ async def create_draft(
     template_name: str | None = None,
     template_vars: OptStrDict = None,
     from_account: str | None = None,
+    from_address: str | None = None,
     send_now: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any] | InputRequiredResult:
@@ -3447,6 +3478,8 @@ async def create_draft(
             default; on a save-as-draft with exactly one enabled account,
             that account is adopted so the clean (no iOS quote bug) IMAP
             draft path can engage.
+        from_address: Which of the account's addresses to send From
+            (default: its first). Alone, it also selects the account.
         send_now: ``False`` (default) saves as draft. ``True`` sends
             immediately and elicits user confirmation.
 
@@ -3552,6 +3585,7 @@ async def create_draft(
             attachment_paths=attachment_path_objs,
             reply_all=reply_all,
             from_account=from_account,
+            from_address=from_address,
             send_now=send_now,
             on_warning=warnings.append,
         )
@@ -3613,6 +3647,7 @@ async def update_draft(
     template_name: str | None = None,
     template_vars: OptStrDict = None,
     from_account: str | None = None,
+    from_address: str | None = None,
     send_now: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any] | InputRequiredResult:
@@ -3654,6 +3689,8 @@ async def update_draft(
         template_name / template_vars: Optional template render. User-
             supplied subject/body override the rendered output.
         from_account: Override sender.
+        from_address: As in ``create_draft``; pass it again to keep a
+            non-default From.
         send_now: ``False`` (default) saves new draft. ``True`` sends
             after eliciting confirmation.
 
@@ -3756,6 +3793,7 @@ async def update_draft(
             attachment_paths=final_attachments,
             reply_all=reply_all,
             from_account=from_account,
+            from_address=from_address,
             send_now=send_now,
         )
         new_draft_id = result.get("draft_id", "")
