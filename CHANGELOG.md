@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.2] - 2026-10-10
+
+The `.eml` export from v0.14.0, made fit to file as a record: it now says where its bytes came from, and it keeps its whole name.
+
+### Added
+
+**An exported message comes with its provenance.** `save_attachments(include_message=true)` returns `message_source` beside `message_file`: the server `host`, the `mailbox`, the message's `uid` and the mailbox's `uidvalidity`, the size the server states (`rfc822_size`) next to the size of the file written (`bytes_written`), the full IMAP flag list before and after the fetch, and `fetched_at`. The flags are read in their own commands on either side of the body, because flags returned with the body already reflect that fetch; two equal lists are the record that the export left the message's flags as they were, and a `null` means unknown rather than unchanged. They are also the first place the tool shows keywords and system flags beyond read and flagged. It costs two IMAP round-trips beyond the fetch, paid only with `include_message`. See [`message_source`](docs/reference/TOOLS.md#save_attachments).
+
+### Fixed
+
+**A slash in the subject cut the `.eml`'s name short.** The file is named after the subject, and the subject was treated as a path: a subject with a date in it, such as `Summary for 10/10 is ready`, was saved as `10 is ready.eml`, and two subjects that differed only before the slash landed on one name. `/`, `\` and `:` in the subject are now written as `_`, and the rest of the subject is kept.
+
+### Changed
+
+**Tool surface:** +8 bytes per request. `save_directory` now says the directory must already exist. `message_source` is output only and costs nothing here.
+
+### Known issues
+
+Unchanged from v0.14.0, including the waived benchmark baseline and blind-eval snapshot ([#2](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/2), [#3](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/3)). The export now has an integration test, but the integration suite was again not run.
+
 ## [0.14.1] - 2026-10-10
 
 A one-line patch to v0.14.0.

@@ -432,7 +432,8 @@ def _require_real_mailbox(mailbox: str | None) -> None:
 def _eml_target(raw: bytes, save_directory: Path, taken: set[Path]) -> Path:
     """Where a message's ``.eml`` goes: named after its Subject, inside
     ``save_directory``. The subject is as attacker-controlled as an attachment
-    name, so it takes the same :func:`sanitize_filename` route to a path.
+    name, so once its path separators are neutralized it takes the same
+    :func:`sanitize_filename` route to a path.
 
     It never lands on another file. Every reply in a thread has the same
     subject, so a name already in use — by an attachment written in this
@@ -441,7 +442,11 @@ def _eml_target(raw: bytes, save_directory: Path, taken: set[Path]) -> Path:
     file that already holds exactly these bytes is reused.
     """
     subject = str(BytesHeaderParser(policy=_email_policy).parsebytes(raw)["Subject"] or "")
-    name = sanitize_filename(f"{subject.strip()}.eml") if subject.strip() else "message.eml"
+    # A subject is a title, not a path. sanitize_filename takes the basename,
+    # which is right for an attachment's filename and wrong here: "Digest for
+    # 10/10 is ready" became "10 is ready". Separators become a character.
+    subject = re.sub(r"[/\\:]", "_", subject).strip()
+    name = sanitize_filename(f"{subject}.eml") if subject else "message.eml"
     if not name.endswith(".eml") or name == ".eml":
         name = "message.eml"
     # Room for the counter within the 255-byte name limit.
@@ -449,8 +454,11 @@ def _eml_target(raw: bytes, save_directory: Path, taken: set[Path]) -> Path:
     taken_keys = {_fs_key(path.name) for path in taken}
     for n in range(1, 1000):
         candidate = name if n == 1 else f"{stem} {n}.eml"
-        target = (save_directory / candidate).resolve()
-        if _fs_key(target.name) in taken_keys:
+        # Not resolved: save_directory already is, and resolving the leaf
+        # would follow a symlink planted under this name out of the
+        # directory. A link is simply a name in use.
+        target = save_directory / candidate
+        if _fs_key(target.name) in taken_keys or target.is_symlink():
             continue
         if not target.exists():
             return target
@@ -4153,9 +4161,11 @@ class AppleMailConnector:
             reason}`` where reason is ``per_attachment_cap`` /
             ``aggregate_cap`` (pre-check) or ``*_postwrite`` (post-write net),
             and the paths written, in selection order. With
-            ``include_message``, also ``message_file`` — the ``.eml`` path
-            (absent if the message went over the per-attachment cap, which
-            then appears in ``rejected``).
+            ``include_message``, also ``message_file`` — the ``.eml`` path —
+            and ``message_source``, its provenance (see
+            :meth:`ImapConnector.fetch_message_with_source`) plus
+            ``bytes_written``. Both are absent if the message went over the
+            per-attachment cap, which then appears in ``rejected``.
 
         Raises:
             FileNotFoundError: If save directory doesn't exist
@@ -4196,9 +4206,12 @@ class AppleMailConnector:
         # cross-scan. Mirrors get_attachment_content's dispatch.
         _require_real_mailbox(mailbox)
         raw: bytes | None = None
+        source: dict[str, Any] | None = None
         if account is not None and mailbox is not None and not self._imap_breaker_open(account):
             try:
-                raw = self._imap_fetch_raw_message(account, mailbox, message_id)
+                raw, source = self._imap_fetch_raw_message(
+                    account, mailbox, message_id, with_source=include_message
+                )
                 self._imap_clear_breaker(account)
             except _IMAP_FALLBACK_EXCS as exc:
                 self._log_imap_fallback(account, exc)
@@ -4208,7 +4221,7 @@ class AppleMailConnector:
             # is a dropped connection: caught together, a full disk read as
             # "IMAP is down" and opened the circuit breaker.
             return self._save_from_raw_message(
-                raw, save_directory, attachment_indices, include_message
+                raw, save_directory, attachment_indices, include_message, source
             )
 
         if include_message:
@@ -4302,8 +4315,12 @@ class AppleMailConnector:
             "files": [str(path) for _, path in targets if path.is_file()],
         }
 
-    def _imap_fetch_raw_message(self, account: str, mailbox: str, message_id: str) -> bytes:
-        """One IMAP fetch of a message's RFC 822 bytes (#371).
+    def _imap_fetch_raw_message(
+        self, account: str, mailbox: str, message_id: str, *, with_source: bool = False
+    ) -> tuple[bytes, dict[str, Any] | None]:
+        """One IMAP fetch of a message's RFC 822 bytes (#371), and — only
+        ``with_source``, since it costs two more round-trips — the provenance
+        dict from :meth:`ImapConnector.fetch_message_with_source`.
 
         Propagates ``_IMAP_FALLBACK_EXCS`` unchanged for the caller's
         fallback; ``MailMessageNotFoundError`` when the folder lacks it.
@@ -4311,7 +4328,9 @@ class AppleMailConnector:
         host, port, email = self._resolve_imap_config(account)
         password = self._get_imap_password_with_fallback(account, email)
         imap = ImapConnector(host, port, email, password, pool=self._imap_pool)
-        return imap.fetch_raw_message(message_id, mailbox)
+        if with_source:
+            return imap.fetch_message_with_source(message_id, mailbox)
+        return imap.fetch_raw_message(message_id, mailbox), None
 
     def _save_from_raw_message(
         self,
@@ -4319,6 +4338,7 @@ class AppleMailConnector:
         save_directory: Path,
         attachment_indices: list[int] | None,
         include_message: bool = False,
+        source: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Write the selected attachments of an already-fetched message, and
         the message itself when asked. Reuses the same parse as
@@ -4380,6 +4400,8 @@ class AppleMailConnector:
             if write_message:
                 eml.write_bytes(raw)
                 result["message_file"] = str(eml)
+                if source is not None:
+                    result["message_source"] = {**source, "bytes_written": len(raw)}
             else:
                 rejected.append(
                     {"name": eml.name, "size": len(raw), "reason": "per_attachment_cap"}

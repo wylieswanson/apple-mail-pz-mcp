@@ -10573,6 +10573,13 @@ class TestSearchAllMailboxesDispatch:
         mock_local_search.assert_not_called()
 
 
+_SOURCE = {
+    "host": "imap.example.com", "mailbox": "INBOX", "uidvalidity": 7, "uid": 42,
+    "rfc822_size": 123, "flags_before": ["\\Seen"], "flags_after": ["\\Seen"],
+    "fetched_at": "2026-01-02T03:04:05+00:00",
+}
+
+
 class TestSaveMessageAsEml:
     """save_attachments(include_message=True) writes the message itself."""
 
@@ -10586,8 +10593,11 @@ class TestSaveMessageAsEml:
         mock_imap = MagicMock()
         if isinstance(raw, Exception):
             mock_imap.fetch_raw_message.side_effect = raw
+            mock_imap.fetch_message_with_source.side_effect = raw
         else:
             mock_imap.fetch_raw_message.return_value = raw
+            mock_imap.fetch_message_with_source.return_value = (raw, dict(_SOURCE))
+        self.mock_imap = mock_imap
         with contextlib.ExitStack() as stack:
             for p in TestSaveAttachmentsImapFastPath._imap_patches(self, mock_imap):
                 stack.enter_context(p)
@@ -10610,6 +10620,28 @@ class TestSaveMessageAsEml:
         assert eml.read_bytes() == raw
         assert result["saved"] == 1
         assert [Path(f).name for f in result["files"]] == ["a.pdf"]
+
+    def test_the_export_says_where_its_bytes_came_from(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        raw = _raw_with_attachments([("a.pdf", "pdf", b"AAA")])
+
+        result = self._save(connector, raw, tmp_path, include_message=True)
+
+        assert result["message_source"] == {**_SOURCE, "bytes_written": len(raw)}
+        self.mock_imap.fetch_message_with_source.assert_called_once_with(
+            "att-test@example.com", "INBOX"
+        )
+        self.mock_imap.fetch_raw_message.assert_not_called()
+
+    def test_a_plain_save_pays_nothing_for_provenance(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        """The source costs two extra round-trips. Only an export asks for it."""
+        result = self._save(connector, _raw_with_attachments([("a.pdf", "pdf", b"A")]), tmp_path)
+
+        assert "message_source" not in result
+        self.mock_imap.fetch_message_with_source.assert_not_called()
 
     def test_empty_indices_saves_the_message_alone(
         self, connector: AppleMailConnector, tmp_path: Path
@@ -10642,13 +10674,54 @@ class TestSaveMessageAsEml:
         assert Path(result["message_file"]).read_bytes() == raw
         assert result["message_file"] != result["files"][0]
 
+    @pytest.mark.parametrize(
+        ("subject", "expected"),
+        [
+            ("Weekly summary for Sat, 10/10 is ready", "Weekly summary for Sat, 10_10 is ready.eml"),
+            ("Q3 / Q4 plan", "Q3 _ Q4 plan.eml"),
+            ("C:\\temp\\x", "C__temp_x.eml"),
+            ("a/b/..", "a_b_...eml"),
+            ("/", "_.eml"),
+        ],
+    )
+    def test_a_slash_in_the_subject_is_a_character_not_a_path(
+        self, connector: AppleMailConnector, tmp_path: Path, subject: str, expected: str
+    ) -> None:
+        """A subject is a title, not a filename someone chose. Taking its
+        basename, as is right for an attachment name, kept only what
+        followed the last slash: a digest dated 10/10 was saved as
+        ``10 is ready.eml``. Separators become ``_`` and the rest stays."""
+        raw = f"Subject: {subject}\r\nMessage-ID: <att-test@example.com>\r\n\r\nbody\r\n".encode()
+
+        target = Path(self._save(connector, raw, tmp_path, include_message=True)["message_file"])
+
+        assert target == tmp_path / expected
+        assert target.read_bytes() == raw
+
+    def test_subjects_that_differ_before_a_slash_get_different_files(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        one = b"Subject: Alpha 10/10 report\r\nMessage-ID: <1@x>\r\n\r\none\r\n"
+        two = b"Subject: Beta 10/10 report\r\nMessage-ID: <2@x>\r\n\r\ntwo\r\n"
+
+        a = self._save(connector, one, tmp_path, include_message=True)["message_file"]
+        b = self._save(connector, two, tmp_path, include_message=True)["message_file"]
+
+        assert [Path(a).name, Path(b).name] == ["Alpha 10_10 report.eml", "Beta 10_10 report.eml"]
+
     def test_unsafe_or_missing_subject_still_gets_a_safe_name(
         self, connector: AppleMailConnector, tmp_path: Path
     ) -> None:
         raw = b"Subject: ../../etc/x\r\nMessage-ID: <att-test@example.com>\r\n\r\nbody\r\n"
+        target = Path(self._save(connector, raw, tmp_path, include_message=True)["message_file"])
+        assert target == tmp_path / "_.._etc_x.eml"
+        assert target.parent == tmp_path
+
+        raw = b"Subject: ..\r\nMessage-ID: <att-test@example.com>\r\n\r\nbody\r\n"
         assert Path(
             self._save(connector, raw, tmp_path, include_message=True)["message_file"]
-        ) == tmp_path / "x.eml"
+        ) == tmp_path / "message.eml"
+        (tmp_path / "message.eml").unlink()
 
         raw = b"Message-ID: <att-test@example.com>\r\n\r\nbody\r\n"
         assert Path(
@@ -10664,6 +10737,7 @@ class TestSaveMessageAsEml:
         result = self._save(connector, raw, tmp_path, include_message=True)
 
         assert "message_file" not in result
+        assert "message_source" not in result
         assert result["rejected"] == [
             {"name": "big.eml", "size": len(raw), "reason": "per_attachment_cap"}
         ]
@@ -10730,6 +10804,25 @@ class TestSaveMessageAsEml:
         assert Path(a).read_bytes() == first and Path(b).read_bytes() == second
         assert again == a
         assert len(list(tmp_path.iterdir())) == 2
+
+    def test_eml_is_not_written_through_a_symlink(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        """A link already sitting where the .eml would go — dangling, so it
+        does not look like an existing file — must not carry the write out
+        of the save directory."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        save_dir = tmp_path / "save"
+        save_dir.mkdir()
+        (save_dir / "hello.eml").symlink_to(outside / "planted.eml")
+        raw = b"Subject: hello\r\nMessage-ID: <att-test@example.com>\r\n\r\nbody\r\n"
+
+        target = Path(self._save(connector, raw, save_dir, include_message=True)["message_file"])
+
+        assert target == save_dir.resolve() / "hello 2.eml"
+        assert target.read_bytes() == raw
+        assert list(outside.iterdir()) == []
 
     def test_eml_never_lands_on_an_attachment_however_they_are_named(
         self, connector: AppleMailConnector, tmp_path: Path

@@ -24,3 +24,5 @@ v0.14.0 benchmark #2 no test Mail.app account on the release machine. This relea
 v0.14.0 eval #3 OPENROUTER_API_KEY unavailable on the release machine. The tool surface changed (from_address on create_draft/update_draft, include_message on save_attachments, mailbox="*" on search_messages; +726 bytes); tool_descriptions.md is regenerated and in sync, only the scores are stale.
 v0.14.1 benchmark #2 patch release; one error-type mapping in server.py, no timing path touched. Same constraint as v0.14.0: no test Mail.app account on the release machine.
 v0.14.1 eval #3 patch release; the tool surface is byte-identical to v0.14.0 (schema budget unchanged). OPENROUTER_API_KEY still unavailable.
+v0.14.2 benchmark #2 patch release; the export path gains two IMAP round-trips only when include_message is set, which no benchmark times. Same constraint as v0.14.0: no test Mail.app account on the release machine.
+v0.14.2 eval #3 patch release; the tool surface differs from v0.14.1 by one parameter description (+8 bytes). OPENROUTER_API_KEY still unavailable.

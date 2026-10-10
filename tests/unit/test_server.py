@@ -3040,6 +3040,22 @@ class TestSaveAttachments:
 
         assert mock_mail.save_attachments.call_args.kwargs["include_message"] is True
         assert result["message_file"] == eml
+        assert "message_source" not in result
+
+    def test_include_message_returns_the_source(
+        self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
+    ) -> None:
+        source = {"host": "imap.example.com", "uid": 42, "rfc822_size": 10, "bytes_written": 10}
+        mock_mail.save_attachments.return_value = {
+            "saved": 0, "rejected": [], "files": [],
+            "message_file": str(tmp_path / "Hello.eml"), "message_source": source,
+        }
+
+        result = save_attachments(
+            "1", str(tmp_path), [], account="iCloud", mailbox="INBOX", include_message=True
+        )
+
+        assert result["message_source"] == source
 
     def test_no_message_file_key_unless_one_was_written(
         self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
