@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1] - 2026-10-10
+
+A one-line patch to v0.14.0.
+
+### Fixed
+
+**`get_messages` called a refused argument an unknown error.** `mailbox="*"` is for `search_messages` only, and the read tools refuse it with a message saying to pass the mailbox carried on the search row. From `get_messages` that refusal came back as `error_type: "unknown"`, which reads as a server fault; it is now `validation_error`, as it already was from `save_attachments` and `get_attachment_content`.
+
+### Known issues
+
+Unchanged from v0.14.0, including the waived benchmark baseline and blind-eval snapshot ([#2](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/2), [#3](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/3)) and the integration suite not having been run.
+
 ## [0.14.0] - 2026-10-10
 
 This release is about **reading mail without changing it, and getting at everything a message holds.** It comes out of several days of an agent working real mailboxes: mail it had only read turned up marked read, a screenshot it had just sent listed no attachments, and a saved file could not be found under the name it was sent with. There is no v0.13.0; the number was skipped.
