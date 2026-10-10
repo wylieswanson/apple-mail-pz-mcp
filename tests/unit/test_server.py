@@ -2090,6 +2090,22 @@ class TestSearchMessages:
 
 
 class TestGetMessages:
+    def test_a_bad_argument_is_a_validation_error(
+        self, mock_mail: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        """The connector refuses ``mailbox="*"`` (search-only) with a
+        ValueError. That is the caller's argument being wrong, and the
+        response must say so: "unknown" reads as a server fault."""
+        mock_mail.get_message.side_effect = ValueError(
+            'mailbox="*" is only for search_messages.'
+        )
+
+        result = get_messages(["a@x"], account="iCloud", mailbox="*")
+
+        assert result["success"] is False
+        assert result["error_type"] == "validation_error"
+        assert "search_messages" in result["error"]
+
     def test_single_id_returns_one_in_list(
         self, mock_mail: MagicMock, mock_logger: MagicMock
     ) -> None:

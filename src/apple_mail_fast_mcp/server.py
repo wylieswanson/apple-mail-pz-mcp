@@ -1538,6 +1538,13 @@ def get_messages(
             "count": len(messages),
         }
 
+    except ValueError as e:
+        # A refused argument (e.g. the search-only mailbox="*"), not a fault.
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "validation_error",
+        }
     except Exception as e:
         logger.error(f"Error getting messages: {e}")
         return {

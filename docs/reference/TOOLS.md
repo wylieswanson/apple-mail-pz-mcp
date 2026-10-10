@@ -299,6 +299,7 @@ get_messages(["abc@x"], account="iCloud", mailbox="INBOX", headers_only=True)
 
 **Error Codes:**
 
+- `validation_error`: An argument was refused, e.g. `mailbox="*"`, which only `search_messages` takes. Pass the `mailbox` carried on the search row.
 - `unknown`: Unexpected error occurred
 
 ---
