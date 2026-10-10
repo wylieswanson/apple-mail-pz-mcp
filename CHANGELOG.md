@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-10-10
+
+This release is about **reading mail without changing it, and getting at everything a message holds.** It comes out of several days of an agent working real mailboxes: mail it had only read turned up marked read, a screenshot it had just sent listed no attachments, and a saved file could not be found under the name it was sent with. There is no v0.13.0; the number was skipped.
+
+> **Behavior changes:**
+> - **More parts count as attachments.** Any named MIME part is now an attachment, whatever its `Content-Disposition`. Messages with inline images from Outlook list them, `has_attachment=true` matches more messages, and on those messages attachment indices shift. See [What counts as an attachment](docs/reference/TOOLS.md#save_attachments).
+> - **`save_attachments` fails on an out-of-range index** (`error_type: "attachment_index_out_of_range"`) instead of reporting `saved: 0` as a success.
+> - **Saved attachments keep the sender's filename.** Spaces, punctuation and non-ASCII letters are no longer rewritten to `_`.
+
+### Added
+
+**Search every mailbox at once.** `search_messages(mailbox="*")` searches all of an account's mailboxes in one call, and each row carries the `mailbox` it lives in, so the message can be read without a second search to find it. A metadata-only query is answered by the local Envelope Index when that is enabled, in one SQL query; anything else runs over IMAP, folder by folder on one connection. There is no AppleScript fallback, because that scan is the one that freezes Mail.
+
+**Save a message as `.eml`.** `save_attachments(include_message=true)` also writes the message itself: the RFC 822 bytes exactly as the server holds them, named after the subject and returned as `message_file`. A different message with the same subject gets its own file rather than overwriting the first. With `attachment_indices=[]` the `.eml` is the only file. It needs `account` + `mailbox`; when IMAP can't fetch the message the call fails with `imap_required` and writes nothing.
+
+**Choose the From address.** `create_draft` and `update_draft` take `from_address`: one of the account's own addresses, for accounts that have several. An address the account doesn't own is refused, and the error lists the ones it does. Given without `from_account`, the address also selects the account.
+
+**`save_attachments` returns `files`**, the paths it wrote.
+
+### Fixed
+
+**Reading a message marked it read.** `get_messages`, `save_attachments` and reply drafts fetched `BODY[]` from a folder opened read-only, which should have left `\Seen` alone. iCloud sets it anyway. Every read now fetches with `BODY.PEEK`.
+
+**An attachment with a non-ASCII filename could vanish from listings.** Such a name travels as `filename*` (RFC 2231), and iCloud passes that key through undecoded. The listing looked only for `filename`, took the part for unnamed inline content, and dropped it, so `search_messages(include_attachments=true)` returned an empty list for a message carrying a macOS screenshot. Parameters are now decoded, including continuations and RFC 2047 encoded-words.
+
+**Inline images from Outlook were not attachments.** Outlook names them with a content-type `name` and no `Content-Disposition`. They could not be listed or saved, while the same image sent `inline; filename=` could. Three separate copies of the rule (the listing, the byte fetch, the `has_attachment` filter) are now one.
+
+**`save_attachments` reported success for an index that did not exist.** It dropped the index and returned `saved: 0`. It now fails, says how many attachments the message has, and writes none of the request.
+
+**Saved attachments lost their names.** Everything outside `[a-zA-Z0-9._-]` became `_`, so `Report (1).pdf` was written as `Report__1_.pdf` and a non-ASCII name became a run of underscores. Only what is unsafe as a path is now changed: path components, control and invisible formatting characters, any leading run of dots and spaces, and bytes past the filesystem's 255-byte limit. Two attachments whose names differ only by case or Unicode normalization no longer overwrite each other.
+
+**A draft could fail with "has no email addresses configured" for an account that has them.** Mail.app has been seen to return an empty address list for such an account. The lookup now asks a second time, and if the list is still empty fails with `error_type: "account_addresses_unavailable"` and a message that says what Mail returned. A bad argument on the draft path is now `validation_error`, not `unknown`, and `update_draft` checks the sender before it deletes the draft it is replacing.
+
+**The dependency audit never reported.** `pip-audit` had 21 advisories against four locked packages; pyjwt and cryptography ship with the server, urllib3 and pip are development-only. All four are bumped. The weekly audit had also failed on every run in this repository, because it labels its tracking issue `security` and that label did not exist.
+
+### Changed
+
+**Tool surface:** +726 bytes per request (41,349 → 42,075), +89 in read-only mode, for `from_address`, `include_message`, `mailbox="*"`, and an `attachment_indices` description that says where the indices come from. The tool count stays at 27: all three features are parameters on existing tools.
+
+### Known issues
+
+- **The integration suite was not run for this release** — no test Mail account on the release machine ([#2](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/2)). It includes a new test that reads leave a message unread; `mailbox="*"` and `include_message` have unit tests and were checked by hand against real mailboxes, but have no integration tests yet.
+- **`mailbox="*"` over IMAP costs about two round-trips per folder**, which is tens of seconds on an account with many folders. Enable the local Envelope Index (`APPLE_MAIL_MCP_LOCAL_DB=1`) for metadata queries.
+- **`mailbox="*"` with a `limit` is exact on the local index but not always over IMAP.** Each folder contributes its newest `limit` messages by arrival order before the merge by date, so a broad query can miss an old-dated message that was filed recently. A query that matches fewer than `limit` messages per folder is unaffected.
+- **The empty address list was not reproduced**, so the retry is a mitigation rather than a confirmed cure.
+- **`update_draft` does not remember a non-default From.** The draft is recreated, so pass `from_address` again.
+- **The benchmark baseline and blind-eval snapshot are waived again** ([#2](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/2), [#3](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/3)).
+
 ## [0.12.0] - 2026-09-13
 
 This release is about **deletes that don't hang and don't destroy.** It began with a `delete_mailbox` that sat for 70 minutes and a `delete_messages` that waited 15, both before touching Mail or IMAP: the host had taken the confirmation prompt and never answered. That is fixed, and more fundamentally, agents no longer delete mail at all by default — they stage it for you.

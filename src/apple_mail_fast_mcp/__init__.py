@@ -4,4 +4,4 @@ Apple Mail MCP Server
 A Model Context Protocol server for Apple Mail integration.
 """
 
-__version__ = "0.12.0"
+__version__ = "0.14.0"

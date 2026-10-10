@@ -3,7 +3,7 @@
 An MCP server bridging AI agents and Apple Mail via AppleScript on macOS.
 
 **Stack:** Python 3.10+, FastMCP 4 / MCP SDK 2, AppleScript (via `osascript`)
-**Version:** v0.12.0 | **Tests:** 1812 unit / 44 e2e / 76 integration | **Coverage:** 90%
+**Version:** v0.14.0 | **Tests:** 1914 unit / 44 e2e / 77 integration | **Coverage:** 91%
 
 This file is the canonical agent guide. Codex reads it directly; Claude Code
 reaches it via [`.claude/CLAUDE.md`](.claude/CLAUDE.md). Edit it here.
@@ -134,6 +134,8 @@ this budget; keep only prose that changes what the model does.
 - **Sanitize everything twice** — All user input: `sanitize_input()` then `escape_applescript_string()` before AppleScript.
 - **Structured responses** — Every tool returns `{"success": bool, ...}`. Errors include `error` and `error_type`.
 - **Async tools never block the event loop** — FastMCP threads plain `def` tools but runs `async def` ones on the loop. Inside an async tool, every connector call (or sync helper that makes one) goes through `await _run_blocking(fn, ...)`. `test_server.py` ratchets this statically.
+- **Reads never change mail** — every IMAP read fetches with `BODY.PEEK` (`_peek()` in `imap_connector.py`). Opening the folder read-only is not enough: iCloud sets `\Seen` on a plain `BODY[]` even under EXAMINE. A unit test fails if a read asks for a non-peek section.
+- **One attachment rule** — a MIME part is an attachment if its disposition is `attachment`, or it has a filename (disposition `filename` or content-type `name`, plain or RFC 2231), or it is `message/rfc822`. `_leaf_attachment_info` (BODYSTRUCTURE) and `_walk_attachment_parts` (MIME parse) both implement it and must stay in step, because an `attachment_index` taken from one is used against the other; the `has_attachment` filter is the listing walk itself.
 - **Security checklist per feature** — see [`docs/guides/SECURITY_CHECKLIST.md`](docs/guides/SECURITY_CHECKLIST.md) for the canonical reference (5 concerns: input sanitization, AppleScript escaping, path-traversal-safe name validation, rate limiting, audit logging). Don't duplicate guidance here; link out instead.
 - **If you touched AppleScript, write integration tests** — Unit tests mock `_run_applescript()` and CANNOT catch AppleScript bugs.
 
@@ -199,9 +201,9 @@ Claude Code loads these from `.claude/skills/`. Other agents should read the
 
 ## Key Files
 
-- `src/apple_mail_fast_mcp/mail_connector.py` — Core AppleScript client (~6770 lines)
-- `src/apple_mail_fast_mcp/server.py` — FastMCP server wrapping the connector (~3800 lines)
-- `src/apple_mail_fast_mcp/imap_connector.py` — IMAP fast path (~2800 lines)
+- `src/apple_mail_fast_mcp/mail_connector.py` — Core AppleScript client (~7150 lines)
+- `src/apple_mail_fast_mcp/server.py` — FastMCP server wrapping the connector (~4000 lines)
+- `src/apple_mail_fast_mcp/imap_connector.py` — IMAP fast path (~2950 lines)
 - `src/apple_mail_fast_mcp/security.py` — Input validation, audit logging, confirmation flows
 - `src/apple_mail_fast_mcp/utils.py` — Pure functions: escaping, parsing, validation, host-arg coercion, `env_flag`
 - `src/apple_mail_fast_mcp/version.py` — Version/commit/build-date provenance (`--version`, `serverInfo`, `diagnose_mail_access`)
