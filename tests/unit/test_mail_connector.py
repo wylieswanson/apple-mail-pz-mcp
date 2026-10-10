@@ -8905,7 +8905,7 @@ class TestSmtpSendPath:
             "_get_imap_password_with_fallback",
             lambda account, e: password,
         )
-        monkeypatch.setattr(connector, "_resolve_account_to_sender", lambda account: email)
+        monkeypatch.setattr(connector, "_resolve_account_to_sender", lambda account, from_address=None: email)
         monkeypatch.setattr(connector, "_imap_breaker_open", lambda account: False)
         monkeypatch.setattr(connector, "_imap_clear_breaker", lambda account: None)
 
@@ -8996,7 +8996,7 @@ class TestSmtpSendPath:
     ) -> None:
         monkeypatch.setattr(connector, "_resolve_smtp_config", lambda account: ("", 0, ""))
         monkeypatch.setattr(connector, "_imap_breaker_open", lambda account: False)
-        monkeypatch.setattr(connector, "_resolve_account_to_sender", lambda account: "me@x.test")
+        monkeypatch.setattr(connector, "_resolve_account_to_sender", lambda account, from_address=None: "me@x.test")
         scripts: list[str] = []
         monkeypatch.setattr(connector, "_run_applescript", lambda s: scripts.append(s) or "SENT")
         with patch("apple_mail_fast_mcp.mail_connector.SmtpSender") as sender_cls:
@@ -10391,3 +10391,153 @@ class TestDeleteStagingConnector:
             )
         assert staged == "To Delete/Spam"
         imap_cls.return_value.stage_mailbox.assert_called_once_with("Spam", "To Delete")
+
+
+_TWO_ACCOUNTS = [
+    {
+        "id": "UUID-1", "name": "iCloud", "full_name": "Alice Smith",
+        "email_addresses": ["alice@me.com", "alice@icloud.com"], "enabled": True,
+    },
+    {
+        "id": "UUID-2", "name": "Work", "full_name": None,
+        "email_addresses": ["alice@work.example"], "enabled": True,
+    },
+]
+
+
+class TestDraftFromAddress:
+    """A draft can name which of an account's addresses it is From."""
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    @pytest.fixture(autouse=True)
+    def no_retry_delay(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "apple_mail_fast_mcp.mail_connector._SENDER_LOOKUP_RETRY_DELAY_S", 0
+        )
+
+    @patch.object(AppleMailConnector, "list_accounts", return_value=_TWO_ACCOUNTS)
+    def test_default_is_the_accounts_first_address(
+        self, _list: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        assert connector._resolve_draft_sender("iCloud", None) == (
+            "iCloud", "Alice Smith <alice@me.com>",
+        )
+
+    @patch.object(AppleMailConnector, "list_accounts", return_value=_TWO_ACCOUNTS)
+    def test_from_address_picks_another_of_the_accounts_addresses(
+        self, _list: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """Matched case-insensitively; the address goes out as Mail lists it."""
+        assert connector._resolve_draft_sender("UUID-1", "Alice@iCloud.com") == (
+            "UUID-1", "Alice Smith <alice@icloud.com>",
+        )
+
+    @patch.object(AppleMailConnector, "list_accounts", return_value=_TWO_ACCOUNTS)
+    def test_from_address_not_on_the_account_is_refused(
+        self, _list: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        """The From is never an address the account doesn't own: the error
+        lists the ones it does, so the caller can pick without another call."""
+        with pytest.raises(ValueError, match="alice@me.com, alice@icloud.com"):
+            connector._resolve_draft_sender("iCloud", "mallory@elsewhere.example")
+
+    @patch.object(AppleMailConnector, "list_accounts", return_value=_TWO_ACCOUNTS)
+    def test_from_address_alone_selects_the_account_that_owns_it(
+        self, _list: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        assert connector._resolve_draft_sender(None, "alice@work.example") == (
+            "Work", "alice@work.example",
+        )
+
+    @patch.object(AppleMailConnector, "list_accounts", return_value=_TWO_ACCOUNTS)
+    def test_from_address_alone_owned_by_no_account_is_refused(
+        self, _list: MagicMock, connector: AppleMailConnector
+    ) -> None:
+        with pytest.raises(ValueError, match="No enabled Mail account"):
+            connector._resolve_draft_sender(None, "nobody@elsewhere.example")
+
+    def test_from_address_alone_owned_by_two_accounts_asks_for_the_account(
+        self, connector: AppleMailConnector
+    ) -> None:
+        twice = [dict(_TWO_ACCOUNTS[0]), dict(_TWO_ACCOUNTS[0], id="UUID-9", name="iCloud 2")]
+        with (
+            patch.object(AppleMailConnector, "list_accounts", return_value=twice),
+            pytest.raises(ValueError, match="from_account"),
+        ):
+            connector._resolve_draft_sender(None, "alice@me.com")
+
+    def test_neither_given_resolves_nothing(self, connector: AppleMailConnector) -> None:
+        with patch.object(AppleMailConnector, "list_accounts") as mock_list:
+            assert connector._resolve_draft_sender(None, None) == (None, None)
+        mock_list.assert_not_called()
+
+    def test_empty_address_list_is_asked_for_again(
+        self, connector: AppleMailConnector
+    ) -> None:
+        """Mail has answered with no addresses for an account that has them.
+        One more ask costs a fraction of a second; failing the draft costs
+        the caller the whole operation."""
+        blank = [dict(_TWO_ACCOUNTS[0], email_addresses=[])]
+        with patch.object(
+            AppleMailConnector, "list_accounts", side_effect=[blank, _TWO_ACCOUNTS]
+        ) as mock_list:
+            assert connector._resolve_draft_sender("iCloud", None) == (
+                "iCloud", "Alice Smith <alice@me.com>",
+            )
+        assert mock_list.call_count == 2
+
+    def test_still_empty_says_what_mail_returned(
+        self, connector: AppleMailConnector
+    ) -> None:
+        """Not "no email addresses configured" — list_accounts can show them
+        a moment later. Say what happened and what to do."""
+        from apple_mail_fast_mcp.exceptions import MailAccountAddressesUnavailableError
+
+        blank = [dict(_TWO_ACCOUNTS[0], email_addresses=[])]
+        with (
+            patch.object(AppleMailConnector, "list_accounts", return_value=blank),
+            pytest.raises(MailAccountAddressesUnavailableError, match="returned no email addresses"),
+        ):
+            connector._resolve_draft_sender("iCloud", None)
+
+    @patch.object(AppleMailConnector, "_run_applescript")
+    @patch("apple_mail_fast_mcp.mail_connector.ImapConnector")
+    @patch("apple_mail_fast_mcp.mail_connector.get_imap_password", return_value="pw")
+    @patch.object(
+        AppleMailConnector, "_resolve_imap_config",
+        return_value=("imap.host", 993, "alice@me.com"),
+    )
+    @patch.object(AppleMailConnector, "list_accounts", return_value=_TWO_ACCOUNTS)
+    def test_draft_goes_out_from_the_chosen_address(
+        self, _list, _cfg, _pw, mock_imap_cls, _applescript,
+        connector: AppleMailConnector, tmp_path: Path,
+    ) -> None:
+        note = tmp_path / "note (1).txt"
+        note.write_text("x")
+
+        result = connector.create_draft(
+            seed="new", to=["bob@example.com"], subject="hi", body="x",
+            from_address="alice@icloud.com", attachment_paths=[note],
+        )
+
+        raw = mock_imap_cls.return_value.append_draft.call_args[0][0]
+        assert b"From: Alice Smith <alice@icloud.com>" in raw
+        assert b"note (1).txt" in raw
+        assert result["from_account"] == "iCloud"
+
+    @patch.object(AppleMailConnector, "_run_applescript", return_value="SENT")
+    @patch.object(AppleMailConnector, "_try_smtp_send", return_value=None)
+    @patch.object(AppleMailConnector, "list_accounts", return_value=_TWO_ACCOUNTS)
+    def test_applescript_path_sets_the_chosen_sender(
+        self, _list, _smtp, mock_run, connector: AppleMailConnector
+    ) -> None:
+        connector.create_draft(
+            seed="new", to=["bob@example.com"], subject="hi", body="x",
+            from_account="iCloud", from_address="alice@icloud.com", send_now=True,
+        )
+
+        script = mock_run.call_args[0][0]
+        assert 'set sender of theMessage to "Alice Smith <alice@icloud.com>"' in script

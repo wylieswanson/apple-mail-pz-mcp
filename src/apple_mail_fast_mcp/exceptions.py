@@ -15,6 +15,18 @@ class MailAccountNotFoundError(MailError):
     pass
 
 
+class MailAccountAddressesUnavailableError(MailError, ValueError):
+    """Mail.app returned no email addresses for an account, so there is no
+    From to put on a draft.
+
+    Distinct from a misconfigured account: Mail has been seen to answer with
+    an empty list for an account that ``list_accounts`` shows addresses for a
+    moment later. A ``ValueError`` too, as the lookup raised before this
+    class existed."""
+
+    pass
+
+
 class MailMailboxNotFoundError(MailError):
     """Mailbox does not exist."""
 

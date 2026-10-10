@@ -51,6 +51,7 @@ it for later or send it now.
 - `template_name` (string, optional): Optional template to render for ``subject`` and ``body``. Caller-supplied ``subject``/``body`` override the rendered output. ``template_vars`` override auto-fills.
 - `template_vars` (object, optional): Variables to pass to the template renderer. Requires ``template_name``.
 - `from_account` (string, optional): Mail.app account name or UUID. ``None`` uses Mail's default; on a save-as-draft with exactly one enabled account, that account is adopted so the clean (no iOS quote bug) IMAP draft path can engage.
+- `from_address` (string, optional): Which of the account's addresses to send From (default: its first). Alone, it also selects the account.
 - `send_now` (boolean, optional) (default: False): ``False`` (default) saves as draft. ``True`` sends immediately and elicits user confirmation.
 
 ### create_mailbox
@@ -426,6 +427,7 @@ explicit body if so.
 - `template_name` (string, optional)
 - `template_vars` (object, optional)
 - `from_account` (string, optional): Override sender.
+- `from_address` (string, optional): As in ``create_draft``; pass it again to keep a non-default From.
 - `send_now` (boolean, optional) (default: False): ``False`` (default) saves new draft. ``True`` sends after eliciting confirmation.
 
 ### update_mailbox

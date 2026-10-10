@@ -1165,6 +1165,7 @@ Create a draft (fresh, reply, or forward). Optionally send immediately.
 | `template_name` | string | No | None | Optional template to render for `subject` + `body`. Caller-supplied `subject`/`body` override the rendered output. |
 | `template_vars` | object | No | None | Variables for the template renderer. Requires `template_name`. |
 | `from_account` | string | No | None | Mail.app account name or UUID. None = Mail's default. On a save-as-draft with exactly one enabled account, that account is adopted so the clean (no iOS quote bug) IMAP draft path can engage — it's Mail's default sender anyway, so the From is unchanged (#321). |
+| `from_address` | string | No | None | Which of the account's own addresses the draft is From; None = the account's first. Matched case-insensitively against the addresses `list_accounts` shows; an address the account doesn't own is rejected (`validation_error`, listing the ones it does). Given without `from_account`, it also selects the account: the one enabled account that lists the address. |
 | `send_now` | boolean | No | False | `False` saves as draft. `True` sends immediately and elicits confirmation. When the account has SMTP + IMAP credentials configured, the send goes out over a clean **SMTP** submission (#322) — a wrapper-free RFC 822 message — so sent mail avoids the iOS cite-blockquote (Mail.app bug FB11734014); it falls back to Mail's AppleScript send (which does apply the wrapper) when SMTP isn't available. Unlike a save-as-draft, a `send_now` with no `from_account` is **not** auto-resolved to the sole account (#321) — pass `from_account` to get the clean SMTP path. |
 
 **Returns:**
@@ -1246,6 +1247,7 @@ create_draft(
 - `validation_error`: Mutually exclusive seeds, missing required fields, `template_vars` without `template_name`, or `body_html` combined with `send_now` / `reply_to` / `forward_of`.
 - `message_not_found`: `reply_to` / `forward_of` doesn't match any Mail.app message.
 - `account_not_found`: `from_account` doesn't match.
+- `account_addresses_unavailable`: Mail.app returned no email addresses for the account (asked twice), so there is no From. If `list_accounts` shows addresses for it, retry.
 - `file_not_found`: An attachment path doesn't exist.
 - `html_requires_imap`: `body_html` was set but the clean IMAP path couldn't engage (no Keychain opt-in / IMAP credentials). HTML drafts are never silently downgraded to plain text.
 - `cancelled`: User declined the elicitation prompt (when `send_now=True`).
@@ -1276,6 +1278,7 @@ after this call. Callers caching the id must re-read the response.
 | `attachment_paths` | array[string] | No | None | Override attachments: `None` **preserves existing** (extracted to a temp dir and re-attached); `[]` clears; populated list replaces. |
 | `template_name` / `template_vars` | string / object | No | None | Optional template render. User-supplied `subject`/`body` override the rendered output. |
 | `from_account` | string | No | None | Override sender. |
+| `from_address` | string | No | None | As in `create_draft`. The draft is recreated, so pass it again to keep a non-default From. |
 | `send_now` | boolean | No | False | `False` saves new draft. `True` sends after eliciting confirmation. |
 
 **Returns:**

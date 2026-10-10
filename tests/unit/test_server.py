@@ -4010,6 +4010,46 @@ class TestCreateDraftTool:
         assert kwargs["send_now"] is False
 
     @pytest.mark.asyncio
+    async def test_from_address_threads_to_connector(
+        self,
+        isolated_drafts: Any,
+        mock_mail: MagicMock,
+        mock_logger: MagicMock,
+    ) -> None:
+        from apple_mail_fast_mcp.server import create_draft
+
+        mock_mail.create_draft.return_value = {
+            "draft_id": "161100", "sent_message_id": "", "from_account": "iCloud",
+        }
+        result = await create_draft(
+            to=["a@example.com"], subject="hi", body="x",
+            from_address="alice@icloud.com",
+        )
+        assert result["success"] is True
+        assert mock_mail.create_draft.call_args.kwargs["from_address"] == "alice@icloud.com"
+        assert result["details"]["from_account"] == "iCloud"
+
+    @pytest.mark.asyncio
+    async def test_sender_lookup_failures_are_named(
+        self,
+        isolated_drafts: Any,
+        mock_mail: MagicMock,
+        mock_logger: MagicMock,
+    ) -> None:
+        """Neither is "unknown": one is Mail not answering, the other is the
+        caller naming an address the account doesn't have."""
+        from apple_mail_fast_mcp.exceptions import MailAccountAddressesUnavailableError
+        from apple_mail_fast_mcp.server import create_draft
+
+        mock_mail.create_draft.side_effect = MailAccountAddressesUnavailableError("none")
+        result = await create_draft(to=["a@example.com"], subject="hi", from_account="iCloud")
+        assert result["error_type"] == "account_addresses_unavailable"
+
+        mock_mail.create_draft.side_effect = ValueError("not an address of account")
+        result = await create_draft(to=["a@example.com"], subject="hi", from_address="x@y.example")
+        assert result["error_type"] == "validation_error"
+
+    @pytest.mark.asyncio
     async def test_body_html_threads_to_connector(
         self,
         isolated_drafts: Any,

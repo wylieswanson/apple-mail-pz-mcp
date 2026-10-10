@@ -27,6 +27,7 @@ from pydantic import BeforeValidator
 from . import __version__
 from .drafts import DraftStateStore, SeedRecord
 from .exceptions import (
+    MailAccountAddressesUnavailableError,
     MailAccountNotFoundError,
     MailAnchorLookupIncompleteError,
     MailAppleScriptError,
@@ -3043,6 +3044,8 @@ def _draft_action_error(op: str, e: Exception) -> dict[str, Any] | None:
         return {"success": False, "error": str(e), "error_type": "message_not_found"}
     if isinstance(e, MailAccountNotFoundError):
         return {"success": False, "error": str(e), "error_type": "account_not_found"}
+    if isinstance(e, MailAccountAddressesUnavailableError):
+        return {"success": False, "error": str(e), "error_type": "account_addresses_unavailable"}
     if isinstance(e, MailSafetyError):
         # Test-mode reserved-domain violation raised by the clean SMTP send
         # path's transport-boundary guard (#322/#175). Surface it as a
@@ -3050,6 +3053,8 @@ def _draft_action_error(op: str, e: Exception) -> dict[str, Any] | None:
         return {"success": False, "error": str(e), "error_type": "safety_violation"}
     if isinstance(e, FileNotFoundError):
         return {"success": False, "error": str(e), "error_type": "file_not_found"}
+    if isinstance(e, ValueError):
+        return {"success": False, "error": str(e), "error_type": "validation_error"}
     if isinstance(e, MailDraftError):
         return _draft_error_response(e)
     if isinstance(e, MailAppleScriptError):
@@ -3405,6 +3410,7 @@ async def create_draft(
     template_name: str | None = None,
     template_vars: OptStrDict = None,
     from_account: str | None = None,
+    from_address: str | None = None,
     send_now: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any] | InputRequiredResult:
@@ -3460,6 +3466,8 @@ async def create_draft(
             default; on a save-as-draft with exactly one enabled account,
             that account is adopted so the clean (no iOS quote bug) IMAP
             draft path can engage.
+        from_address: Which of the account's addresses to send From
+            (default: its first). Alone, it also selects the account.
         send_now: ``False`` (default) saves as draft. ``True`` sends
             immediately and elicits user confirmation.
 
@@ -3565,6 +3573,7 @@ async def create_draft(
             attachment_paths=attachment_path_objs,
             reply_all=reply_all,
             from_account=from_account,
+            from_address=from_address,
             send_now=send_now,
             on_warning=warnings.append,
         )
@@ -3626,6 +3635,7 @@ async def update_draft(
     template_name: str | None = None,
     template_vars: OptStrDict = None,
     from_account: str | None = None,
+    from_address: str | None = None,
     send_now: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any] | InputRequiredResult:
@@ -3667,6 +3677,8 @@ async def update_draft(
         template_name / template_vars: Optional template render. User-
             supplied subject/body override the rendered output.
         from_account: Override sender.
+        from_address: As in ``create_draft``; pass it again to keep a
+            non-default From.
         send_now: ``False`` (default) saves new draft. ``True`` sends
             after eliciting confirmation.
 
@@ -3769,6 +3781,7 @@ async def update_draft(
             attachment_paths=final_attachments,
             reply_all=reply_all,
             from_account=from_account,
+            from_address=from_address,
             send_now=send_now,
         )
         new_draft_id = result.get("draft_id", "")
