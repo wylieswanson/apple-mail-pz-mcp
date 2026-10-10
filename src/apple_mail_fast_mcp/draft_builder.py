@@ -315,7 +315,8 @@ def _walk_attachment_parts(
 
     Applies the same inclusion predicate as the IMAP BODYSTRUCTURE metadata
     walk (``imap_connector._bodystructure_extract_attachments``): a leaf counts
-    if its disposition is ``attachment``, or ``inline`` with a filename, or it
+    if its disposition is ``attachment``, or it has a filename (disposition
+    ``filename`` or content-type ``name``, whatever the disposition), or it
     is ``message/rfc822``. A ``message/rfc822`` part is emitted whole and NOT
     descended into — its own sub-parts belong to the forwarded email, not the
     outer message — matching the metadata walk's leaf treatment.
@@ -327,8 +328,7 @@ def _walk_attachment_parts(
         for child in part.iter_parts():
             _walk_attachment_parts(child, out)
         return
-    disp = part.get_content_disposition()
-    if disp == "attachment" or (disp == "inline" and part.get_filename()):
+    if part.get_content_disposition() == "attachment" or part.get_filename():
         out.append(part)
 
 

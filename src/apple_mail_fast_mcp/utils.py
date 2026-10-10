@@ -273,9 +273,17 @@ def make_body_safe(content: str, max_bytes: int) -> tuple[str, bool, int]:
 
 def sanitize_filename(filename: str) -> str:
     """
-    Sanitize filename for safe file operations.
+    Reduce an untrusted filename to a safe basename, changing as little as
+    possible.
 
-    Removes path traversal attempts, dangerous characters, and null bytes.
+    The name comes from an email, so it is attacker-controlled; the result is
+    joined under a directory the caller chose. Only what could make it mean
+    something other than "a file in that directory" is removed: path
+    components, control and invisible formatting characters (a right-to-left
+    override can make ``evil\u202egpj.exe`` display as a ``.jpg``), a leading
+    dot, and bytes past the filesystem's 255-byte name limit. Spaces,
+    punctuation and non-ASCII letters are ordinary filename characters and are
+    kept, so the saved file carries the name the sender gave it.
 
     Args:
         filename: Filename to sanitize
@@ -285,42 +293,36 @@ def sanitize_filename(filename: str) -> str:
 
     Example:
         >>> sanitize_filename("../../../etc/passwd")
-        'etc_passwd'
-        >>> sanitize_filename("my-file_v2.txt")
-        'my-file_v2.txt'
+        'passwd'
+        >>> sanitize_filename("Budget Report (1).pdf")
+        'Budget Report (1).pdf'
     """
-    import re
-    from pathlib import Path
+    import unicodedata
 
-    # Remove null bytes
-    filename = filename.replace("\x00", "")
+    # Basename only. Backslash and colon are separators too (Windows paths in
+    # a sender's name; the classic-Mac separator Finder still maps to "/").
+    filename = filename.replace("\\", "/").rsplit("/", 1)[-1].replace(":", "_")
 
-    # Get basename only (no path components)
-    filename = Path(filename).name
+    # Drop control (Cc), format (Cf: bidi overrides, zero-width), surrogate
+    # and unassigned characters.
+    filename = "".join(
+        ch for ch in filename if unicodedata.category(ch) not in ("Cc", "Cf", "Cs", "Cn")
+    )
 
-    # Replace dangerous characters with underscore
-    # Keep: letters, numbers, dash, underscore, period
-    filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+    # No hidden files, no "." / "..", no edge whitespace.
+    filename = filename.strip().lstrip(".").strip()
 
-    # Remove leading dots (hidden files)
-    filename = filename.lstrip('.')
+    # APFS and HFS+ cap a name at 255 UTF-8 bytes; keep the extension.
+    max_bytes = 255
+    if len(filename.encode("utf-8")) > max_bytes:
+        stem, dot, ext = filename.rpartition(".")
+        if not dot or len(ext.encode("utf-8")) > 16:
+            stem, dot, ext = filename, "", ""
+        budget = max_bytes - len((dot + ext).encode("utf-8"))
+        stem = stem.encode("utf-8")[:budget].decode("utf-8", errors="ignore")
+        filename = f"{stem}{dot}{ext}"
 
-    # Limit length
-    max_length = 255
-    if len(filename) > max_length:
-        # Preserve extension
-        name, ext = filename.rsplit('.', 1) if '.' in filename else (filename, '')
-        if ext:
-            name = name[:max_length - len(ext) - 1]
-            filename = f"{name}.{ext}"
-        else:
-            filename = filename[:max_length]
-
-    # Ensure not empty
-    if not filename:
-        filename = "unnamed_file"
-
-    return filename
+    return filename or "unnamed_file"
 
 
 def sanitize_mailbox_name(name: str) -> str:

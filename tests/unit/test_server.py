@@ -27,6 +27,7 @@ from fastmcp.server.elicitation import (
 from apple_mail_fast_mcp.exceptions import (
     MailAccountNotFoundError,
     MailAppleScriptError,
+    MailAttachmentIndexError,
     MailMailboxNotFoundError,
     MailMessageNotFoundError,
 )
@@ -2985,6 +2986,29 @@ class TestSaveAttachments:
         kwargs = mock_mail.save_attachments.call_args.kwargs
         assert kwargs["account"] == "Gmail"
         assert kwargs["mailbox"] == "INBOX"
+
+    def test_out_of_range_index_names_the_error(
+        self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
+    ) -> None:
+        mock_mail.save_attachments.side_effect = MailAttachmentIndexError(
+            "attachment_indices [2] out of range: message has 1 attachment(s)."
+        )
+
+        result = save_attachments("1", str(tmp_path), [2])
+
+        assert result["success"] is False
+        assert result["error_type"] == "attachment_index_out_of_range"
+        assert "1 attachment" in result["error"]
+
+    def test_returns_saved_file_paths(
+        self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
+    ) -> None:
+        files = [str(tmp_path / "a b.pdf")]
+        mock_mail.save_attachments.return_value = {"saved": 1, "rejected": [], "files": files}
+
+        result = save_attachments("1", str(tmp_path))
+
+        assert result["files"] == files
 
     def test_surfaces_rejected_attachments(
         self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any

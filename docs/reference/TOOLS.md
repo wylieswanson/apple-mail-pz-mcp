@@ -708,7 +708,7 @@ Save attachments from a message to a directory.
 |-----------|------|----------|---------|-------------|
 | `message_id` | string | Yes | - | Message ID to save attachments from |
 | `save_directory` | string | Yes | - | Directory path to save attachments |
-| `attachment_indices` | list[int] | No | None | Specific attachment indices (None = all) |
+| `attachment_indices` | list[int] | No | None | 0-based positions in the message's `attachments` list from `get_messages` (None = all). An out-of-range index fails the whole call with `error_type: "attachment_index_out_of_range"` and writes nothing. |
 | `account` | string | No | None | Mail.app account name or UUID. With `mailbox`, takes the IMAP fast path (one fetch). Pass the same values you read the message with so attachment ordering matches. |
 | `mailbox` | string | No | None | Folder the message lives in (e.g. "INBOX"), used with `account` for the IMAP fast path. |
 
@@ -721,11 +721,26 @@ Save attachments from a message to a directory.
   "success": true,
   "saved": 2,
   "directory": "/Users/me/Downloads",
+  "files": ["/Users/me/Downloads/Offer.pdf", "/Users/me/Downloads/Budget Report (1).pdf"],
   "rejected": []
 }
 ```
 
-`saved` is the number of attachments written. `rejected` lists any attachments skipped by the byte
+`saved` is the number of attachments written and `files` their paths, in selection order. A file
+keeps the sender's filename — spaces, punctuation and non-ASCII letters included. Only what is
+unsafe as a path is changed (path components, control and invisible formatting characters, a
+leading dot), and a name that collides with an earlier one in the same call is prefixed with its
+index.
+
+**What counts as an attachment.** A MIME part is an attachment if its disposition is `attachment`,
+or it has a filename (a disposition `filename` or a content-type `name`, in plain or RFC 2231
+`filename*` form, whatever the disposition), or it is a forwarded `message/rfc822`. Inline images
+therefore count whether the sender marked them `inline; filename=` (Apple Mail) or gave only a
+content-type `name` and a Content-ID (Outlook). The same rule drives `get_messages` /
+`search_messages(include_attachments=true)`, the `has_attachment` filter, `get_attachment_content`
+and `save_attachments`, so an index means the same part in all of them.
+
+`rejected` lists any attachments skipped by the byte
 caps (per-attachment default 100 MB, aggregate 500 MB per call — disk-fill DoS protection, #236),
 each as `{"name", "size", "reason"}` where reason is `per_attachment_cap` / `aggregate_cap` (pre-check)
 or `*_postwrite` (an oversized file deleted after writing). Override the caps with

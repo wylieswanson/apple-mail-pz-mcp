@@ -1940,7 +1940,9 @@ def save_attachments(
     Args:
         message_id: Message ID from search results
         save_directory: Directory path to save attachments to
-        attachment_indices: Specific attachment indices to save (0-based), None for all
+        attachment_indices: 0-based positions in the message's
+            ``attachments`` list from ``get_messages``; None saves all.
+            An out-of-range index fails the call.
         account: Mail.app account name or UUID. Supply it (with ``mailbox``)
             to take the faster IMAP path — one fetch instead of an
             account×mailbox AppleScript scan. Pass the same values you read
@@ -1951,17 +1953,21 @@ def save_attachments(
             ``account`` for the IMAP fast path.
 
     Returns:
-        Dict with ``success``, ``saved`` (count written), ``directory``, and
+        Dict with ``success``, ``saved`` (count written), ``directory``,
+        ``files`` (the paths written — a file keeps the sender's name unless
+        that name is unsafe as a path or collides with another), and
         ``rejected`` (attachments skipped by the per-attachment / aggregate
         byte caps, each ``{name, size, reason}``; #236).
 
     Example:
         >>> save_attachments("12345", "/Users/me/Downloads")
         {"success": True, "saved": 2, "directory": "/Users/me/Downloads",
+         "files": ["/Users/me/Downloads/a.pdf", "/Users/me/Downloads/b (1).pdf"],
          "rejected": []}
 
         >>> save_attachments("12345", "/Users/me/Downloads", [0, 2])
         {"success": True, "saved": 1, "directory": "/Users/me/Downloads",
+         "files": ["/Users/me/Downloads/a.pdf"],
          "rejected": [{"name": "huge.bin", "size": 2147483648,
                        "reason": "per_attachment_cap"}]}
     """
@@ -2013,10 +2019,17 @@ def save_attachments(
             "success": True,
             "saved": result["saved"],
             "directory": save_directory,
+            "files": result.get("files", []),
             # Attachments skipped/removed by the byte caps (#236), if any.
             "rejected": result["rejected"],
         }
 
+    except MailAttachmentIndexError as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "attachment_index_out_of_range",
+        }
     except (FileNotFoundError, ValueError) as e:
         logger.error(f"Validation error: {e}")
         return {

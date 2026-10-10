@@ -387,6 +387,26 @@ def _select_attachments_within_caps(
     return allowed, rejected
 
 
+def _require_attachment_indices_in_range(
+    attachment_indices: list[int] | None, count: int
+) -> None:
+    """Reject a save that names an attachment the message doesn't have.
+
+    Dropping the bad index and reporting ``saved: 0`` as a success left the
+    caller with nothing on disk and no reason. Raised before anything is
+    written, so a mixed request saves nothing rather than half.
+    """
+    bad = [i for i in attachment_indices or [] if not 0 <= i < count]
+    if not bad:
+        return
+    valid = f"valid indices are 0-{count - 1}" if count else "it has none"
+    raise MailAttachmentIndexError(
+        f"attachment_indices {bad} out of range: message has {count} "
+        f"attachment(s), so {valid}. Indices are 0-based positions in the "
+        "`attachments` list get_messages returns for this message."
+    )
+
+
 def _prune_oversized_written(
     targets: list[tuple[int, Path]],
     *,
@@ -3961,15 +3981,18 @@ class AppleMailConnector:
             attachment_indices: Indices of attachments to save (None = all)
 
         Returns:
-            ``{"saved": int, "rejected": list[dict]}`` — count actually
-            written, and per-rejection records ``{name, size, reason}`` where
-            reason is ``per_attachment_cap`` / ``aggregate_cap`` (pre-check) or
-            ``*_postwrite`` (post-write net).
+            ``{"saved": int, "rejected": list[dict], "files": list[str]}`` —
+            count actually written, per-rejection records ``{name, size,
+            reason}`` where reason is ``per_attachment_cap`` /
+            ``aggregate_cap`` (pre-check) or ``*_postwrite`` (post-write net),
+            and the paths written, in selection order.
 
         Raises:
             FileNotFoundError: If save directory doesn't exist
             ValueError: If path validation fails
             MailMessageNotFoundError: If message doesn't exist
+            MailAttachmentIndexError: An index in ``attachment_indices`` is
+                out of range. Nothing is written.
         """
         # Validate save directory
         if not save_directory.exists():
@@ -4012,6 +4035,7 @@ class AppleMailConnector:
                 # fall through to AppleScript
 
         attachments = self._get_attachments_applescript(message_id)
+        _require_attachment_indices_in_range(attachment_indices, len(attachments))
 
         # Pre-check byte caps (#236): drop oversized attachments before saving.
         allowed, rejected = _select_attachments_within_caps(
@@ -4021,7 +4045,7 @@ class AppleMailConnector:
             total_cap=self.max_total_attachment_bytes,
         )
         if not allowed:
-            return {"saved": 0, "rejected": rejected}
+            return {"saved": 0, "rejected": rejected, "files": []}
 
         targets = _compute_attachment_save_targets(
             [str(a.get("name", "")) for a in attachments],
@@ -4029,7 +4053,7 @@ class AppleMailConnector:
             allowed,
         )
         if not targets:
-            return {"saved": 0, "rejected": rejected}
+            return {"saved": 0, "rejected": rejected, "files": []}
 
         # Accept BOTH id spaces so a row from the IMAP search path pipes
         self._reject_rfc_id_scan(message_id)
@@ -4084,7 +4108,13 @@ class AppleMailConnector:
             total_cap=self.max_total_attachment_bytes,
         )
         rejected.extend(post_rejected)
-        return {"saved": max(0, saved - removed), "rejected": rejected}
+        return {
+            "saved": max(0, saved - removed),
+            "rejected": rejected,
+            # What is actually on disk: a per-attachment save failure inside
+            # the script, or the post-write net, leaves no file behind.
+            "files": [str(path) for _, path in targets if path.is_file()],
+        }
 
     def _imap_save_attachments(
         self,
@@ -4124,6 +4154,7 @@ class AppleMailConnector:
             }
             for (filename, maintype, subtype, payload) in parsed
         ]
+        _require_attachment_indices_in_range(attachment_indices, len(attachments))
 
         allowed, rejected = _select_attachments_within_caps(
             attachments,
@@ -4132,7 +4163,7 @@ class AppleMailConnector:
             total_cap=self.max_total_attachment_bytes,
         )
         if not allowed:
-            return {"saved": 0, "rejected": rejected}
+            return {"saved": 0, "rejected": rejected, "files": []}
 
         targets = _compute_attachment_save_targets(
             [a["name"] for a in attachments], save_directory, allowed
@@ -4151,7 +4182,11 @@ class AppleMailConnector:
             total_cap=self.max_total_attachment_bytes,
         )
         rejected.extend(post_rejected)
-        return {"saved": max(0, saved - removed), "rejected": rejected}
+        return {
+            "saved": max(0, saved - removed),
+            "rejected": rejected,
+            "files": [str(path) for _, path in targets if path.is_file()],
+        }
 
     def move_messages(
         self,

@@ -1513,6 +1513,27 @@ _BS_LEGACY_NAME_PARAM_ONLY = (
     None, None, b"base64", 1024,
 )
 
+# Inline image whose only name is an RFC 2231 extended parameter. Shape as
+# iCloud returns it for a macOS screenshot (the name holds U+202F): the key
+# arrives as ``FILENAME*`` and the value is still percent-encoded.
+_BS_INLINE_FILENAME_STAR = (
+    b"image", b"png",
+    (b"X-UNIX-MODE", b"0644"),
+    None, None, b"base64", 4096,
+    (b"INLINE", (b"FILENAME*", b"utf-8''Shot%203.14%E2%80%AFPM.png")),
+)
+
+# RFC 2231 continuations: one name split across numbered, encoded segments.
+_BS_FILENAME_CONTINUATIONS = (
+    b"application", b"pdf",
+    (),
+    None, None, b"base64", 100,
+    (b"attachment", (
+        b"filename*0*", b"utf-8''r%C3%A9sum%C3%A9",
+        b"filename*1*", b"%20final.pdf",
+    )),
+)
+
 # Unicode filename via UTF-8 bytes.
 _BS_UNICODE_FILENAME = (
     b"application", b"pdf",
@@ -1881,14 +1902,13 @@ class TestGetAttachments:
         assert result[0]["name"] == ""
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
-    def test_legacy_name_param_without_disposition_is_not_an_attachment(
+    def test_named_part_without_disposition_is_an_attachment(
         self, mock_cls: MagicMock
     ) -> None:
-        """A leaf with `name` in content-type params but no disposition
-        and not message/rfc822: matches the existing has_attachment
-        helper's behavior (which only triggers on disposition). Skipping
-        this case keeps both helpers consistent — if we want to broaden
-        attachment detection, we do it for both at once."""
+        """A leaf named only by its content-type ``name`` param, with no
+        Content-Disposition, is a file the sender attached: Outlook sends
+        cid-referenced images this way. It was unlistable and unsavable
+        while the same image sent ``inline; filename=`` was both."""
         bs = (_BS_PLAIN_TEXT, _BS_LEGACY_NAME_PARAM_ONLY, b"mixed")
         self._setup_client(mock_cls, bodystructure=bs)
 
@@ -1896,7 +1916,78 @@ class TestGetAttachments:
             "abc@x", mailbox="INBOX",
         )
 
-        assert result == []
+        assert [a["name"] for a in result] == ["old.zip"]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_rfc2231_filename_star_is_listed_and_decoded(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """A non-ASCII filename travels as ``filename*`` (RFC 2231), and
+        iCloud passes that key through verbatim. Looking only for
+        ``filename`` saw an inline part with no name and dropped it — an
+        empty attachment list for a message with a screenshot."""
+        self._setup_client(
+            mock_cls, bodystructure=([_BS_PLAIN_TEXT, _BS_INLINE_FILENAME_STAR], b"mixed"),
+        )
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").get_attachments(
+            "abc@x", mailbox="INBOX",
+        )
+
+        assert [a["name"] for a in result] == ["Shot 3.14\u202fPM.png"]
+        assert result[0]["mime_type"] == "image/png"
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_rfc2231_continuations_are_joined(
+        self, mock_cls: MagicMock
+    ) -> None:
+        self._setup_client(
+            mock_cls, bodystructure=([_BS_PLAIN_TEXT, _BS_FILENAME_CONTINUATIONS], b"mixed"),
+        )
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").get_attachments(
+            "abc@x", mailbox="INBOX",
+        )
+
+        assert [a["name"] for a in result] == ["r\u00e9sum\u00e9 final.pdf"]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_rfc2047_encoded_word_filename_is_decoded(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """Outlook and Gmail put an encoded-word in a plain ``filename``."""
+        leaf = (
+            b"application", b"pdf", (), None, None, b"base64", 100,
+            (b"attachment", (b"filename", b"=?UTF-8?B?csOpc3Vtw6kucGRm?=")),
+        )
+        self._setup_client(mock_cls, bodystructure=([_BS_PLAIN_TEXT, leaf], b"mixed"))
+
+        result = ImapConnector("h", 993, "u@e.com", "pw").get_attachments(
+            "abc@x", mailbox="INBOX",
+        )
+
+        assert [a["name"] for a in result] == ["r\u00e9sum\u00e9.pdf"]
+
+    @pytest.mark.parametrize(
+        "leaf",
+        ["_BS_LEGACY_NAME_PARAM_ONLY", "_BS_INLINE_FILENAME_STAR",
+         "_BS_INLINE_IMAGE_WITH_FILENAME", "_BS_PDF_ATTACHMENT",
+         "_BS_FORWARDED_EMAIL_NO_DISP", "_BS_INLINE_BODY_NO_FILENAME",
+         "_BS_PLAIN_TEXT"],
+    )
+    def test_has_attachment_filter_agrees_with_the_listing(self, leaf: str) -> None:
+        """The ``has_attachment`` search filter and the attachment list are
+        one rule: a message can't be filtered out as attachment-less and
+        then list an attachment, or the reverse."""
+        from apple_mail_fast_mcp.imap_connector import (
+            _bodystructure_extract_attachments,
+            _bodystructure_has_attachment,
+        )
+
+        structure = ([_BS_PLAIN_TEXT, globals()[leaf]], b"mixed")
+        assert _bodystructure_has_attachment(structure) is bool(
+            _bodystructure_extract_attachments(structure)
+        )
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_unicode_filename_is_decoded(

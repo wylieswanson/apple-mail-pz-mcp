@@ -37,6 +37,7 @@ from datetime import datetime as _datetime
 from datetime import timedelta as _timedelta
 from email import message_from_bytes, policy
 from email.header import decode_header, make_header
+from email.utils import collapse_rfc2231_value, decode_params, unquote
 from typing import Any, cast
 
 from imapclient import DRAFT, IMAPClient
@@ -622,7 +623,11 @@ def _bodystructure_extract_attachments(
 
     A part counts as an attachment if any of:
     - Its disposition is ``attachment``.
-    - Its disposition is ``inline`` AND it has a ``filename`` param.
+    - It has a filename — a disposition ``filename`` or a content-type
+      ``name``, in plain or RFC 2231 (``filename*``) form — whatever its
+      disposition, including none. That is how inline images arrive:
+      ``inline; filename=`` from Apple Mail, a bare ``name=`` with a
+      Content-ID from Outlook.
     - It's a ``message/rfc822`` part (forwarded email — conventionally
       an attachment per RFC 2046 §5.2.1, and the case Mail.app's
       AppleScript surface sometimes silently drops).
@@ -641,9 +646,8 @@ def _bodystructure_extract_attachments(
     ``get_attachment_content`` uses the section-aware walker below;
     ``save_attachments`` still uses ``draft_builder.extract_attachment_payloads``
     for full raw messages. Both MUST apply the SAME inclusion predicate and
-    document order (attachment-disposition, inline-with-filename, or
-    message/rfc822). Keep the two in sync; the live integration test asserts
-    they agree.
+    document order. Keep the two in sync; the live integration test asserts
+    they agree. The ``has_attachment`` search filter is this same walk.
     """
     return [
         {
@@ -657,21 +661,90 @@ def _bodystructure_extract_attachments(
     ]
 
 
+def _param_value(params: Any, name: str) -> str | None:
+    """Decoded value of ``name`` in a flat BODYSTRUCTURE ``(k, v, k, v, ...)``
+    param tuple, or ``None`` when absent.
+
+    Servers hand parameters over as they were sent, so a non-ASCII filename
+    arrives under ``filename*`` (RFC 2231) — or split over ``filename*0*``,
+    ``filename*1*`` — and never under ``filename``. Other mailers put an
+    RFC 2047 encoded-word in a plain ``filename``. Both decode here, to the
+    name a MIME parse of the same part gives.
+    """
+    if not isinstance(params, tuple):
+        return None
+    # decode_params treats slot 0 as the header's main value and skips it.
+    pairs: list[tuple[str, str]] = [("", "")]
+    for i in range(0, len(params) - 1, 2):
+        k, v = params[i], params[i + 1]
+        if isinstance(k, bytes) and isinstance(v, (bytes, bytearray)):
+            pairs.append((_decode(k).lower(), _decode(v)))
+    for key, value in decode_params(pairs)[1:]:
+        if key == name:
+            text = collapse_rfc2231_value(value)
+            # decode_params re-quotes every value; collapse only strips the
+            # quotes from a plain one, not from an RFC 2231 triple.
+            return _decode_mime_header(unquote(text) if isinstance(value, tuple) else text)
+    return None
+
+
+def _leaf_disposition(leaf: tuple[Any, ...]) -> tuple[bytes | None, Any]:
+    """``(kind, params)`` of a leaf's disposition, or ``(None, ())``.
+
+    The disposition tuple sits near the end of the leaf, but its index varies
+    with the part type (text has 'lines', message/rfc822 has envelope + body +
+    lines), so scan for a tuple headed by a disposition keyword.
+    """
+    for elem in leaf:
+        if (
+            isinstance(elem, tuple)
+            and elem
+            and isinstance(elem[0], bytes)
+            and elem[0].lower() in (b"attachment", b"inline")
+        ):
+            return elem[0].lower(), (elem[1] if len(elem) > 1 else ())
+    return None, ()
+
+
+def _leaf_attachment_info(
+    leaf: tuple[Any, ...], section: str
+) -> dict[str, Any] | None:
+    """Attachment metadata for one leaf part, or ``None`` if it is body text.
+
+    Spec positions: type, subtype, params, id, desc, encoding, size.
+    """
+    type_ = leaf[0] if isinstance(leaf[0], bytes) else b""
+    subtype = leaf[1] if len(leaf) > 1 and isinstance(leaf[1], bytes) else b""
+    ct_params = leaf[2] if len(leaf) > 2 else ()
+    encoding = leaf[5] if len(leaf) > 5 else b""
+    size_field = leaf[6] if len(leaf) > 6 else 0
+
+    disp_kind, disp_params = _leaf_disposition(leaf)
+    # Filename precedence: disposition's filename → content-type's `name`.
+    name = (
+        _param_value(disp_params, "filename")
+        or _param_value(ct_params, "name")
+        or ""
+    )
+    is_rfc822 = type_.lower() == b"message" and subtype.lower() == b"rfc822"
+    if not (disp_kind == b"attachment" or name or is_rfc822):
+        return None
+
+    encoded_size = int(size_field) if isinstance(size_field, int) else 0
+    return {
+        "name": name,
+        "mime_type": f"{_decode(type_)}/{_decode(subtype)}",
+        "size": _decoded_size_from_bodystructure(encoding, encoded_size),
+        "encoded_size": encoded_size,
+        "downloaded": False,
+        "section": section or "1",
+        "encoding": _decode(encoding).lower(),
+    }
+
+
 def _bodystructure_attachment_infos(structure: Any) -> list[dict[str, Any]]:
     """Walk BODYSTRUCTURE and include private IMAP section metadata."""
     out: list[dict[str, Any]] = []
-
-    def _filename_from_params(params: Any, key_name: bytes) -> str | None:
-        """Pull a value out of a flat (k, v, k, v, ...) param tuple."""
-        if not isinstance(params, tuple):
-            return None
-        for i in range(0, len(params) - 1, 2):
-            k = params[i]
-            if isinstance(k, bytes) and k.lower() == key_name:
-                v = params[i + 1]
-                if isinstance(v, (bytes, bytearray)):
-                    return _decode(v)
-        return None
 
     def _child_section(prefix: str, index: int) -> str:
         return f"{prefix}.{index}" if prefix else str(index)
@@ -697,65 +770,9 @@ def _bodystructure_attachment_infos(structure: Any) -> list[dict[str, Any]]:
                     index += 1
             return
 
-        # Leaf. Spec positions: type, subtype, params, id, desc, encoding,
-        # size, [type-specific extras...], [disposition]. The disposition
-        # tuple, if present, sits at the trailing end — but its exact index
-        # varies (text has 'lines', message/rfc822 has envelope+body+lines,
-        # etc.). Scan trailing elements for a tuple whose head is one of
-        # the disposition keywords.
-        leaf = s
-        type_ = leaf[0] if isinstance(leaf[0], bytes) else b""
-        subtype = (
-            leaf[1] if len(leaf) > 1 and isinstance(leaf[1], bytes) else b""
-        )
-        ct_params = leaf[2] if len(leaf) > 2 else ()
-        encoding = leaf[5] if len(leaf) > 5 else b""
-        size_field = leaf[6] if len(leaf) > 6 else 0
-
-        disp_kind: bytes | None = None
-        disp_filename: str | None = None
-        for elem in leaf:
-            if (
-                isinstance(elem, tuple)
-                and elem
-                and isinstance(elem[0], bytes)
-                and elem[0].lower() in (b"attachment", b"inline")
-            ):
-                disp_kind = elem[0].lower()
-                disp_params = elem[1] if len(elem) > 1 else ()
-                disp_filename = _filename_from_params(disp_params, b"filename")
-                break
-
-        is_rfc822 = (
-            type_.lower() == b"message" and subtype.lower() == b"rfc822"
-        )
-        is_attachment = (
-            disp_kind == b"attachment"
-            or (disp_kind == b"inline" and disp_filename is not None)
-            or is_rfc822
-        )
-        if not is_attachment:
-            return
-
-        # Filename precedence: disposition's filename → content-type's
-        # `name` param (legacy mailers) → empty string.
-        name = disp_filename or _filename_from_params(ct_params, b"name") or ""
-        mime_type = f"{_decode(type_)}/{_decode(subtype)}"
-
-        encoded_size = int(size_field) if isinstance(size_field, int) else 0
-        decoded_size = _decoded_size_from_bodystructure(
-            encoding,
-            encoded_size,
-        )
-        out.append({
-            "name": name,
-            "mime_type": mime_type,
-            "size": decoded_size,
-            "encoded_size": encoded_size,
-            "downloaded": False,
-            "section": section or "1",
-            "encoding": _decode(encoding).lower(),
-        })
+        info = _leaf_attachment_info(s, section)
+        if info is not None:
+            out.append(info)
 
     _walk(structure)
     return out
@@ -923,76 +940,14 @@ def _body_fetch_value(entry: dict[bytes, Any]) -> bytes | None:
     return None
 
 
-def _disposition_marks_attachment(elem: Any) -> bool:
-    """True if a BODYSTRUCTURE element is a disposition tuple that marks an
-    attachment — ``attachment``, or ``inline`` carrying a ``filename`` param.
-
-    Disposition tuples look like ``(b"attachment", (b"filename", b"x.pdf"))``;
-    the params are a flat ``(key, value, key, value, ...)`` tuple.
-    """
-    if not (isinstance(elem, tuple) and elem and isinstance(elem[0], bytes)):
-        return False
-    disp = elem[0].lower()
-    if disp == b"attachment":
-        return True
-    if disp != b"inline":
-        return False
-    params = elem[1] if len(elem) > 1 else ()
-    if not isinstance(params, tuple):
-        return False
-    return any(
-        isinstance(params[i], bytes) and params[i].lower() == b"filename"
-        for i in range(0, len(params) - 1, 2)
-    )
-
-
-def _leaf_has_attachment(structure: tuple[Any, ...]) -> bool:
-    """True if a leaf BODYSTRUCTURE part is an attachment.
-
-    A ``message/rfc822`` (forwarded email) part counts, matching
-    ``_bodystructure_extract_attachments`` — otherwise the has_attachment
-    search filter and the attachment list disagree (a forwarded-only message
-    would be filtered out yet report an attachment). Otherwise, any element
-    that is an attachment/inline-filename disposition tuple qualifies.
-    """
-    type_ = structure[0] if isinstance(structure[0], bytes) else b""
-    subtype = (
-        structure[1]
-        if len(structure) > 1 and isinstance(structure[1], bytes)
-        else b""
-    )
-    if type_.lower() == b"message" and subtype.lower() == b"rfc822":
-        return True
-    return any(_disposition_marks_attachment(elem) for elem in structure)
-
-
 def _bodystructure_has_attachment(structure: Any) -> bool:
-    """Walk an IMAPClient-parsed BODYSTRUCTURE tree and detect attachments.
+    """True if the message has at least one attachment.
 
-    IMAPClient represents multipart as a tuple ``(part_tuple, ..., subtype)``
-    where each ``part_tuple`` is either another multipart (starts with a
-    tuple) or a leaf (starts with bytes like ``b"text"``, ``b"application"``).
-
-    A message "has an attachment" if any leaf carries a disposition of
-    ``attachment`` or ``inline`` with a ``filename`` parameter (see
-    ``_leaf_has_attachment``).
+    This is the attachment listing's own walk, not a second predicate: the
+    ``has_attachment`` search filter and the list a caller then reads can't
+    disagree about a message.
     """
-    if not isinstance(structure, tuple) or not structure:
-        return False
-
-    # Multipart — children grouped in a list at position 0 (IMAPClient).
-    if isinstance(structure[0], list):
-        return any(
-            _bodystructure_has_attachment(child) for child in structure[0]
-        )
-    # Defensive: children nested as direct tuple elements.
-    if isinstance(structure[0], tuple):
-        return any(
-            isinstance(child, tuple) and _bodystructure_has_attachment(child)
-            for child in structure
-        )
-
-    return _leaf_has_attachment(structure)
+    return bool(_bodystructure_attachment_infos(structure))
 
 
 def _envelope_to_dict(

@@ -5828,6 +5828,80 @@ class TestSaveAttachmentsImapFastPath:
         assert not (tmp_path / "a.pdf").exists()
         assert (tmp_path / "b.pdf").read_bytes() == b"BBB"
 
+    def test_out_of_range_index_is_an_error_not_a_silent_success(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        """Asking for an attachment that isn't there used to return
+        ``saved: 0`` under ``success: true``. It must fail, say how many
+        attachments there are, and write nothing — not even the valid ones,
+        so a retry can't leave duplicates."""
+        import contextlib
+
+        from apple_mail_fast_mcp.exceptions import MailAttachmentIndexError
+
+        raw = _raw_with_attachments([("a.pdf", "pdf", b"AAA"), ("b.pdf", "pdf", b"BBB")])
+        mock_imap = MagicMock()
+        mock_imap.fetch_raw_message.return_value = raw
+        with contextlib.ExitStack() as stack:
+            for p in self._imap_patches(mock_imap):
+                stack.enter_context(p)
+            with (
+                patch.object(AppleMailConnector, "_run_applescript"),
+                pytest.raises(MailAttachmentIndexError, match=r"\[2\].*2 attachment"),
+            ):
+                connector.save_attachments(
+                    "att-test@example.com",
+                    tmp_path,
+                    attachment_indices=[0, 2],
+                    account="Gmail",
+                    mailbox="INBOX",
+                )
+        assert list(tmp_path.iterdir()) == []
+
+    def test_out_of_range_index_is_an_error_on_the_applescript_path(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        from apple_mail_fast_mcp.exceptions import MailAttachmentIndexError
+
+        with (
+            patch.object(
+                AppleMailConnector,
+                "_get_attachments_applescript",
+                return_value=[{"name": "a.pdf", "mime_type": "x", "size": 1}],
+            ),
+            patch.object(AppleMailConnector, "_run_applescript") as mock_as,
+            pytest.raises(MailAttachmentIndexError),
+        ):
+            connector.save_attachments("123", tmp_path, attachment_indices=[-1])
+        mock_as.assert_not_called()
+
+    def test_result_names_the_files_written(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        """The caller gets the saved paths back, so it never has to list the
+        directory to learn what a name became on disk."""
+        import contextlib
+
+        raw = _raw_with_attachments(
+            [("Budget Report (1).pdf", "pdf", b"AAA"), ("Budget Report (1).pdf", "pdf", b"BBB")]
+        )
+        mock_imap = MagicMock()
+        mock_imap.fetch_raw_message.return_value = raw
+        with contextlib.ExitStack() as stack:
+            for p in self._imap_patches(mock_imap):
+                stack.enter_context(p)
+            with patch.object(AppleMailConnector, "_run_applescript"):
+                result = connector.save_attachments(
+                    "att-test@example.com", tmp_path, account="Gmail", mailbox="INBOX",
+                )
+
+        assert result["saved"] == 2
+        assert [Path(f).name for f in result["files"]] == [
+            "Budget Report (1).pdf",
+            "1_Budget Report (1).pdf",
+        ]
+        assert [Path(f).read_bytes() for f in result["files"]] == [b"AAA", b"BBB"]
+
     def test_imap_failure_falls_back_to_applescript(
         self, connector: AppleMailConnector, tmp_path: Path
     ) -> None:

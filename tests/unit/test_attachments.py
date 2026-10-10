@@ -291,6 +291,50 @@ class TestAttachmentSecurity:
         assert sanitize_filename("document.pdf") == "document.pdf"
         assert sanitize_filename("my-file_v2.txt") == "my-file_v2.txt"
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Budget Report (1).pdf",
+            "r\u00e9sum\u00e9.pdf",
+            "\u898b\u7a4d\u66f8.xlsx",
+            "Screenshot 2026-01-02 at 3.14.15\u202fPM.png",
+            "Q3 report, final [v2] & notes + 100%.docx",
+        ],
+    )
+    def test_keeps_the_senders_filename(self, name: str) -> None:
+        """A saved attachment keeps its name. Only what makes a name unsafe
+        as a path is touched — spaces, parentheses and non-ASCII letters are
+        ordinary filename characters, and rewriting them to ``_`` left the
+        caller unable to find the file it had just saved."""
+        from apple_mail_fast_mcp.utils import sanitize_filename
+
+        assert sanitize_filename(name) == name
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("a/b\\c.txt", "c.txt"),
+            ("..", "unnamed_file"),
+            ("...hidden", "hidden"),
+            ("tab\there\nnew.txt", "tabherenew.txt"),
+            ("evil\u202egpj.exe", "evilgpj.exe"),
+            ("  spaced.txt  ", "spaced.txt"),
+            ("", "unnamed_file"),
+        ],
+    )
+    def test_still_strips_what_is_unsafe(self, name: str, expected: str) -> None:
+        from apple_mail_fast_mcp.utils import sanitize_filename
+
+        assert sanitize_filename(name) == expected
+
+    def test_long_name_fits_the_filesystem_limit_and_keeps_extension(self) -> None:
+        from apple_mail_fast_mcp.utils import sanitize_filename
+
+        out = sanitize_filename("\u00e9" * 300 + ".pdf")
+
+        assert len(out.encode("utf-8")) <= 255
+        assert out.endswith(".pdf")
+
 
 class TestSaveAttachmentsPathTraversal:
     """save_attachments must not let an attacker-controlled attachment
