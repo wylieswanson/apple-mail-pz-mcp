@@ -29,7 +29,7 @@ import quopri
 import re
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date as _date
@@ -39,9 +39,10 @@ from email import message_from_bytes, policy
 from email.header import decode_header, make_header
 from email.utils import collapse_rfc2231_value, decode_params, unquote
 from typing import Any, cast
+from urllib.parse import unquote as url_unquote
 
 from imapclient import DRAFT, IMAPClient
-from imapclient.exceptions import IMAPClientError, LoginError
+from imapclient.exceptions import IMAPClientAbortError, IMAPClientError, LoginError
 from imapclient.response_types import Envelope
 
 from .draft_builder import ForwardedAttachment, extract_attachment_payloads
@@ -661,6 +662,32 @@ def _bodystructure_extract_attachments(
     ]
 
 
+def _collapse_param(value: Any) -> str:
+    """One ``decode_params`` value as text. A plain value is a quoted string;
+    an RFC 2231 one is a ``(charset, language, quoted-text)`` triple.
+
+    The quotes come off the raw text BEFORE the charset decode: quoting is
+    byte-level, and Shift_JIS, Big5 and GBK all use 0x5C (backslash) as a
+    trail byte, so unquoting afterwards corrupts those names.
+    """
+    if not isinstance(value, tuple):
+        return str(collapse_rfc2231_value(value))
+    charset, language, text = value
+    return str(collapse_rfc2231_value((charset, language, unquote(text))))
+
+
+def _salvage_param(pairs: list[tuple[str, str]], name: str) -> str | None:
+    """The raw value of ``name`` (or its first ``name*…`` form), for a
+    parameter list the RFC 2231 decoder refused. Best effort: an extended
+    value loses its ``charset'lang'`` prefix and is percent-decoded as UTF-8."""
+    for key, raw in pairs:
+        if key == name or key.startswith(name + "*"):
+            if key != name and raw.count("'") >= 2:
+                raw = url_unquote(raw.split("'", 2)[2], errors="replace")
+            return unquote(raw)
+    return None
+
+
 def _param_value(params: Any, name: str) -> str | None:
     """Decoded value of ``name`` in a flat BODYSTRUCTURE ``(k, v, k, v, ...)``
     param tuple, or ``None`` when absent.
@@ -670,39 +697,50 @@ def _param_value(params: Any, name: str) -> str | None:
     ``filename*1*`` — and never under ``filename``. Other mailers put an
     RFC 2047 encoded-word in a plain ``filename``. Both decode here, to the
     name a MIME parse of the same part gives.
+
+    Never raises. The parameters are whatever the sender wrote, and the
+    stdlib decoder does raise on some of it (a ``filename*`` beside a
+    ``filename*0``, a codec that isn't a text encoding, a continuation index
+    too long to be an int). One such message must not fail every search and
+    listing that includes it, so those fall back to the raw value.
     """
     if not isinstance(params, tuple):
         return None
-    # decode_params treats slot 0 as the header's main value and skips it.
-    pairs: list[tuple[str, str]] = [("", "")]
+    pairs: list[tuple[str, str]] = []
     for i in range(0, len(params) - 1, 2):
         k, v = params[i], params[i + 1]
         if isinstance(k, bytes) and isinstance(v, (bytes, bytearray)):
             pairs.append((_decode(k).lower(), _decode(v)))
-    for key, value in decode_params(pairs)[1:]:
-        if key == name:
-            text = collapse_rfc2231_value(value)
-            # decode_params re-quotes every value; collapse only strips the
-            # quotes from a plain one, not from an RFC 2231 triple.
-            return _decode_mime_header(unquote(text) if isinstance(value, tuple) else text)
-    return None
+    try:
+        # decode_params treats slot 0 as the header's main value and skips it.
+        for key, value in decode_params([("", ""), *pairs])[1:]:
+            if key == name:
+                return _decode_mime_header(_collapse_param(value))
+        return None
+    except (TypeError, ValueError, LookupError):
+        salvaged = _salvage_param(pairs, name)
+        return None if salvaged is None else _decode_mime_header(salvaged)
 
 
 def _leaf_disposition(leaf: tuple[Any, ...]) -> tuple[bytes | None, Any]:
     """``(kind, params)`` of a leaf's disposition, or ``(None, ())``.
 
-    The disposition tuple sits near the end of the leaf, but its index varies
-    with the part type (text has 'lines', message/rfc822 has envelope + body +
-    lines), so scan for a tuple headed by a disposition keyword.
+    The disposition is a ``(keyword, (params…) | NIL)`` pair in the extension
+    data that follows the seven basic fields, at an index that varies with
+    the part type (text adds 'lines'; message/rfc822 adds envelope + body +
+    lines). So it is found by shape, from field 7 on — not by keyword, and
+    not among the basic fields, where a content-type parameter that happens
+    to be named ``attachment`` once passed for one. Any keyword counts:
+    ``inline`` and ``attachment`` are only the usual two.
     """
-    for elem in leaf:
+    for elem in leaf[7:]:
         if (
             isinstance(elem, tuple)
-            and elem
+            and 1 <= len(elem) <= 2
             and isinstance(elem[0], bytes)
-            and elem[0].lower() in (b"attachment", b"inline")
+            and (len(elem) == 1 or elem[1] is None or isinstance(elem[1], tuple))
         ):
-            return elem[0].lower(), (elem[1] if len(elem) > 1 else ())
+            return elem[0].lower(), (elem[1] if len(elem) > 1 and elem[1] else ())
     return None, ()
 
 
@@ -720,11 +758,11 @@ def _leaf_attachment_info(
     size_field = leaf[6] if len(leaf) > 6 else 0
 
     disp_kind, disp_params = _leaf_disposition(leaf)
-    # Filename precedence: disposition's filename → content-type's `name`.
+    # Filename precedence: disposition's filename → content-type's `name`,
+    # the first that is not blank (a whitespace-only name is no name).
     name = (
-        _param_value(disp_params, "filename")
-        or _param_value(ct_params, "name")
-        or ""
+        (_param_value(disp_params, "filename") or "").strip()
+        or (_param_value(ct_params, "name") or "").strip()
     )
     is_rfc822 = type_.lower() == b"message" and subtype.lower() == b"rfc822"
     if not (disp_kind == b"attachment" or name or is_rfc822):
@@ -1192,36 +1230,66 @@ class ImapConnector:
                 client.select_folder(mailbox, readonly=True)
                 return search_selected(client)
 
-            # Every folder, each row naming its own. A folder's newest
-            # `limit` rows are enough: the newest `limit` overall are among
-            # them. Rows sort by ISO date. A message also visible in an
-            # \\All folder (Gmail's All Mail) is listed once, under its real
-            # folder, because \\All folders are searched last.
-            rows: list[dict[str, Any]] = []
-            seen: set[str] = set()
-            for folder in self._selectable_folders(client):
-                if client.select_folder(folder, readonly=True).get(b"EXISTS") == 0:
-                    continue  # empty: skip the SEARCH round-trip
-                for row in search_selected(client):
-                    rfc_id = str(row.get("rfc_message_id") or "")
-                    if rfc_id and rfc_id in seen:
-                        continue
-                    seen.add(rfc_id)
-                    row["mailbox"] = folder
-                    rows.append(row)
-            rows.sort(key=lambda row: str(row.get("date_received") or ""))
-            return rows[-limit:] if limit is not None else rows
+            return self._search_all_folders(client, search_selected, limit)
+
+    def _search_all_folders(
+        self,
+        client: Any,
+        search_selected: Callable[[Any], list[dict[str, Any]]],
+        limit: int | None,
+    ) -> list[dict[str, Any]]:
+        """Run one search in every selectable folder; each row names its own.
+
+        Rows merge by ISO date and ``limit`` keeps the newest. Each folder
+        contributes its own newest ``limit`` by arrival (UID) order, so a
+        broad query can miss an old-dated message that was filed recently
+        behind newer-dated ones; a query that matches fewer than ``limit``
+        per folder is exact.
+
+        A message also visible in an ``\\All`` folder (Gmail's All Mail) is
+        listed once, under its real folder — ``\\All`` folders are searched
+        last and only their rows are ever dropped as duplicates. The same
+        Message-ID in two real folders is two messages.
+        """
+        if limit == 0:
+            return []
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for folder, is_all_mail in self._selectable_folders(client):
+            try:
+                info = client.select_folder(folder, readonly=True)
+            except IMAPClientAbortError:
+                raise  # the connection is gone, not this folder
+            except IMAPClientError:
+                continue  # this one won't open; the others still can
+            if info.get(b"EXISTS") == 0:
+                continue  # empty: skip the SEARCH round-trip
+            for row in search_selected(client):
+                rfc_id = str(row.get("rfc_message_id") or "")
+                if is_all_mail and rfc_id and rfc_id in seen:
+                    continue
+                seen.add(rfc_id)
+                row["mailbox"] = folder
+                rows.append(row)
+        rows.sort(key=lambda row: str(row.get("date_received") or ""))
+        return rows[-limit:] if limit is not None else rows
 
     @staticmethod
-    def _selectable_folders(client: Any) -> list[str]:
-        """Every folder that can be SELECTed, ``\\All`` folders last."""
-        normal: list[str] = []
-        all_mail: list[str] = []
+    def _selectable_folders(client: Any) -> list[tuple[str, bool]]:
+        """``(name, is_all_mail)`` for every folder that can be SELECTed,
+        ``\\All`` folders last. Flags are matched in any case: servers spell
+        ``\\Noselect`` more than one way."""
+        normal: list[tuple[str, bool]] = []
+        all_mail: list[tuple[str, bool]] = []
         for flags, _delim, name in client.list_folders():
-            if b"\\Noselect" in flags or b"\\NonExistent" in flags:
+            lowered = {bytes(flag).lower() for flag in flags}
+            if lowered & {b"\\noselect", b"\\nonexistent"}:
                 continue
             folder = name.decode("utf-8", errors="replace") if isinstance(name, bytes) else name
-            (all_mail if b"\\All" in flags else normal).append(folder)
+            if b"\\all" in lowered:
+                all_mail.append((folder, True))
+            else:
+                normal.append((folder, False))
         return normal + all_mail
 
     def _search_selected(

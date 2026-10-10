@@ -733,3 +733,31 @@ def test_extract_payloads_decodes_rfc2231_filename():
     atts = extract_attachment_payloads(raw)
 
     assert _names_types(atts) == [("Shot 3.14\u202fPM.png", "image/png")]
+
+
+def test_extract_payloads_edge_shapes_match_the_bodystructure_rule():
+    """The same four shapes the BODYSTRUCTURE walk is tested on: the two
+    walkers must agree, or every later index points at a different part."""
+    from apple_mail_fast_mcp.draft_builder import extract_attachment_payloads
+
+    def message(part_headers: bytes) -> bytes:
+        return (
+            b"Subject: c\r\nMIME-Version: 1.0\r\n"
+            b'Content-Type: multipart/mixed; boundary="m"\r\n\r\n'
+            b"--m\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+            b"--m\r\n" + part_headers + b"Content-Transfer-Encoding: base64\r\n\r\niVBO\r\n"
+            b"--m--\r\n"
+        )
+
+    def names(part_headers: bytes) -> list[str]:
+        return [a[0] for a in extract_attachment_payloads(message(part_headers))]
+
+    assert names(b'Content-Type: image/png; name=" "\r\n') == []
+    assert names(
+        b"Content-Type: image/png\r\n"
+        b'Content-Disposition: form-data; filename="a.png"\r\n'
+    ) == ["a.png"]
+    assert names(
+        b'Content-Type: image/png; name="logo.png"\r\n'
+        b'Content-Disposition: inline; filename=""\r\n'
+    ) == ["logo.png"]

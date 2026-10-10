@@ -301,6 +301,7 @@ def sanitize_filename(filename: str) -> str:
         >>> sanitize_filename("Budget Report (1).pdf")
         'Budget Report (1).pdf'
     """
+    import re
     import unicodedata
 
     # Basename only. Backslash and colon are separators too (Windows paths in
@@ -313,8 +314,10 @@ def sanitize_filename(filename: str) -> str:
         ch for ch in filename if unicodedata.category(ch) not in ("Cc", "Cf", "Cs", "Cn")
     )
 
-    # No hidden files, no "." / "..", no edge whitespace.
-    filename = filename.strip().lstrip(".").strip()
+    # No hidden files, no "." / "..", no edge whitespace. One pass over the
+    # whole leading run: stripping dots and spaces in turn left ". .zshrc" as
+    # ".zshrc".
+    filename = re.sub(r"^[\s.]+", "", filename).rstrip()
 
     # APFS and HFS+ cap a name at 255 UTF-8 bytes; keep the extension.
     max_bytes = 255

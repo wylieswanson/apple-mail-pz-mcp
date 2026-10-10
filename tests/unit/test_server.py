@@ -4541,6 +4541,34 @@ class TestUpdateDraftTool:
         assert kwargs["to"] == ["alice@example.com"]
 
     @pytest.mark.asyncio
+    async def test_a_refused_sender_does_not_cost_the_draft(
+        self,
+        isolated_drafts: Any,
+        mock_mail: MagicMock,
+        mock_logger: MagicMock,
+    ) -> None:
+        """update_draft deletes the old draft before the new one exists. A
+        mistyped from_address has to be caught before that delete, or the
+        caller is left with a validation error and no draft."""
+        from apple_mail_fast_mcp.server import update_draft
+
+        mock_mail.get_draft_state.return_value = {
+            "draft_id": "160991",
+            "to": ["alice@example.com"], "cc": [], "bcc": [],
+            "subject": "hello", "body": "old body",
+            "in_reply_to": "", "references": "", "attachment_names": [],
+        }
+        mock_mail.check_draft_sender.side_effect = ValueError("not an address of account")
+
+        result = await update_draft(draft_id="160991", from_address="typo@elsewhere.example")
+
+        assert result["success"] is False
+        assert result["error_type"] == "validation_error"
+        mock_mail.check_draft_sender.assert_called_once_with(None, "typo@elsewhere.example")
+        mock_mail.delete_draft.assert_not_called()
+        mock_mail.create_draft.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_update_body_html_threads_for_fresh_seed(
         self,
         isolated_drafts: Any,

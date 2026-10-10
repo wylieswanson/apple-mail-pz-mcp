@@ -15,9 +15,9 @@ An MCP server that provides programmatic access to Apple Mail, enabling AI assis
 Grouped by lifecycle (13 read-only, 14 mutating):
 
 - **Discovery** — `get_server_version`, `diagnose_mail_access`, `list_accounts`, `list_mailboxes`, `list_rules`, `list_templates`: inspect access/search health and enumerate what's configured (no external cache — call per account).
-- **Read** — `search_messages`, `get_messages`, `get_thread`, `get_statistics`, `get_attachment_content`, `get_template`, `render_template`: read messages/threads, aggregate inbox stats, pull an attachment's content inline, and render templates.
-- **Message actions** — `update_message` (read/flag/move in one pass), `delete_messages` (→ Trash), `save_attachments` (to disk, byte-capped).
-- **Drafts** — `create_draft` (new / reply / forward, optionally `send_now`), `update_draft`, `delete_draft`.
+- **Read** — `search_messages`, `get_messages`, `get_thread`, `get_statistics`, `get_attachment_content`, `get_template`, `render_template`: read messages/threads, aggregate inbox stats, pull an attachment's content inline, and render templates. Reading never marks a message read, and `search_messages(mailbox="*")` searches every mailbox of an account in one call.
+- **Message actions** — `update_message` (read/flag/move in one pass), `delete_messages` (staged in a `To Delete` mailbox for you to review), `save_attachments` (attachments, and optionally the message itself as `.eml`, to disk; byte-capped).
+- **Drafts** — `create_draft` (new / reply / forward, optionally `send_now`, From any of the account's addresses), `update_draft`, `delete_draft`.
 - **Mailbox CRUD** — `create_mailbox`, `update_mailbox` (rename or move), `delete_mailbox`.
 - **Rules** — `create_rule`, `update_rule`, `delete_rule`.
 - **Templates (write)** — `save_template`, `delete_template`.
@@ -196,7 +196,7 @@ From a shell — reports the release, the commit it was built from, when that co
 
 ```console
 $ apple-mail-pz-mcp --version
-apple-mail-pz-mcp 0.12.0 | commit 0ef7dd33b850 | committed 2026-07-09T14:40:02-07:00 | built 2026-07-09T22:29:46+00:00
+apple-mail-pz-mcp 0.14.0 | commit 0ef7dd33b850 | committed 2026-07-09T14:40:02-07:00 | built 2026-07-09T22:29:46+00:00
 ```
 
 From an MCP host — the server reports its version in `serverInfo` at initialize, so hosts that show connector versions will display it without any tool call.
@@ -205,7 +205,7 @@ From an agent mid-conversation — `diagnose_mail_access` returns a `server` blo
 
 ```json
 {
-  "version": "0.12.0",
+  "version": "0.14.0",
   "commit": "0ef7dd33b850",
   "commit_date": "2026-07-09T14:40:02-07:00",
   "built_at": "2026-07-09T22:29:46+00:00",
@@ -323,7 +323,7 @@ If IMAP is working, the call returns in ~1 second. If it logs a WARNING about fa
 - **Gmail:** requires 2-Step Verification enabled. If your Google Workspace admin has disabled app passwords at the tenant level, IMAP setup isn't possible for that account.
 - **Gmail thread retrieval — All Mail visibility tradeoff.** `find_thread_members` (used internally by thread-aware queries) is fastest when `[Gmail]/All Mail` is exposed over IMAP — that path is ~5 round-trips, mailbox-count-independent. Many users hide All Mail (Gmail Settings → Forwarding and POP/IMAP → Folder size limits → "Do not show in IMAP") because it duplicates every message. When hidden, the connector falls back to a per-mailbox X-GM-THRID iteration (still ~6× faster than the universal BFS, but proportional to your label count — ~25s on a 92-label account). Expose All Mail if you want the headline speed; keep it hidden if you prefer the cleaner IMAP folder list.
 
-**Write operations** (`create_draft`, `update_draft`, including the `send_now=true` send path) always use AppleScript regardless of IMAP configuration — these need Mail.app's compose UI.
+**Write operations.** With IMAP configured, `create_draft` saves drafts by IMAP APPEND and sends `send_now=true` mail over SMTP, both free of Mail.app's quote wrapper; without it they fall back to AppleScript, and a saved draft's response carries a warning.
 
 ## Development
 

@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import unicodedata
 import warnings
 from collections.abc import Callable
 from datetime import date as _date
@@ -411,19 +412,51 @@ def _require_attachment_indices_in_range(
     )
 
 
+def _fs_key(name: str) -> str:
+    """A filename as a default macOS volume compares it: case-insensitive and
+    normalization-insensitive. Two names with the same key are one file."""
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _require_real_mailbox(mailbox: str | None) -> None:
+    """``"*"`` means every mailbox, and only ``search_messages`` takes it.
+    Sent on to the server as a folder name it fails there, trips the IMAP
+    circuit breaker, and surfaces as an unrelated error."""
+    if mailbox == ALL_MAILBOXES:
+        raise ValueError(
+            'mailbox="*" is only for search_messages. Each row of that search '
+            "carries the row's own `mailbox`: pass that."
+        )
+
+
 def _eml_target(raw: bytes, save_directory: Path, taken: set[Path]) -> Path:
     """Where a message's ``.eml`` goes: named after its Subject, inside
-    ``save_directory``, and never on top of an attachment written by the same
-    call (``taken``). The subject is as attacker-controlled as an attachment
-    name, so it takes the same :func:`sanitize_filename` route to a path."""
+    ``save_directory``. The subject is as attacker-controlled as an attachment
+    name, so it takes the same :func:`sanitize_filename` route to a path.
+
+    It never lands on another file. Every reply in a thread has the same
+    subject, so a name already in use — by an attachment written in this
+    call (``taken``) or by anything already in the directory — gets `` 2``,
+    `` 3``… appended. The one exception keeps a repeated save idempotent: a
+    file that already holds exactly these bytes is reused.
+    """
     subject = str(BytesHeaderParser(policy=_email_policy).parsebytes(raw)["Subject"] or "")
     name = sanitize_filename(f"{subject.strip()}.eml") if subject.strip() else "message.eml"
     if not name.endswith(".eml") or name == ".eml":
         name = "message.eml"
-    target = (save_directory / name).resolve()
-    if target in taken:
-        target = (save_directory / f"message_{name}").resolve()
-    return target
+    # Room for the counter within the 255-byte name limit.
+    stem = name[: -len(".eml")].encode("utf-8")[:240].decode("utf-8", errors="ignore")
+    taken_keys = {_fs_key(path.name) for path in taken}
+    for n in range(1, 1000):
+        candidate = name if n == 1 else f"{stem} {n}.eml"
+        target = (save_directory / candidate).resolve()
+        if _fs_key(target.name) in taken_keys:
+            continue
+        if not target.exists():
+            return target
+        if target.is_file() and target.stat().st_size == len(raw) and target.read_bytes() == raw:
+            return target
+    raise OSError(f"No free name for {name!r} in {save_directory}")
 
 
 _SENDER_LOOKUP_RETRY_DELAY_S = 0.5
@@ -535,6 +568,8 @@ def _compute_attachment_save_targets(
     write). Each name is reduced to a safe basename via
     :func:`sanitize_filename`; colliding basenames are de-duplicated with the
     attachment index so two attachments can't silently overwrite each other.
+    "Colliding" is as the filesystem sees it (:func:`_fs_key`): ``Report.pdf``
+    and ``report.pdf`` are one file on a default macOS volume.
     Any target that would still escape ``save_directory`` after resolution is
     dropped defensively.
 
@@ -551,9 +586,11 @@ def _compute_attachment_save_targets(
     used: set[str] = set()
     for idx, name in wanted:
         safe = sanitize_filename(name)
-        if safe in used:
-            safe = f"{idx}_{safe}"
-        used.add(safe)
+        if _fs_key(safe) in used:
+            # Re-sanitized: the prefix can push a full-length name past the
+            # filesystem limit.
+            safe = sanitize_filename(f"{idx}_{safe}")
+        used.add(_fs_key(safe))
         target = (save_directory / safe).resolve()
         # sanitize_filename already strips separators and "..", so this can
         # only fail if that contract is ever broken — keep it as a hard gate.
@@ -1334,6 +1371,17 @@ class AppleMailConnector:
             ValueError: ``from_address`` is not one of the account's addresses.
         """
         return cast(str, self._resolve_draft_sender(account, from_address)[1])
+
+    def check_draft_sender(self, from_account: str | None, from_address: str | None) -> None:
+        """Raise if a draft could not be sent as this account / address.
+
+        For ``update_draft``, which deletes the old draft before the new one
+        exists: whatever would refuse the new draft's sender has to be found
+        out first, or a mistyped ``from_address`` costs the caller the draft.
+
+        Raises: as :meth:`_resolve_account_to_sender`.
+        """
+        self._resolve_draft_sender(from_account, from_address)
 
     def _resolve_draft_sender(
         self, account: str | None, from_address: str | None
@@ -2671,6 +2719,7 @@ class AppleMailConnector:
         Raises:
             MailMessageNotFoundError: Message not found via either path.
         """
+        _require_real_mailbox(mailbox)
         if account is not None and mailbox is not None and not self._imap_breaker_open(account):
             try:
                 result = self._imap_get_message(
@@ -2930,6 +2979,7 @@ class AppleMailConnector:
         Raises:
             MailMessageNotFoundError: Message not found via either path.
         """
+        _require_real_mailbox(mailbox)
         if account is not None and mailbox is not None and not self._imap_breaker_open(account):
             try:
                 result = self._imap_get_attachments(
@@ -3000,6 +3050,7 @@ class AppleMailConnector:
             MailAttachmentIndexError: ``attachment_index`` out of range.
             MailAttachmentTooLargeError: attachment exceeds the inline cap.
         """
+        _require_real_mailbox(mailbox)
         if account is not None and mailbox is not None and not self._imap_breaker_open(account):
             try:
                 result = self._imap_get_attachment_content(
@@ -4115,6 +4166,8 @@ class AppleMailConnector:
             MailImapRequiredError: ``include_message`` without ``account`` +
                 ``mailbox``, or IMAP couldn't fetch the message. Nothing is
                 written — the AppleScript path can't produce the ``.eml``.
+            OSError: A file could not be written. Files written before the
+                failure stay on disk.
         """
         # Validate save directory
         if not save_directory.exists():
@@ -4141,21 +4194,22 @@ class AppleMailConnector:
         # was a path-traversal → arbitrary-file-write vector.)
         # IMAP fast path (#371): one fetch instead of the AppleScript
         # cross-scan. Mirrors get_attachment_content's dispatch.
+        _require_real_mailbox(mailbox)
+        raw: bytes | None = None
         if account is not None and mailbox is not None and not self._imap_breaker_open(account):
             try:
-                imap_result = self._imap_save_attachments(
-                    account=account,
-                    mailbox=mailbox,
-                    message_id=message_id,
-                    save_directory=save_directory,
-                    attachment_indices=attachment_indices,
-                    include_message=include_message,
-                )
+                raw = self._imap_fetch_raw_message(account, mailbox, message_id)
                 self._imap_clear_breaker(account)
-                return imap_result
             except _IMAP_FALLBACK_EXCS as exc:
                 self._log_imap_fallback(account, exc)
                 # fall through to AppleScript
+        if raw is not None:
+            # Outside the try on purpose. A failed write is an OSError, and so
+            # is a dropped connection: caught together, a full disk read as
+            # "IMAP is down" and opened the circuit breaker.
+            return self._save_from_raw_message(
+                raw, save_directory, attachment_indices, include_message
+            )
 
         if include_message:
             # AppleScript can save attachments but not the message's bytes:
@@ -4248,30 +4302,29 @@ class AppleMailConnector:
             "files": [str(path) for _, path in targets if path.is_file()],
         }
 
-    def _imap_save_attachments(
-        self,
-        *,
-        account: str,
-        mailbox: str,
-        message_id: str,
-        save_directory: Path,
-        attachment_indices: list[int] | None,
-        include_message: bool = False,
-    ) -> dict[str, Any]:
-        """IMAP path for save_attachments (#371): fetch the raw message once
-        and write the selected attachment bytes to disk. Reuses
-        ``fetch_raw_message`` + ``parse_original_message`` (same machinery as
-        ``_imap_get_attachment_content``) and the same #236 byte-cap /
-        path-safety helpers as the AppleScript path — the only new step is
-        the direct ``write_bytes``.
+    def _imap_fetch_raw_message(self, account: str, mailbox: str, message_id: str) -> bytes:
+        """One IMAP fetch of a message's RFC 822 bytes (#371).
 
         Propagates ``_IMAP_FALLBACK_EXCS`` unchanged for the caller's
-        fallback.
+        fallback; ``MailMessageNotFoundError`` when the folder lacks it.
         """
         host, port, email = self._resolve_imap_config(account)
         password = self._get_imap_password_with_fallback(account, email)
         imap = ImapConnector(host, port, email, password, pool=self._imap_pool)
-        raw = imap.fetch_raw_message(message_id, mailbox)
+        return imap.fetch_raw_message(message_id, mailbox)
+
+    def _save_from_raw_message(
+        self,
+        raw: bytes,
+        save_directory: Path,
+        attachment_indices: list[int] | None,
+        include_message: bool = False,
+    ) -> dict[str, Any]:
+        """Write the selected attachments of an already-fetched message, and
+        the message itself when asked. Reuses the same parse as
+        ``get_attachment_content`` and the same #236 byte-cap / path-safety
+        helpers as the AppleScript path. Disk errors propagate as ``OSError``.
+        """
         # Match the BODYSTRUCTURE metadata list (see _imap_get_attachment_content).
         parsed = extract_attachment_payloads(raw)
 

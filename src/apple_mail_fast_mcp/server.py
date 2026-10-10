@@ -3772,6 +3772,12 @@ async def update_draft(
             if gate_err:
                 return gate_err
 
+        # The old draft is deleted before the new one exists, so a sender the
+        # new one would be refused for is found out first: a mistyped
+        # from_address must not cost the caller the draft. (With neither given
+        # this returns at once, without asking Mail anything.)
+        await _run_blocking(mail.check_draft_sender, from_account, from_address)
+
         # Delete + recreate. Clear stale state first so a connector failure
         # doesn't leave orphan entries.
         try:
