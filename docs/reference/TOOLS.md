@@ -248,6 +248,7 @@ Retrieve full details of one or more messages, with bodies. Returns a list (alwa
 
 **Notes:**
 - Missing ids drop out silently — the response contains whatever was found (partial-results convention).
+- **Reading never marks a message read.** The IMAP path fetches with `BODY.PEEK`, so `read_status` is unchanged by `get_messages`, `save_attachments` and `get_attachment_content`. Use `update_message(read_status=true)` to mark read.
 - The `"SELECTED"` sentinel is resolved server-side via `mail.get_selected_messages()` at call time. Empty selection expands to nothing.
 - Pair with `search_messages` (metadata-only, criteria-based) and `get_thread` (thread member ids) to fetch bodies for specific messages.
 - **Body bounding (#365):** each `content` is scrubbed of transport-hostile characters (control bytes, non-UTF8-encodable codepoints) and capped at **1 MB** of UTF-8 text so a single large or malformed body can't crash the stdio server. When a body is truncated, the message carries `content_truncated: true` and `content_original_bytes: <int>`. Override the cap with `APPLE_MAIL_MCP_MAX_BODY_BYTES` (positive integer bytes).

@@ -1163,6 +1163,48 @@ class TestGetMessage:
         assert result["content"] == "hello world"
         assert result["read_status"] is True
 
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {},
+            {"body_format": "raw"},
+            {"headers_only": True},
+            {"include_attachments": True},
+        ],
+    )
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_read_never_asks_for_a_seen_setting_section(
+        self, mock_cls: MagicMock, kwargs: dict[str, Any]
+    ) -> None:
+        """A read must not mark the message read. A plain ``BODY[...]``
+        fetch sets ``\\Seen`` — and iCloud does so even in an EXAMINE'd
+        (read-only) session, so only ``BODY.PEEK[...]`` is safe."""
+        self._setup_client(mock_cls)
+
+        ImapConnector("h", 993, "u@e.com", "pw").get_message(
+            "abc@x", mailbox="INBOX", **kwargs,
+        )
+
+        for call in mock_cls.return_value.fetch.call_args_list:
+            assert not [k for k in call[0][1] if k.startswith(b"BODY[")]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_fetch_raw_message_peeks(self, mock_cls: MagicMock) -> None:
+        """The raw fetch behind save_attachments / get_attachment_content /
+        reply drafts is a read too: it must peek, and still find the bytes
+        under the ``BODY[]`` key the server answers with."""
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.search.return_value = [42]
+        client.fetch.return_value = {42: {b"BODY[]": b"Subject: x\r\n\r\nhi"}}
+
+        raw = ImapConnector("h", 993, "u@e.com", "pw").fetch_raw_message(
+            "abc@x", "INBOX",
+        )
+
+        assert client.fetch.call_args[0][1] == [b"BODY.PEEK[]"]
+        assert raw == b"Subject: x\r\n\r\nhi"
+
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_default_fetch_keys_include_full_body(
         self, mock_cls: MagicMock
@@ -1179,9 +1221,9 @@ class TestGetMessage:
         fetch_keys = mock_cls.return_value.fetch.call_args[0][1]
         assert b"ENVELOPE" in fetch_keys
         assert b"FLAGS" in fetch_keys
-        assert b"BODY[]" in fetch_keys
-        assert b"BODY[TEXT]" not in fetch_keys
-        assert b"BODY[HEADER]" not in fetch_keys
+        assert b"BODY.PEEK[]" in fetch_keys
+        assert b"BODY.PEEK[TEXT]" not in fetch_keys
+        assert b"BODY.PEEK[HEADER]" not in fetch_keys
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_raw_body_format_fetches_legacy_body_text(
@@ -1196,8 +1238,8 @@ class TestGetMessage:
         )
 
         fetch_keys = mock_cls.return_value.fetch.call_args[0][1]
-        assert b"BODY[TEXT]" in fetch_keys
-        assert b"BODY[]" not in fetch_keys
+        assert b"BODY.PEEK[TEXT]" in fetch_keys
+        assert b"BODY.PEEK[]" not in fetch_keys
         # raw mode returns the bytes verbatim (charset-decoded only).
         assert result["content"] == "--b\r\nraw mime\r\n--b--"
 
@@ -1336,8 +1378,7 @@ class TestGetMessage:
         )
 
         fetch_keys = mock_cls.return_value.fetch.call_args[0][1]
-        assert b"BODY[TEXT]" not in fetch_keys
-        assert b"BODY[HEADER]" not in fetch_keys
+        assert not [k for k in fetch_keys if k.startswith(b"BODY")]
         # content empty when not requested.
         assert result["content"] == ""
 
@@ -1358,8 +1399,8 @@ class TestGetMessage:
         )
 
         fetch_keys = mock_cls.return_value.fetch.call_args[0][1]
-        assert b"BODY[HEADER]" in fetch_keys
-        assert b"BODY[TEXT]" not in fetch_keys
+        assert b"BODY.PEEK[HEADER]" in fetch_keys
+        assert b"BODY.PEEK[TEXT]" not in fetch_keys
         assert result["content"] == ""
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")

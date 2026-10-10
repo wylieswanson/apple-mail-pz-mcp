@@ -1023,6 +1023,18 @@ def _envelope_to_dict(
     }
 
 
+def _peek(section_key: bytes) -> bytes:
+    """``BODY[...]`` → ``BODY.PEEK[...]``: the form of a section fetch that
+    does not set ``\\Seen``.
+
+    Every read asks this way. EXAMINE alone is not enough: iCloud sets
+    ``\\Seen`` on a plain ``BODY[]`` even in a read-only session, which
+    marked mail read behind the caller's back. The server answers under the
+    plain ``BODY[...]`` key either way, so response lookups are unchanged.
+    """
+    return section_key.replace(b"BODY[", b"BODY.PEEK[", 1)
+
+
 def _select_body_bytes(entry: dict[bytes, Any], body_key: bytes) -> bytes:
     """Pull the body section out of a FETCH entry. IMAPClient can key the
     returned section slightly differently than requested, so fall back to any
@@ -1372,14 +1384,14 @@ class ImapConnector:
         # RFC822); raw mode keeps the legacy header-less BODY[TEXT].
         body_key = b"BODY[]" if text_mode else b"BODY[TEXT]"
         if want_body:
-            fetch_keys.append(body_key)
+            fetch_keys.append(_peek(body_key))
         elif headers_only:
             # We don't currently use the raw header block for anything in
             # the response (envelope already gives us subject/sender/date),
             # but requesting BODY[HEADER] is the spec-correct way to ask
             # the server for headers without paying for the body. Some
             # servers send less data this way; some don't care.
-            fetch_keys.append(b"BODY[HEADER]")
+            fetch_keys.append(_peek(b"BODY[HEADER]"))
         # When we parse the full body (text mode), attachment metadata comes
         # from that parse — more reliable than BODYSTRUCTURE, which yields a
         # false-empty list on some real messages. Only pay for BODYSTRUCTURE
@@ -1447,7 +1459,7 @@ class ImapConnector:
                     f"Message-ID {message_id!r} not found in mailbox "
                     f"{mailbox!r} on {self._host}."
                 )
-            fetched = client.fetch(uids[:1], [b"BODY[]"])
+            fetched = client.fetch(uids[:1], [_peek(b"BODY[]")])
             entry = next(iter(fetched.values()))
             raw = entry.get(b"BODY[]") or b""
             if not raw:
