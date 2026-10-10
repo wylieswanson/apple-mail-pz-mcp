@@ -164,6 +164,104 @@ class TestSearchHappyPath:
         mock_client.logout.assert_called_once()
 
 
+class TestSearchAllMailboxes:
+    """``mailbox="*"``: one search over every selectable folder."""
+
+    def _client(self, mock_cls: MagicMock, per_folder: dict[str, list[tuple[bytes, datetime]]]):
+        client = MagicMock()
+        mock_cls.return_value = client
+        client.list_folders.return_value = [
+            ((b"\\HasNoChildren",), b"/", "INBOX"),
+            ((b"\\Noselect", b"\\HasChildren"), b"/", "Parent"),
+            ((b"\\HasNoChildren",), b"/", b"Parent/Filed"),
+            ((b"\\All",), b"/", "All Mail"),
+        ]
+        state = {"folder": None}
+
+        def select(folder: str, readonly: bool = False) -> dict:
+            state["folder"] = folder
+            return {b"EXISTS": len(per_folder.get(folder, []))}
+
+        def search(criteria: list, *args: Any) -> list[int]:
+            return list(range(1, len(per_folder.get(state["folder"], [])) + 1))
+
+        def fetch(uids: list[int], keys: list[bytes]) -> dict:
+            msgs = per_folder.get(state["folder"], [])
+            return {
+                uid: {
+                    b"ENVELOPE": _fake_envelope(message_id=msgs[uid - 1][0], date=msgs[uid - 1][1]),
+                    b"FLAGS": (),
+                }
+                for uid in uids
+            }
+
+        client.select_folder.side_effect = select
+        client.search.side_effect = search
+        client.fetch.side_effect = fetch
+        return client
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_searches_each_selectable_folder_read_only(self, mock_cls: MagicMock) -> None:
+        client = self._client(mock_cls, {
+            "INBOX": [(b"<a@x>", datetime(2026, 1, 3))],
+            "Parent/Filed": [(b"<b@x>", datetime(2026, 1, 5))],
+        })
+
+        rows = ImapConnector("h", 993, "u@e.com", "pw").search_messages(
+            mailbox="*", subject_contains="invoice",
+        )
+
+        selected = [c.args[0] for c in client.select_folder.call_args_list]
+        assert selected == ["INBOX", "Parent/Filed", "All Mail"]
+        assert all(c.kwargs == {"readonly": True} for c in client.select_folder.call_args_list)
+        assert all(c.args[0] == ["SUBJECT", "invoice"] for c in client.search.call_args_list)
+        # An empty folder (All Mail here) costs its EXAMINE and nothing more.
+        assert client.search.call_count == 2
+        # Same order as a single-mailbox search: oldest first.
+        assert [(r["id"], r["mailbox"]) for r in rows] == [
+            ("a@x", "INBOX"),
+            ("b@x", "Parent/Filed"),
+        ]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_limit_keeps_the_newest_across_folders(self, mock_cls: MagicMock) -> None:
+        self._client(mock_cls, {
+            "INBOX": [(b"<old@x>", datetime(2026, 1, 1)), (b"<mid@x>", datetime(2026, 1, 4))],
+            "Parent/Filed": [(b"<new@x>", datetime(2026, 1, 9))],
+        })
+
+        rows = ImapConnector("h", 993, "u@e.com", "pw").search_messages(mailbox="*", limit=2)
+
+        assert [r["id"] for r in rows] == ["mid@x", "new@x"]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_a_message_also_in_all_mail_is_listed_once_under_its_folder(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """Gmail shows every message in All Mail too. The copy in the real
+        folder wins; a message only in All Mail (archived) is still found."""
+        self._client(mock_cls, {
+            "INBOX": [(b"<a@x>", datetime(2026, 1, 3))],
+            "All Mail": [(b"<a@x>", datetime(2026, 1, 3)), (b"<archived@x>", datetime(2026, 1, 2))],
+        })
+
+        rows = ImapConnector("h", 993, "u@e.com", "pw").search_messages(mailbox="*")
+
+        assert [(r["id"], r["mailbox"]) for r in rows] == [
+            ("archived@x", "All Mail"),
+            ("a@x", "INBOX"),
+        ]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_single_mailbox_rows_carry_no_mailbox_field(self, mock_cls: MagicMock) -> None:
+        """The caller already knows it; repeating it on every row is bytes."""
+        self._client(mock_cls, {"INBOX": [(b"<a@x>", datetime(2026, 1, 3))]})
+
+        rows = ImapConnector("h", 993, "u@e.com", "pw").search_messages(mailbox="INBOX")
+
+        assert "mailbox" not in rows[0]
+
+
 class TestTextFilters:
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_sender_contains_maps_to_from(self, mock_cls):

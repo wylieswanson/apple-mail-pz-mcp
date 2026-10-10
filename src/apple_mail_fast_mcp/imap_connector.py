@@ -52,7 +52,7 @@ from .exceptions import (
     MailMailboxNotFoundError,
     MailMessageNotFoundError,
 )
-from .utils import parse_rfc822_ids
+from .utils import ALL_MAILBOXES, parse_rfc822_ids
 
 logger = logging.getLogger(__name__)
 
@@ -1177,48 +1177,103 @@ class ImapConnector:
 
         charset = _search_charset(criteria)
 
-        with self._session() as client:
-            client.select_folder(mailbox, readonly=True)
-
-            # Pass charset only when a non-ASCII term needs it — keeps ASCII
-            # searches on the default us-ascii path (max server compatibility)
-            # while letting Korean/CJK terms ride a CHARSET UTF-8 literal.
-            uids = (
-                client.search(criteria)
-                if charset is None
-                else client.search(criteria, charset)
-            )
-            # `limit` bounds MATCHING results. With no post-filter, every
-            # candidate matches, so truncating the window up front is both
-            # correct and the cheapest possible FETCH. With has_attachment
-            # (only expressible by inspecting BODYSTRUCTURE after FETCH),
-            # pre-truncating would change limit's meaning to "whichever of
-            # the newest N happen to match" — silently dropping matches the
-            # AppleScript path (per-match limit) would return. There the
-            # walk below scans newest-first in bounded chunks instead.
-            post_filter = has_attachment is not None
-            if limit is not None and not post_filter:
-                uids = uids[-limit:]
-
-            if not uids:
-                return []
-
-            fetch_keys: list[bytes] = [b"ENVELOPE", b"FLAGS"]
-            # BODYSTRUCTURE bundles into the same FETCH (no extra round-trip)
-            # whether we need it for has_attachment filtering or for the
-            # include_attachments output field — only fetch once.
-            need_bodystructure = post_filter or include_attachments
-            if need_bodystructure:
-                fetch_keys.append(b"BODYSTRUCTURE")
-
-            return self._collect_search_rows(
+        def search_selected(client: Any) -> list[dict[str, Any]]:
+            return self._search_selected(
                 client,
-                uids,
-                fetch_keys,
+                criteria,
+                charset,
                 has_attachment=has_attachment,
                 include_attachments=include_attachments,
-                limit=limit if post_filter else None,
+                limit=limit,
             )
+
+        with self._session() as client:
+            if mailbox != ALL_MAILBOXES:
+                client.select_folder(mailbox, readonly=True)
+                return search_selected(client)
+
+            # Every folder, each row naming its own. A folder's newest
+            # `limit` rows are enough: the newest `limit` overall are among
+            # them. Rows sort by ISO date. A message also visible in an
+            # \\All folder (Gmail's All Mail) is listed once, under its real
+            # folder, because \\All folders are searched last.
+            rows: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for folder in self._selectable_folders(client):
+                if client.select_folder(folder, readonly=True).get(b"EXISTS") == 0:
+                    continue  # empty: skip the SEARCH round-trip
+                for row in search_selected(client):
+                    rfc_id = str(row.get("rfc_message_id") or "")
+                    if rfc_id and rfc_id in seen:
+                        continue
+                    seen.add(rfc_id)
+                    row["mailbox"] = folder
+                    rows.append(row)
+            rows.sort(key=lambda row: str(row.get("date_received") or ""))
+            return rows[-limit:] if limit is not None else rows
+
+    @staticmethod
+    def _selectable_folders(client: Any) -> list[str]:
+        """Every folder that can be SELECTed, ``\\All`` folders last."""
+        normal: list[str] = []
+        all_mail: list[str] = []
+        for flags, _delim, name in client.list_folders():
+            if b"\\Noselect" in flags or b"\\NonExistent" in flags:
+                continue
+            folder = name.decode("utf-8", errors="replace") if isinstance(name, bytes) else name
+            (all_mail if b"\\All" in flags else normal).append(folder)
+        return normal + all_mail
+
+    def _search_selected(
+        self,
+        client: Any,
+        criteria: list[Any],
+        charset: str | None,
+        *,
+        has_attachment: bool | None,
+        include_attachments: bool,
+        limit: int | None,
+    ) -> list[dict[str, Any]]:
+        """SEARCH + FETCH in the currently selected folder."""
+        # Pass charset only when a non-ASCII term needs it — keeps ASCII
+        # searches on the default us-ascii path (max server compatibility)
+        # while letting Korean/CJK terms ride a CHARSET UTF-8 literal.
+        uids = (
+            client.search(criteria)
+            if charset is None
+            else client.search(criteria, charset)
+        )
+        # `limit` bounds MATCHING results. With no post-filter, every
+        # candidate matches, so truncating the window up front is both
+        # correct and the cheapest possible FETCH. With has_attachment
+        # (only expressible by inspecting BODYSTRUCTURE after FETCH),
+        # pre-truncating would change limit's meaning to "whichever of
+        # the newest N happen to match" — silently dropping matches the
+        # AppleScript path (per-match limit) would return. There the
+        # walk below scans newest-first in bounded chunks instead.
+        post_filter = has_attachment is not None
+        if limit is not None and not post_filter:
+            uids = uids[-limit:]
+
+        if not uids:
+            return []
+
+        fetch_keys: list[bytes] = [b"ENVELOPE", b"FLAGS"]
+        # BODYSTRUCTURE bundles into the same FETCH (no extra round-trip)
+        # whether we need it for has_attachment filtering or for the
+        # include_attachments output field — only fetch once.
+        need_bodystructure = post_filter or include_attachments
+        if need_bodystructure:
+            fetch_keys.append(b"BODYSTRUCTURE")
+
+        return self._collect_search_rows(
+            client,
+            uids,
+            fetch_keys,
+            has_attachment=has_attachment,
+            include_attachments=include_attachments,
+            limit=limit if post_filter else None,
+        )
 
     def _collect_search_rows(
         self,

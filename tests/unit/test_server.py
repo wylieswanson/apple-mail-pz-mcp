@@ -3010,6 +3010,40 @@ class TestSaveAttachments:
 
         assert result["files"] == files
 
+    def test_include_message_returns_the_eml_path(
+        self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
+    ) -> None:
+        eml = str(tmp_path / "Hello.eml")
+        mock_mail.save_attachments.return_value = {
+            "saved": 0, "rejected": [], "files": [], "message_file": eml,
+        }
+
+        result = save_attachments(
+            "1", str(tmp_path), [], account="iCloud", mailbox="INBOX", include_message=True
+        )
+
+        assert mock_mail.save_attachments.call_args.kwargs["include_message"] is True
+        assert result["message_file"] == eml
+
+    def test_no_message_file_key_unless_one_was_written(
+        self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
+    ) -> None:
+        mock_mail.save_attachments.return_value = {"saved": 1, "rejected": [], "files": ["x"]}
+
+        assert "message_file" not in save_attachments("1", str(tmp_path))
+
+    def test_include_message_without_imap_names_the_error(
+        self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
+    ) -> None:
+        from apple_mail_fast_mcp.exceptions import MailImapRequiredError
+
+        mock_mail.save_attachments.side_effect = MailImapRequiredError("needs account + mailbox")
+
+        result = save_attachments("1", str(tmp_path), include_message=True)
+
+        assert result["success"] is False
+        assert result["error_type"] == "imap_required"
+
     def test_surfaces_rejected_attachments(
         self, mock_mail: MagicMock, mock_logger: MagicMock, tmp_path: Any
     ) -> None:

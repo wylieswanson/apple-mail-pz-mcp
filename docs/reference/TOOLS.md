@@ -104,7 +104,7 @@ Search for messages matching specified criteria.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `account` | string | Conditional | None | Account name (e.g., "Gmail", "iCloud"). Required when `source` is None; ignored when `source` is a list. |
-| `mailbox` | string | No | "INBOX" | Mailbox/folder name. Ignored when `source` is a list. |
+| `mailbox` | string | No | "INBOX" | Mailbox/folder name, or `"*"` for every mailbox of the account (see below). Ignored when `source` is a list. |
 | `sender_contains` | string | No | None | Filter by sender email or domain |
 | `subject_contains` | string | No | None | Filter by subject keywords |
 | `read_status` | boolean | No | None | Filter by read status (true=read, false=unread) |
@@ -121,6 +121,7 @@ Search for messages matching specified criteria.
 
 **Notes:**
 - Returns metadata-only rows (id, subject, sender, date_received, read_status, flagged). For full bodies, pipe the result ids into `get_messages([ids])`.
+- **All mailboxes (`mailbox="*"`).** One call searches every mailbox of the account, and each row carries the `mailbox` it lives in — pass that, with `account`, to `get_messages` / `save_attachments`. `limit` is the newest N across all of them. A metadata-only query is answered by the local Envelope Index when it is enabled (one SQL query); anything else, including `body_contains` / `text_contains` / attachments, runs over IMAP folder by folder on one connection. A message that also appears in a Gmail-style `\All` folder is listed once, under its real folder. There is no AppleScript fallback for `"*"` — that scan is the one that freezes Mail — so with neither backend the call returns `validation_error` naming `setup-imap`.
 - Malformed `date_from` / `date_to` raise `error_type: validation_error`. Only ISO 8601 YYYY-MM-DD is accepted; relative dates like "7 days ago" are not supported.
 - `has_attachment` is filtered after the initial server-side match because Mail.app rejects attachment predicates inside its `whose` clause.
 - `source=[ids]` (folded-in `get_selected_messages` and the `thread_of` use case) scopes the search to a specific id list. Filter parameters (`sender_contains`, `read_status`, etc.) compose with `source` — the resolved messages are post-filtered. The literal token `"SELECTED"` may appear in the list and is server-resolved to Mail.app's current UI selection (zero-or-more ids); mixed lists like `["SELECTED", "12345"]` are valid. Returns `account: null` and `mailbox: null` in the response. Missing ids drop out silently (partial-results convention).
@@ -711,6 +712,7 @@ Save attachments from a message to a directory.
 | `attachment_indices` | list[int] | No | None | 0-based positions in the message's `attachments` list from `get_messages` (None = all). An out-of-range index fails the whole call with `error_type: "attachment_index_out_of_range"` and writes nothing. |
 | `account` | string | No | None | Mail.app account name or UUID. With `mailbox`, takes the IMAP fast path (one fetch). Pass the same values you read the message with so attachment ordering matches. |
 | `mailbox` | string | No | None | Folder the message lives in (e.g. "INBOX"), used with `account` for the IMAP fast path. |
+| `include_message` | boolean | No | false | Also write the message itself as an `.eml` file: the RFC 822 bytes exactly as the server holds them, named after the subject. IMAP only — requires `account` + `mailbox`, else `error_type: "imap_required"` and nothing is written. With `attachment_indices=[]` the `.eml` is the only file. The response gains `message_file` (the path). The `.eml` counts against the same byte caps as an attachment. |
 
 **Performance (#371):** pass `account` + `mailbox` to fetch the message once over IMAP and write the bytes straight to disk. Without them, `save_attachments` falls back to an O(accounts × mailboxes) AppleScript scan whose unindexed `message id` lookup is ~20s/mailbox — on Gmail (dozens of labels) that can run for minutes and time out. Mirrors `get_attachment_content`'s fast path.
 

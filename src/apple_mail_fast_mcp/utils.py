@@ -271,6 +271,10 @@ def make_body_safe(content: str, max_bytes: int) -> tuple[str, bool, int]:
     return encoded[:max_bytes].decode("utf-8", "ignore"), True, original_bytes
 
 
+ALL_MAILBOXES = "*"
+"""``mailbox`` value that means every mailbox of the account (search only)."""
+
+
 def sanitize_filename(filename: str) -> str:
     """
     Reduce an untrusted filename to a safe basename, changing as little as

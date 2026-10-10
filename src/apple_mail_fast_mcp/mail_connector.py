@@ -15,6 +15,8 @@ from collections.abc import Callable
 from datetime import date as _date
 from datetime import datetime as _datetime
 from datetime import timedelta as _timedelta
+from email.parser import BytesHeaderParser
+from email.policy import default as _email_policy
 from pathlib import Path
 from typing import Any, cast
 
@@ -75,6 +77,7 @@ from .local_db_connector import (
 from .security import send_recipients_test_violation
 from .smtp_sender import SmtpSender
 from .utils import (
+    ALL_MAILBOXES,
     applescript_account_clause,
     escape_applescript_string,
     get_flag_index,
@@ -406,6 +409,21 @@ def _require_attachment_indices_in_range(
         f"attachment(s), so {valid}. Indices are 0-based positions in the "
         "`attachments` list get_messages returns for this message."
     )
+
+
+def _eml_target(raw: bytes, save_directory: Path, taken: set[Path]) -> Path:
+    """Where a message's ``.eml`` goes: named after its Subject, inside
+    ``save_directory``, and never on top of an attachment written by the same
+    call (``taken``). The subject is as attacker-controlled as an attachment
+    name, so it takes the same :func:`sanitize_filename` route to a path."""
+    subject = str(BytesHeaderParser(policy=_email_policy).parsebytes(raw)["Subject"] or "")
+    name = sanitize_filename(f"{subject.strip()}.eml") if subject.strip() else "message.eml"
+    if not name.endswith(".eml") or name == ".eml":
+        name = "message.eml"
+    target = (save_directory / name).resolve()
+    if target in taken:
+        target = (save_directory / f"message_{name}").resolve()
+    return target
 
 
 _SENDER_LOOKUP_RETRY_DELAY_S = 0.5
@@ -2354,6 +2372,14 @@ class AppleMailConnector:
                 self._log_imap_fallback(account, exc)
                 # fall through to AppleScript
 
+        if mailbox == ALL_MAILBOXES:
+            # Every mailbox by AppleScript is the scan that freezes Mail.
+            raise ValueError(
+                'mailbox="*" needs IMAP or the local index for this account, '
+                "and neither answered. Run `apple-mail-pz-mcp setup-imap "
+                f"--account {account!r}`, or search one mailbox at a time."
+            )
+
         # We're committed to the AppleScript path. Warn proactively if a
         # body/text search is set — that's the multi-order-of-magnitude
         # slow case (#146).
@@ -4040,6 +4066,7 @@ class AppleMailConnector:
         *,
         account: str | None = None,
         mailbox: str | None = None,
+        include_message: bool = False,
     ) -> dict[str, Any]:
         """
         Save attachments from a message to a directory.
@@ -4063,13 +4090,21 @@ class AppleMailConnector:
             message_id: Message ID
             save_directory: Directory to save attachments to
             attachment_indices: Indices of attachments to save (None = all)
+            include_message: Also write the message itself as an ``.eml``
+                file — the RFC 822 bytes as the server holds them — named
+                after its subject. IMAP only, so it needs ``account`` +
+                ``mailbox``. With ``attachment_indices=[]`` the ``.eml`` is
+                the only file written.
 
         Returns:
             ``{"saved": int, "rejected": list[dict], "files": list[str]}`` —
             count actually written, per-rejection records ``{name, size,
             reason}`` where reason is ``per_attachment_cap`` /
             ``aggregate_cap`` (pre-check) or ``*_postwrite`` (post-write net),
-            and the paths written, in selection order.
+            and the paths written, in selection order. With
+            ``include_message``, also ``message_file`` — the ``.eml`` path
+            (absent if the message went over the per-attachment cap, which
+            then appears in ``rejected``).
 
         Raises:
             FileNotFoundError: If save directory doesn't exist
@@ -4077,6 +4112,9 @@ class AppleMailConnector:
             MailMessageNotFoundError: If message doesn't exist
             MailAttachmentIndexError: An index in ``attachment_indices`` is
                 out of range. Nothing is written.
+            MailImapRequiredError: ``include_message`` without ``account`` +
+                ``mailbox``, or IMAP couldn't fetch the message. Nothing is
+                written — the AppleScript path can't produce the ``.eml``.
         """
         # Validate save directory
         if not save_directory.exists():
@@ -4111,12 +4149,22 @@ class AppleMailConnector:
                     message_id=message_id,
                     save_directory=save_directory,
                     attachment_indices=attachment_indices,
+                    include_message=include_message,
                 )
                 self._imap_clear_breaker(account)
                 return imap_result
             except _IMAP_FALLBACK_EXCS as exc:
                 self._log_imap_fallback(account, exc)
                 # fall through to AppleScript
+
+        if include_message:
+            # AppleScript can save attachments but not the message's bytes:
+            # falling back would report success without the file asked for.
+            raise MailImapRequiredError(
+                "include_message fetches the message over IMAP: pass `account` "
+                "and `mailbox` (both are on the search result), and make sure "
+                "IMAP is set up for the account (`apple-mail-pz-mcp setup-imap`)."
+            )
 
         attachments = self._get_attachments_applescript(message_id)
         _require_attachment_indices_in_range(attachment_indices, len(attachments))
@@ -4208,6 +4256,7 @@ class AppleMailConnector:
         message_id: str,
         save_directory: Path,
         attachment_indices: list[int] | None,
+        include_message: bool = False,
     ) -> dict[str, Any]:
         """IMAP path for save_attachments (#371): fetch the raw message once
         and write the selected attachment bytes to disk. Reuses
@@ -4240,15 +4289,17 @@ class AppleMailConnector:
         ]
         _require_attachment_indices_in_range(attachment_indices, len(attachments))
 
+        # The .eml is the whole message: it answers to the same caps, and is
+        # budgeted first so asking for it can't push the total over.
+        write_message = include_message and len(raw) <= self.max_attachment_bytes
+        total_cap = self.max_total_attachment_bytes - (len(raw) if write_message else 0)
+
         allowed, rejected = _select_attachments_within_caps(
             attachments,
             attachment_indices,
             per_cap=self.max_attachment_bytes,
-            total_cap=self.max_total_attachment_bytes,
+            total_cap=max(0, total_cap),
         )
-        if not allowed:
-            return {"saved": 0, "rejected": rejected, "files": []}
-
         targets = _compute_attachment_save_targets(
             [a["name"] for a in attachments], save_directory, allowed
         )
@@ -4266,11 +4317,21 @@ class AppleMailConnector:
             total_cap=self.max_total_attachment_bytes,
         )
         rejected.extend(post_rejected)
-        return {
+        result: dict[str, Any] = {
             "saved": max(0, saved - removed),
             "rejected": rejected,
             "files": [str(path) for _, path in targets if path.is_file()],
         }
+        if include_message:
+            eml = _eml_target(raw, save_directory, {path for _, path in targets})
+            if write_message:
+                eml.write_bytes(raw)
+                result["message_file"] = str(eml)
+            else:
+                rejected.append(
+                    {"name": eml.name, "size": len(raw), "reason": "per_attachment_cap"}
+                )
+        return result
 
     def move_messages(
         self,

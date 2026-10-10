@@ -10541,3 +10541,154 @@ class TestDraftFromAddress:
 
         script = mock_run.call_args[0][0]
         assert 'set sender of theMessage to "Alice Smith <alice@icloud.com>"' in script
+
+
+class TestSearchAllMailboxesDispatch:
+    @patch.object(AppleMailConnector, "_search_messages_applescript")
+    @patch.object(AppleMailConnector, "_imap_search")
+    def test_never_falls_back_to_an_applescript_scan(
+        self, mock_imap_search: MagicMock, mock_as_search: MagicMock
+    ) -> None:
+        """Every mailbox by AppleScript is the scan that freezes Mail. With
+        neither the local index nor IMAP, say what is needed instead."""
+        mock_imap_search.side_effect = OSError("no route")
+        connector = AppleMailConnector(local_db_enabled=False)
+
+        with pytest.raises(ValueError, match="setup-imap"):
+            connector.search_messages(account="iCloud", mailbox="*", subject_contains="x")
+        mock_as_search.assert_not_called()
+
+    @patch.object(AppleMailConnector, "_search_messages_local_db")
+    @patch.object(AppleMailConnector, "_imap_search")
+    def test_body_search_across_mailboxes_goes_to_imap(
+        self, mock_imap_search: MagicMock, mock_local_search: MagicMock
+    ) -> None:
+        mock_imap_search.return_value = [{"id": "a@x", "mailbox": "Filed"}]
+        connector = AppleMailConnector(local_db_enabled=True)
+
+        rows = connector.search_messages(account="iCloud", mailbox="*", text_contains="lease")
+
+        assert rows == [{"id": "a@x", "mailbox": "Filed"}]
+        assert mock_imap_search.call_args.args[1] == "*"
+        mock_local_search.assert_not_called()
+
+
+class TestSaveMessageAsEml:
+    """save_attachments(include_message=True) writes the message itself."""
+
+    @pytest.fixture
+    def connector(self) -> AppleMailConnector:
+        return AppleMailConnector(timeout=30)
+
+    def _save(self, connector: AppleMailConnector, raw: bytes | Exception, tmp_path: Path, **kw: Any):
+        import contextlib
+
+        mock_imap = MagicMock()
+        if isinstance(raw, Exception):
+            mock_imap.fetch_raw_message.side_effect = raw
+        else:
+            mock_imap.fetch_raw_message.return_value = raw
+        with contextlib.ExitStack() as stack:
+            for p in TestSaveAttachmentsImapFastPath._imap_patches(self, mock_imap):
+                stack.enter_context(p)
+            self.mock_as = stack.enter_context(
+                patch.object(AppleMailConnector, "_run_applescript")
+            )
+            kw.setdefault("account", "Gmail")
+            kw.setdefault("mailbox", "INBOX")
+            return connector.save_attachments("att-test@example.com", tmp_path, **kw)
+
+    def test_writes_the_exact_bytes_named_after_the_subject(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        raw = _raw_with_attachments([("a.pdf", "pdf", b"AAA")])
+
+        result = self._save(connector, raw, tmp_path, include_message=True)
+
+        eml = tmp_path / "with attachments.eml"
+        assert result["message_file"] == str(eml)
+        assert eml.read_bytes() == raw
+        assert result["saved"] == 1
+        assert [Path(f).name for f in result["files"]] == ["a.pdf"]
+
+    def test_empty_indices_saves_the_message_alone(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        raw = _raw_with_attachments([("a.pdf", "pdf", b"AAA")])
+
+        result = self._save(
+            connector, raw, tmp_path, include_message=True, attachment_indices=[]
+        )
+
+        assert result["saved"] == 0
+        assert [p.name for p in tmp_path.iterdir()] == ["with attachments.eml"]
+
+    def test_not_written_unless_asked(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        result = self._save(connector, _raw_with_attachments([("a.pdf", "pdf", b"A")]), tmp_path)
+
+        assert "message_file" not in result
+        assert [p.name for p in tmp_path.iterdir()] == ["a.pdf"]
+
+    def test_does_not_overwrite_an_attachment_of_the_same_name(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        raw = _raw_with_attachments([("with attachments.eml", "octet-stream", b"INNER")])
+
+        result = self._save(connector, raw, tmp_path, include_message=True)
+
+        assert Path(result["files"][0]).read_bytes() == b"INNER"
+        assert Path(result["message_file"]).read_bytes() == raw
+        assert result["message_file"] != result["files"][0]
+
+    def test_unsafe_or_missing_subject_still_gets_a_safe_name(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        raw = b"Subject: ../../etc/x\r\nMessage-ID: <att-test@example.com>\r\n\r\nbody\r\n"
+        assert Path(
+            self._save(connector, raw, tmp_path, include_message=True)["message_file"]
+        ) == tmp_path / "x.eml"
+
+        raw = b"Message-ID: <att-test@example.com>\r\n\r\nbody\r\n"
+        assert Path(
+            self._save(connector, raw, tmp_path, include_message=True)["message_file"]
+        ) == tmp_path / "message.eml"
+
+    def test_over_the_size_cap_is_rejected_not_written(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        connector.max_attachment_bytes = 10
+        raw = b"Subject: big\r\n\r\n" + b"x" * 100
+
+        result = self._save(connector, raw, tmp_path, include_message=True)
+
+        assert "message_file" not in result
+        assert result["rejected"] == [
+            {"name": "big.eml", "size": len(raw), "reason": "per_attachment_cap"}
+        ]
+        assert list(tmp_path.iterdir()) == []
+
+    def test_needs_account_and_mailbox(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        from apple_mail_fast_mcp.exceptions import MailImapRequiredError
+
+        with (
+            patch.object(AppleMailConnector, "_run_applescript") as mock_as,
+            pytest.raises(MailImapRequiredError, match="account.*mailbox"),
+        ):
+            connector.save_attachments("123", tmp_path, include_message=True)
+        mock_as.assert_not_called()
+
+    def test_imap_failure_is_an_error_not_an_applescript_fallback(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        """The AppleScript path can save attachments but not the message, so
+        falling back would return success without the file that was asked for."""
+        from apple_mail_fast_mcp.exceptions import MailImapRequiredError
+
+        with pytest.raises(MailImapRequiredError):
+            self._save(connector, OSError("conn reset"), tmp_path, include_message=True)
+        self.mock_as.assert_not_called()
+        assert list(tmp_path.iterdir()) == []

@@ -340,6 +340,7 @@ Save attachments from a message to a directory.
 - `attachment_indices` (list[integer], optional): 0-based positions in the message's ``attachments`` list from ``get_messages``; None saves all. An out-of-range index fails the call.
 - `account` (string, optional): Mail.app account name or UUID. Supply it (with ``mailbox``) to take the faster IMAP path — one fetch instead of an account×mailbox AppleScript scan. Pass the same values you read the message with so attachment ordering matches (#371). Strongly recommended on Gmail, where the AppleScript fallback's unindexed cross-scan can take minutes and time out.
 - `mailbox` (string, optional): Folder the message lives in (e.g. "INBOX"), used with ``account`` for the IMAP fast path.
+- `include_message` (boolean, optional) (default: False): Also save the message itself as an ``.eml`` file (needs ``account`` + ``mailbox``). With ``attachment_indices=[]``, only the ``.eml``.
 
 ### save_template
 
@@ -378,7 +379,7 @@ anchor into thread member ids, then optionally pipe those ids into
 **Parameters:**
 
 - `account` (string, optional): Mail.app account display name (e.g., "Gmail", "iCloud") or UUID (from list_accounts). Required when ``source is None``; ignored when ``source`` is a list. Names are convenient but unstable across renames; UUIDs are stable.
-- `mailbox` (string, optional) (default: 'INBOX'): Mailbox name (default: "INBOX"). Ignored when ``source`` is a list.
+- `mailbox` (string, optional) (default: 'INBOX'): Mailbox name (default: "INBOX"). ``"*"`` searches every mailbox of the account; each row then carries its ``mailbox``. Ignored when ``source`` is a list.
 - `sender_contains` (string, optional): Filter by sender email/domain substring.
 - `subject_contains` (string, optional): Filter by subject keywords substring.
 - `read_status` (boolean, optional): Filter by read status (true=read, false=unread).

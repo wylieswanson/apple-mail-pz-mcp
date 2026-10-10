@@ -1218,8 +1218,9 @@ def search_messages(
             UUID (from list_accounts). Required when ``source is None``;
             ignored when ``source`` is a list. Names are convenient but
             unstable across renames; UUIDs are stable.
-        mailbox: Mailbox name (default: "INBOX"). Ignored when ``source``
-            is a list.
+        mailbox: Mailbox name (default: "INBOX"). ``"*"`` searches every
+            mailbox of the account; each row then carries its ``mailbox``.
+            Ignored when ``source`` is a list.
         sender_contains: Filter by sender email/domain substring.
         subject_contains: Filter by subject keywords substring.
         read_status: Filter by read status (true=read, false=unread).
@@ -1934,6 +1935,7 @@ def save_attachments(
     attachment_indices: OptIntList = None,
     account: str | None = None,
     mailbox: str | None = None,
+    include_message: bool = False,
 ) -> dict[str, Any]:
     """
     Save attachments from a message to a directory.
@@ -1952,13 +1954,17 @@ def save_attachments(
             cross-scan can take minutes and time out.
         mailbox: Folder the message lives in (e.g. "INBOX"), used with
             ``account`` for the IMAP fast path.
+        include_message: Also save the message itself as an ``.eml`` file
+            (needs ``account`` + ``mailbox``). With
+            ``attachment_indices=[]``, only the ``.eml``.
 
     Returns:
         Dict with ``success``, ``saved`` (count written), ``directory``,
         ``files`` (the paths written — a file keeps the sender's name unless
         that name is unsafe as a path or collides with another), and
         ``rejected`` (attachments skipped by the per-attachment / aggregate
-        byte caps, each ``{name, size, reason}``; #236).
+        byte caps, each ``{name, size, reason}``; #236). With
+        ``include_message``, also ``message_file``: the ``.eml`` path.
 
     Example:
         >>> save_attachments("12345", "/Users/me/Downloads")
@@ -2004,6 +2010,7 @@ def save_attachments(
             attachment_indices=attachment_indices,
             account=account,
             mailbox=mailbox,
+            include_message=include_message,
         )
 
         operation_logger.log_operation(
@@ -2016,7 +2023,7 @@ def save_attachments(
             "success",
         )
 
-        return {
+        response: dict[str, Any] = {
             "success": True,
             "saved": result["saved"],
             "directory": save_directory,
@@ -2024,6 +2031,9 @@ def save_attachments(
             # Attachments skipped/removed by the byte caps (#236), if any.
             "rejected": result["rejected"],
         }
+        if "message_file" in result:
+            response["message_file"] = result["message_file"]
+        return response
 
     except MailAttachmentIndexError as e:
         return {
@@ -2031,6 +2041,8 @@ def save_attachments(
             "error": str(e),
             "error_type": "attachment_index_out_of_range",
         }
+    except MailImapRequiredError as e:
+        return {"success": False, "error": str(e), "error_type": "imap_required"}
     except (FileNotFoundError, ValueError) as e:
         logger.error(f"Validation error: {e}")
         return {
