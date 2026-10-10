@@ -253,6 +253,77 @@ class TestSearchAllMailboxes:
         ]
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_a_folder_that_will_not_open_is_skipped(self, mock_cls: MagicMock) -> None:
+        """One folder the server refuses (permissions, a stale listing) must
+        not fail the search of all the others."""
+        client = self._client(mock_cls, {
+            "INBOX": [(b"<a@x>", datetime(2026, 1, 3))],
+            "Parent/Filed": [(b"<b@x>", datetime(2026, 1, 5))],
+        })
+        opened = client.select_folder.side_effect
+
+        def select(folder: str, readonly: bool = False) -> dict:
+            if folder == "INBOX":
+                raise IMAPClientError("select failed: [NONEXISTENT]")
+            return opened(folder, readonly=readonly)
+
+        client.select_folder.side_effect = select
+
+        rows = ImapConnector("h", 993, "u@e.com", "pw").search_messages(mailbox="*")
+
+        assert [(r["id"], r["mailbox"]) for r in rows] == [("b@x", "Parent/Filed")]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_a_dead_connection_is_not_mistaken_for_an_unopenable_folder(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """Skipping every folder on a dropped connection would return an
+        empty result that looks like "no matches"."""
+        from imapclient.exceptions import IMAPClientAbortError
+
+        client = self._client(mock_cls, {"INBOX": [(b"<a@x>", datetime(2026, 1, 3))]})
+        client.select_folder.side_effect = IMAPClientAbortError("socket error: EOF")
+
+        with pytest.raises(IMAPClientAbortError):
+            ImapConnector("h", 993, "u@e.com", "pw").search_messages(mailbox="*")
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_noselect_flag_is_matched_in_any_case(self, mock_cls: MagicMock) -> None:
+        client = self._client(mock_cls, {"INBOX": [(b"<a@x>", datetime(2026, 1, 3))]})
+        client.list_folders.return_value = [
+            ((b"\\HasNoChildren",), b"/", "INBOX"),
+            ((b"\\NoSelect",), b"/", "Parent"),
+            ((b"\\NONEXISTENT",), b"/", "Ghost"),
+        ]
+
+        ImapConnector("h", 993, "u@e.com", "pw").search_messages(mailbox="*")
+
+        assert [c.args[0] for c in client.select_folder.call_args_list] == ["INBOX"]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_only_an_all_mail_copy_is_ever_dropped(self, mock_cls: MagicMock) -> None:
+        """Two real folders holding the same Message-ID are two messages the
+        caller can act on. Only the \\All mirror is a duplicate."""
+        client = self._client(mock_cls, {
+            "Junk": [(b"<a@x>", datetime(2026, 1, 3))],
+            "INBOX": [(b"<a@x>", datetime(2026, 1, 3))],
+        })
+        client.list_folders.return_value = [
+            ((b"\\Junk",), b"/", "Junk"),
+            ((b"\\HasNoChildren",), b"/", "INBOX"),
+        ]
+
+        rows = ImapConnector("h", 993, "u@e.com", "pw").search_messages(mailbox="*")
+
+        assert sorted(r["mailbox"] for r in rows) == ["INBOX", "Junk"]
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_limit_zero_returns_nothing(self, mock_cls: MagicMock) -> None:
+        self._client(mock_cls, {"INBOX": [(b"<a@x>", datetime(2026, 1, 3))]})
+
+        assert ImapConnector("h", 993, "u@e.com", "pw").search_messages(mailbox="*", limit=0) == []
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_single_mailbox_rows_carry_no_mailbox_field(self, mock_cls: MagicMock) -> None:
         """The caller already knows it; repeating it on every row is bytes."""
         self._client(mock_cls, {"INBOX": [(b"<a@x>", datetime(2026, 1, 3))]})
@@ -2065,6 +2136,82 @@ class TestGetAttachments:
         )
 
         assert [a["name"] for a in result] == ["r\u00e9sum\u00e9.pdf"]
+
+    @pytest.mark.parametrize(
+        "disp_params",
+        [
+            # extended form and a numbered continuation of the same name
+            (b"filename*", b"utf-8''a.txt", b"filename*0", b"b.txt"),
+            # a codec that is not a text encoding
+            (b"filename*", b"idna''x"),
+            (b"filename*", b"undefined''x"),
+            # a continuation index too long to parse as an int
+            (b"filename*" + b"9" * 5000, b"x"),
+            # broken percent-encoding, odd-length params, non-bytes values
+            (b"filename*", b"utf-8''%zz%"),
+            (b"filename", b"a.pdf", b"dangling"),
+            (b"filename", None),
+        ],
+    )
+    def test_hostile_parameters_cannot_break_a_listing(self, disp_params: tuple) -> None:
+        """The parameters are whatever the sender wrote. One message that
+        makes the decoder raise must not fail every search and listing
+        whose window includes it: the part is still listed, under whatever
+        name can be salvaged."""
+        from apple_mail_fast_mcp.imap_connector import (
+            _bodystructure_extract_attachments,
+            _bodystructure_has_attachment,
+        )
+
+        leaf = (b"application", b"pdf", (), None, None, b"base64", 10, (b"attachment", disp_params))
+        structure = ([_BS_PLAIN_TEXT, leaf], b"mixed")
+
+        assert len(_bodystructure_extract_attachments(structure)) == 1
+        assert _bodystructure_has_attachment(structure) is True
+
+    def test_rfc2231_name_in_a_multibyte_charset_is_not_corrupted(self) -> None:
+        """Shift_JIS has 0x5C (backslash) as a trail byte. Unquoting must
+        happen on the raw bytes, before the charset decode, or the name
+        gains a stray backslash."""
+        from apple_mail_fast_mcp.imap_connector import _bodystructure_extract_attachments
+
+        leaf = (
+            b"application", b"pdf", (), None, None, b"base64", 10,
+            (b"attachment", (b"filename*", b"shift_jis''%95%5C.xlsx")),
+        )
+
+        names = [a["name"] for a in _bodystructure_extract_attachments(([leaf], b"mixed"))]
+
+        assert names == ["\u8868.xlsx"]
+
+    @pytest.mark.parametrize(
+        ("leaf", "expected"),
+        [
+            # A whitespace-only name is no name.
+            ((b"image", b"png", (b"name", b" "), None, None, b"base64", 10), []),
+            # A content-type parameter that happens to be called "attachment"
+            # is not a disposition.
+            ((b"text", b"plain", (b"attachment", b"x"), None, None, b"7bit", 10, 1), []),
+            # Any disposition can carry the filename, not just the two usual.
+            (
+                (b"image", b"png", (), None, None, b"base64", 10,
+                 (b"form-data", (b"filename", b"a.png"))),
+                ["a.png"],
+            ),
+            # An empty disposition filename falls back to the content-type name.
+            (
+                (b"image", b"png", (b"name", b"logo.png"), None, None, b"base64", 10,
+                 (b"inline", (b"filename", b""))),
+                ["logo.png"],
+            ),
+        ],
+    )
+    def test_edge_shapes_follow_the_one_rule(self, leaf: tuple, expected: list[str]) -> None:
+        from apple_mail_fast_mcp.imap_connector import _bodystructure_extract_attachments
+
+        structure = ([_BS_PLAIN_TEXT, leaf], b"mixed")
+
+        assert [a["name"] for a in _bodystructure_extract_attachments(structure)] == expected
 
     @pytest.mark.parametrize(
         "leaf",

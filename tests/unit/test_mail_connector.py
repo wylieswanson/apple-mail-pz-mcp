@@ -10692,3 +10692,88 @@ class TestSaveMessageAsEml:
             self._save(connector, OSError("conn reset"), tmp_path, include_message=True)
         self.mock_as.assert_not_called()
         assert list(tmp_path.iterdir()) == []
+
+    def test_a_disk_error_is_reported_as_a_disk_error(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        """A failed write is an OSError, and so is a dropped connection. The
+        write must not be read as "IMAP is down": that opened the circuit
+        breaker and told the caller to set up IMAP."""
+        target = tmp_path / "ro"
+        target.mkdir()
+        target.chmod(0o500)
+        try:
+            with pytest.raises(PermissionError):
+                self._save(
+                    connector, _raw_with_attachments([("a.pdf", "pdf", b"A")]), target,
+                    include_message=True,
+                )
+        finally:
+            target.chmod(0o700)
+        self.mock_as.assert_not_called()
+        assert connector._imap_breaker_open("Gmail") is False
+
+    def test_another_messages_eml_is_never_overwritten(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        """Every reply in a thread has the same subject. Saving them into one
+        directory must leave one file each; saving the same message twice
+        must not multiply it."""
+        first = b"Subject: Re: lunch\r\nMessage-ID: <1@x>\r\n\r\none\r\n"
+        second = b"Subject: Re: lunch\r\nMessage-ID: <2@x>\r\n\r\ntwo\r\n"
+
+        a = self._save(connector, first, tmp_path, include_message=True)["message_file"]
+        b = self._save(connector, second, tmp_path, include_message=True)["message_file"]
+        again = self._save(connector, first, tmp_path, include_message=True)["message_file"]
+
+        assert a != b
+        assert Path(a).read_bytes() == first and Path(b).read_bytes() == second
+        assert again == a
+        assert len(list(tmp_path.iterdir())) == 2
+
+    def test_eml_never_lands_on_an_attachment_however_they_are_named(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        raw = (
+            b"Subject: hello\r\nMIME-Version: 1.0\r\n"
+            b'Content-Type: multipart/mixed; boundary="m"\r\n\r\n'
+            b"--m\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+            b'--m\r\nContent-Type: application/octet-stream\r\n'
+            b'Content-Disposition: attachment; filename="hello.eml"\r\n\r\nONE\r\n'
+            b'--m\r\nContent-Type: application/octet-stream\r\n'
+            b'Content-Disposition: attachment; filename="message_hello.eml"\r\n\r\nTWO\r\n'
+            b"--m--\r\n"
+        )
+
+        result = self._save(connector, raw, tmp_path, include_message=True)
+
+        written = [*result["files"], result["message_file"]]
+        assert len(set(written)) == 3
+        assert [Path(f).read_bytes().strip() for f in result["files"]] == [b"ONE", b"TWO"]
+        assert Path(result["message_file"]).read_bytes() == raw
+
+
+class TestAllMailboxesIsSearchOnly:
+    """``"*"`` names no folder. A row from an all-mailbox search carries its
+    own ``mailbox``; passing the search's ``"*"`` on instead must be refused
+    plainly, not sent to the server as a folder name."""
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda c, d: c.get_message("a@x", account="iCloud", mailbox="*"),
+            lambda c, d: c.get_attachments("a@x", account="iCloud", mailbox="*"),
+            lambda c, d: c.get_attachment_content("a@x", 0, account="iCloud", mailbox="*"),
+            lambda c, d: c.save_attachments("a@x", d, account="iCloud", mailbox="*"),
+        ],
+    )
+    def test_refused_before_any_imap_or_applescript(self, call: Any, tmp_path: Path) -> None:
+        connector = AppleMailConnector(timeout=30)
+        with (
+            patch.object(AppleMailConnector, "_run_applescript") as mock_as,
+            patch("apple_mail_fast_mcp.mail_connector.ImapConnector") as mock_imap,
+            pytest.raises(ValueError, match="row's own `mailbox`"),
+        ):
+            call(connector, tmp_path)
+        mock_as.assert_not_called()
+        mock_imap.assert_not_called()

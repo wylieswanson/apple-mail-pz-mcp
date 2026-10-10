@@ -327,6 +327,23 @@ class TestAttachmentSecurity:
 
         assert sanitize_filename(name) == expected
 
+    @pytest.mark.parametrize(
+        "name",
+        [". .zshrc", ". ..", ". .", " . . .x", "..  ..", "\u200b.\u200b.profile", ".\t.env"],
+    )
+    def test_no_arrangement_of_dots_and_spaces_yields_a_hidden_or_parent_name(
+        self, name: str
+    ) -> None:
+        """Stripping in two passes left ``. .zshrc`` as ``.zshrc``, which a
+        save into a home directory would have written over the real one."""
+        from apple_mail_fast_mcp.utils import sanitize_filename
+
+        out = sanitize_filename(name)
+
+        assert not out.startswith(".")
+        assert out not in ("", ".", "..")
+        assert sanitize_filename(out) == out
+
     def test_long_name_fits_the_filesystem_limit_and_keeps_extension(self) -> None:
         from apple_mail_fast_mcp.utils import sanitize_filename
 
@@ -380,6 +397,32 @@ class TestSaveAttachmentsPathTraversal:
         )
         paths = {str(p) for _, p in targets}
         assert len(paths) == 2
+
+    def test_compute_targets_treats_names_the_filesystem_merges_as_one(
+        self, tmp_path: Path
+    ) -> None:
+        """APFS is case-insensitive and normalization-insensitive by default:
+        ``Report.pdf`` / ``report.pdf``, or two spellings of an accented
+        letter, are one file there. They must not overwrite each other."""
+        from apple_mail_fast_mcp.mail_connector import _compute_attachment_save_targets
+
+        names = ["Report.pdf", "report.pdf", "caf\u00e9.txt", "cafe\u0301.txt"]
+        targets = _compute_attachment_save_targets(names, tmp_path.resolve(), None)
+
+        import unicodedata
+        keys = {unicodedata.normalize("NFC", p.name).casefold() for _, p in targets}
+        assert len(keys) == 4
+
+    def test_compute_targets_keeps_a_deduped_long_name_within_the_limit(
+        self, tmp_path: Path
+    ) -> None:
+        from apple_mail_fast_mcp.mail_connector import _compute_attachment_save_targets
+
+        long_name = "a" * 251 + ".pdf"
+        targets = _compute_attachment_save_targets([long_name, long_name], tmp_path.resolve(), None)
+
+        assert len({p for _, p in targets}) == 2
+        assert all(len(p.name.encode("utf-8")) <= 255 for _, p in targets)
 
     def test_compute_targets_respects_indices(self, tmp_path: Path) -> None:
         from apple_mail_fast_mcp.mail_connector import _compute_attachment_save_targets

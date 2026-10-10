@@ -51,6 +51,7 @@ ALLOWLIST = {
     "get_draft_state": "Reads a draft\x27s current fields for update_draft\x27s merge.",
     "find_message_by_message_id": "Internal RFC-id->Mail-id lookup (e.g. update_draft seed recovery).",
     "extract_draft_attachments": "Helper for update_draft delete-and-recreate attachment preservation.",
+    "check_draft_sender": "update_draft\x27s pre-check that the sender is valid, before it deletes the old draft.",
     "auto_template_vars": "Auto-fills template variables; used by the template/draft path, not standalone.",
     "stage_messages_for_deletion": "delete_messages\x27 default branch (move into the staging mailbox).",
     "stage_mailbox_for_deletion": "delete_mailbox\x27 default branch (re-parent under the staging mailbox).",

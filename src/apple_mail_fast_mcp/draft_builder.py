@@ -18,7 +18,14 @@ import re
 from dataclasses import dataclass, field
 from email.message import EmailMessage, MIMEPart
 from email.policy import default as _default_policy
-from email.utils import formataddr, formatdate, getaddresses, make_msgid, parseaddr
+from email.utils import (
+    collapse_rfc2231_value,
+    formataddr,
+    formatdate,
+    getaddresses,
+    make_msgid,
+    parseaddr,
+)
 from pathlib import Path
 from typing import Any
 
@@ -328,8 +335,24 @@ def _walk_attachment_parts(
         for child in part.iter_parts():
             _walk_attachment_parts(child, out)
         return
-    if part.get_content_disposition() == "attachment" or part.get_filename():
+    if part.get_content_disposition() == "attachment" or _attachment_filename(part):
         out.append(part)
+
+
+def _attachment_filename(part: MIMEPart[Any, Any]) -> str:
+    """A part's filename: the disposition ``filename``, else the content-type
+    ``name`` — the first that is not blank. ``""`` when it has neither.
+
+    Same precedence as the BODYSTRUCTURE walk. ``get_filename()`` is not: it
+    stops at an empty ``filename=""`` without looking at ``name``.
+    """
+    for header, param in (("content-disposition", "filename"), ("content-type", "name")):
+        value = part.get_param(param, header=header)
+        if value:
+            text = str(collapse_rfc2231_value(value)).strip()
+            if text:
+                return text
+    return ""
 
 
 def extract_attachment_payloads(raw: bytes) -> list[ForwardedAttachment]:
@@ -360,7 +383,7 @@ def extract_attachment_payloads(raw: bytes) -> list[ForwardedAttachment]:
         # lists as "" in metadata but needs a usable save name here.
         out.append(
             (
-                part.get_filename() or "attachment",
+                _attachment_filename(part) or "attachment",
                 maintype,
                 subtype,
                 _attachment_payload_bytes(part),
