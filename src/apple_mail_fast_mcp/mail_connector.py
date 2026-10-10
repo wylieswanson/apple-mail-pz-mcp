@@ -454,8 +454,11 @@ def _eml_target(raw: bytes, save_directory: Path, taken: set[Path]) -> Path:
     taken_keys = {_fs_key(path.name) for path in taken}
     for n in range(1, 1000):
         candidate = name if n == 1 else f"{stem} {n}.eml"
-        target = (save_directory / candidate).resolve()
-        if _fs_key(target.name) in taken_keys:
+        # Not resolved: save_directory already is, and resolving the leaf
+        # would follow a symlink planted under this name out of the
+        # directory. A link is simply a name in use.
+        target = save_directory / candidate
+        if _fs_key(target.name) in taken_keys or target.is_symlink():
             continue
         if not target.exists():
             return target

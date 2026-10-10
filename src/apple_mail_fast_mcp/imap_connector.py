@@ -1018,11 +1018,23 @@ def _envelope_to_dict(
 
 
 def _flag_names(flags: Any) -> list[str] | None:
-    """A FETCH ``FLAGS`` value as strings, in the server's order — system
-    flags and keywords alike. ``None`` when the server sent none at all."""
+    """A FETCH ``FLAGS`` value as sorted strings — system flags and keywords
+    alike. ``None`` when the server sent no FLAGS at all.
+
+    Sorted because the order a server lists flags in carries no meaning, and
+    two reads of the same flags must compare equal. imapclient's parser
+    returns an all-digit keyword as an ``int`` and one spelled ``NIL`` as
+    ``None``; both are still flags.
+    """
     if flags is None:
         return None
-    return [_decode(flag) for flag in flags]
+
+    def name(flag: Any) -> str:
+        if flag is None:
+            return "NIL"
+        return _decode(flag) if isinstance(flag, (bytes, bytearray, str)) else str(flag)
+
+    return sorted(name(flag) for flag in flags)
 
 
 def _peek(section_key: bytes) -> bytes:
@@ -1572,9 +1584,12 @@ class ImapConnector:
         Flags returned in the same FETCH as the body already reflect that
         fetch, so they could not show whether it changed anything. That is
         two round-trips more than :meth:`fetch_raw_message`, which stays the
-        path for callers that only want the bytes. A value the server did not
-        give is ``None``; ``flags_after`` is ``None`` if the message was moved
-        or expunged in between.
+        path for callers that only want the bytes. Flag lists are sorted, so
+        equal flags compare equal. A value the server did not give is
+        ``None``, which means unknown, not unchanged: ``flags_after`` is
+        ``None`` if the message was moved or expunged in between, or if the
+        connection dropped after the body arrived (the bytes are still
+        returned).
 
         Raises:
             MailMessageNotFoundError: No message in ``mailbox`` matches.
@@ -1582,34 +1597,51 @@ class ImapConnector:
         """
         bracketed = _bracket_message_id(message_id)
         _reject_control_chars(mailbox, "mailbox")
-        with self._session() as client:
-            info = client.select_folder(mailbox, readonly=True)
-            uids = client.search(["HEADER", "Message-ID", bracketed])
-            if not uids:
-                raise MailMessageNotFoundError(
-                    f"Message-ID {message_id!r} not found in mailbox "
-                    f"{mailbox!r} on {self._host}."
-                )
-            uid = uids[0]
-            before = client.fetch([uid], [b"FLAGS", b"RFC822.SIZE"]).get(uid) or {}
-            fetched_at = _datetime.now(_timezone.utc).isoformat(timespec="seconds")
-            raw = (client.fetch([uid], [_peek(b"BODY[]")]).get(uid) or {}).get(b"BODY[]")
-            if not raw:
-                raise MailMessageNotFoundError(
-                    f"Message-ID {message_id!r} in {mailbox!r} returned an "
-                    f"empty body on {self._host}."
-                )
-            after = client.fetch([uid], [b"FLAGS"]).get(uid)
-            return bytes(raw), {
-                "host": self._host,
-                "mailbox": mailbox,
-                "uidvalidity": info.get(b"UIDVALIDITY"),
-                "uid": uid,
-                "rfc822_size": before.get(b"RFC822.SIZE"),
-                "flags_before": _flag_names(before.get(b"FLAGS")),
-                "flags_after": _flag_names(after.get(b"FLAGS")) if after else None,
-                "fetched_at": fetched_at,
-            }
+        raw: bytes | None = None
+        source: dict[str, Any] = {}
+        try:
+            with self._session() as client:
+                info = client.select_folder(mailbox, readonly=True)
+                uids = client.search(["HEADER", "Message-ID", bracketed])
+                if not uids:
+                    raise MailMessageNotFoundError(
+                        f"Message-ID {message_id!r} not found in mailbox "
+                        f"{mailbox!r} on {self._host}."
+                    )
+                uid = uids[0]
+                before = client.fetch([uid], [b"FLAGS", b"RFC822.SIZE"]).get(uid) or {}
+                fetched_at = _datetime.now(_timezone.utc).isoformat(timespec="seconds")
+                body = (client.fetch([uid], [_peek(b"BODY[]")]).get(uid) or {}).get(b"BODY[]")
+                if not body:
+                    raise MailMessageNotFoundError(
+                        f"Message-ID {message_id!r} in {mailbox!r} returned an "
+                        f"empty body on {self._host}."
+                    )
+                source = {
+                    "host": self._host,
+                    "mailbox": mailbox,
+                    "uidvalidity": info.get(b"UIDVALIDITY"),
+                    "uid": uid,
+                    "rfc822_size": before.get(b"RFC822.SIZE"),
+                    "flags_before": _flag_names(before.get(b"FLAGS")),
+                    "flags_after": None,
+                    "fetched_at": fetched_at,
+                }
+                raw = bytes(body)
+                after = client.fetch([uid], [b"FLAGS"]).get(uid)
+                source["flags_after"] = _flag_names(after.get(b"FLAGS")) if after else None
+        except (OSError, IMAPClientError):
+            # Raised inside the session so the pool still sees a dead
+            # connection and drops it. But once the message has arrived, the
+            # export is complete and only the after-state is unknown: losing
+            # the last read must not lose the bytes.
+            if raw is None:
+                raise
+        if raw is None:  # every path above sets raw or raises; this narrows the type
+            raise MailMessageNotFoundError(
+                f"Message-ID {message_id!r} not found in mailbox {mailbox!r} on {self._host}."
+            )
+        return raw, source
 
     def fetch_attachment_payload(
         self,

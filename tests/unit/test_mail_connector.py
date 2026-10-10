@@ -10805,6 +10805,25 @@ class TestSaveMessageAsEml:
         assert again == a
         assert len(list(tmp_path.iterdir())) == 2
 
+    def test_eml_is_not_written_through_a_symlink(
+        self, connector: AppleMailConnector, tmp_path: Path
+    ) -> None:
+        """A link already sitting where the .eml would go — dangling, so it
+        does not look like an existing file — must not carry the write out
+        of the save directory."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        save_dir = tmp_path / "save"
+        save_dir.mkdir()
+        (save_dir / "hello.eml").symlink_to(outside / "planted.eml")
+        raw = b"Subject: hello\r\nMessage-ID: <att-test@example.com>\r\n\r\nbody\r\n"
+
+        target = Path(self._save(connector, raw, save_dir, include_message=True)["message_file"])
+
+        assert target == save_dir.resolve() / "hello 2.eml"
+        assert target.read_bytes() == raw
+        assert list(outside.iterdir()) == []
+
     def test_eml_never_lands_on_an_attachment_however_they_are_named(
         self, connector: AppleMailConnector, tmp_path: Path
     ) -> None:

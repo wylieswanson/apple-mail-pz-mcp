@@ -1390,8 +1390,10 @@ class TestGetMessage:
             "uidvalidity": 1700000000,
             "uid": 42,
             "rfc822_size": 19,
-            "flags_before": ["\\Flagged", "$Forwarded"],
-            "flags_after": ["\\Flagged", "$Forwarded"],
+            # Sorted, so two reads of the same flags compare equal whatever
+            # order the server lists them in.
+            "flags_before": ["$Forwarded", "\\Flagged"],
+            "flags_after": ["$Forwarded", "\\Flagged"],
         }
         assert datetime.fromisoformat(fetched_at).tzinfo is not None
         client.select_folder.assert_called_once_with("Filed", readonly=True)
@@ -1427,6 +1429,52 @@ class TestGetMessage:
 
         assert raw
         assert source["flags_after"] is None
+
+    def test_flag_names_takes_whatever_the_parser_hands_over(self) -> None:
+        """imapclient parses an all-digit keyword as an int and one spelled
+        NIL as None. A message carrying either could never be exported."""
+        from apple_mail_fast_mcp.imap_connector import _flag_names
+
+        assert _flag_names((b"\\Seen", 2024, None, b"$Label1")) == [
+            "$Label1", "2024", "NIL", "\\Seen",
+        ]
+        assert _flag_names(()) == []
+        assert _flag_names(None) is None
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_fetch_with_source_keeps_the_bytes_if_the_last_read_fails(
+        self, mock_cls: MagicMock
+    ) -> None:
+        """The connection can drop after the message has arrived. The export
+        is complete; only the after-state is unknown. Throwing the bytes away
+        turned a finished export into "set up IMAP"."""
+        client = self._source_client(mock_cls)
+        client.fetch.side_effect = [
+            {42: {b"FLAGS": (b"\\Seen",), b"RFC822.SIZE": 19}},
+            {42: {b"BODY[]": b"Subject: x\r\n\r\nhi\r\n"}},
+            TimeoutError("timed out"),
+        ]
+
+        raw, source = ImapConnector("h", 993, "u@e.com", "pw").fetch_message_with_source(
+            "abc@x", "INBOX",
+        )
+
+        assert raw == b"Subject: x\r\n\r\nhi\r\n"
+        assert source["flags_before"] == ["\\Seen"]
+        assert source["flags_after"] is None
+
+    @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
+    def test_fetch_with_source_still_fails_if_the_body_never_arrives(
+        self, mock_cls: MagicMock
+    ) -> None:
+        client = self._source_client(mock_cls)
+        client.fetch.side_effect = [
+            {42: {b"FLAGS": (b"\\Seen",), b"RFC822.SIZE": 19}},
+            TimeoutError("timed out"),
+        ]
+
+        with pytest.raises(TimeoutError):
+            ImapConnector("h", 993, "u@e.com", "pw").fetch_message_with_source("abc@x", "INBOX")
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_fetch_with_source_not_found(self, mock_cls: MagicMock) -> None:
