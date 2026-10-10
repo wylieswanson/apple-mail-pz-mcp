@@ -38,8 +38,8 @@ Report the running server's own version, git commit, and build date. Hosts adver
 ```json
 {
   "success": true,
-  "banner": "apple-mail-pz-mcp 0.14.1 | commit 9aa07b537411 | committed 2026-07-09T15:57:51-07:00 | built 2026-07-09T23:03:01+00:00",
-  "version": "0.14.1",
+  "banner": "apple-mail-pz-mcp 0.14.2 | commit 9aa07b537411 | committed 2026-07-09T15:57:51-07:00 | built 2026-07-09T23:03:01+00:00",
+  "version": "0.14.2",
   "commit": "9aa07b537411",
   "commit_date": "2026-07-09T15:57:51-07:00",
   "built_at": "2026-07-09T23:03:01+00:00",
@@ -753,13 +753,13 @@ and `save_attachments`, so an index means the same part in all of them.
   "uid": 1207,
   "rfc822_size": 48213,
   "bytes_written": 48213,
-  "flags_before": ["\\Seen", "$Forwarded"],
-  "flags_after": ["\\Seen", "$Forwarded"],
+  "flags_before": ["$Forwarded", "\\Seen"],
+  "flags_after": ["$Forwarded", "\\Seen"],
   "fetched_at": "2026-10-10T22:13:57+00:00"
 }
 ```
 
-`uidvalidity` + `uid` identify the message on that server for as long as the mailbox keeps its UIDVALIDITY. `rfc822_size` is the size the server states and `bytes_written` the size of the file, so the two can be compared without a stat. `flags_before` / `flags_after` are the full IMAP flag lists, system flags and keywords, each read in its own command on either side of the body fetch: equal lists are the record that the export changed nothing. `flags_after` is `null` if the message was moved or expunged in between. `fetched_at` is UTC. The object costs two IMAP round-trips beyond the fetch itself and is only produced with `include_message`.
+`uidvalidity` + `uid` identify the message on that server for as long as the mailbox keeps its UIDVALIDITY. `rfc822_size` is the size the server states and `bytes_written` the size of the file, so the two can be compared without a stat. `flags_before` / `flags_after` are the full IMAP flag lists, system flags and keywords, sorted, each read in its own command on either side of the body fetch. Two equal lists are the record that the flags were the same before and after the export. `null` means unknown, not unchanged: `flags_after` is `null` if the message was moved or expunged in between, or if the connection dropped after the body arrived (the `.eml` is still written). Unequal lists mean the flags changed during the export, which another mail client can also cause. `rfc822_size` is the server's own figure, and a few servers state one that differs from the bytes they then send, so a mismatch is something to look into rather than proof of a bad file. `fetched_at` is UTC. The object costs two IMAP round-trips beyond the fetch itself and is only produced with `include_message`.
 
 `rejected` lists any attachments skipped by the byte
 caps (per-attachment default 100 MB, aggregate 500 MB per call — disk-fill DoS protection, #236),
