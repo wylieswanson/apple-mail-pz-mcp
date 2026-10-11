@@ -22,10 +22,27 @@ for merging and tagging; retain the contributor and milestone reporting below.
    gh pr merge <number> --squash --delete-branch
    ```
 
-4. **Switch to main and pull:**
+4. **Bring local `main` up to date.** In the main checkout:
    ```bash
    git checkout main && git pull
    ```
+   In a linked worktree (`.git` is a file — Claude Desktop sessions and
+   `claude --worktree` run in one under `.claude/worktrees/`), `main` is already
+   checked out in the main checkout, so `git checkout main` fails with "already
+   used by worktree". Fast-forward it where it lives instead (#8):
+   ```bash
+   MAIN="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+   if [ "$(git -C "$MAIN" branch --show-current)" = "main" ]; then
+     git -C "$MAIN" pull --ff-only
+   else
+     git fetch origin main:main   # main checkout is on another branch
+   fi
+   ```
+   The same limitation reaches step 3: `gh pr merge --delete-branch` merges on
+   GitHub first and only then tries to switch the local checkout to `main`. If
+   it errors from a worktree, confirm with `gh pr view <number> --json state`
+   before retrying — the PR is probably already merged, with only the branch
+   cleanup left to do.
 
 5. **Surface open contributor PRs** (any PR the current GitHub user did not author). This is the catch-net for external contributions that might otherwise sit unreviewed for weeks. The block below is hardened against a transient empty response that once hid PR #246 across four runs (#253): it echoes the filter identity, retries once on an empty fetch, reports total-vs-filtered counts, and filters via `jq --arg` (so an empty identity over-surfaces rather than silently dropping everything):
    ```bash

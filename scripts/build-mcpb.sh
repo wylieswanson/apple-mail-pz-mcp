@@ -95,10 +95,12 @@ if ! SMOKE_OUT="$(uv run --directory "$SMOKE_DIR" apple-mail-pz-mcp --version 2>
 fi
 echo "  $SMOKE_OUT"
 
-# The bundle must carry its provenance. If this says "unknown", the frozen
-# _build_info.py did not survive the build and .mcpb users cannot tell which
-# commit they are running.
-if $IN_CHECKOUT && echo "$SMOKE_OUT" | grep -q "unknown"; then
+# The bundle must carry its provenance. If the banner says "commit unknown",
+# the frozen _build_info.py did not survive the build and .mcpb users cannot
+# tell which commit they are running. Match the banner's own phrase (see
+# version.py), not a bare "unknown": SMOKE_OUT also holds uv's stderr, and any
+# stray "unknown" in that chatter failed a good build.
+if $IN_CHECKOUT && echo "$SMOKE_OUT" | grep -q "commit unknown"; then
     echo "ERROR: bundle reports an unknown commit; _build_info.py did not survive." >&2
     exit 1
 fi
