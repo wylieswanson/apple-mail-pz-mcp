@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.3] - 2026-10-11
+
+A build-tooling patch. The server and its 27 tools are unchanged; what changed is how the `.mcpb` bundle is built and how the repository checks itself.
+
+### Fixed
+
+**A bundle built from a git worktree reported `commit unknown`.** `build-mcpb.sh` decided whether it was in a git checkout with `[ -d .git ]`. In a linked worktree `.git` is a file, so the script skipped both the provenance freeze and the guard that is meant to fail the build when the commit is unknown: `make check-bundle` succeeded and produced a bundle whose `--version` said `commit unknown (installed from sdist)`. It now tests `[ -e .git ]`, the rule `hatch_build.py` and `version.py` already used. Bundles attached to releases were not affected — CI builds from a normal checkout. ([#5](https://github.com/wylieswanson/apple-mail-pz-mcp/pull/5))
+
+**The unknown-commit guard could fail a good build.** It searched everything the smoke test printed, `uv`'s own stderr included, for the bare word "unknown". It now looks for the phrase the version banner prints, `commit unknown`, and still finds it when a narrow terminal wraps the banner between those two words. ([#7](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/7))
+
+**The release workflow built on whatever Node the runner shipped.** `node-version: '22'` sat on the `setup-uv` step, which has no such input, so `setup-node` ran unpinned. The pin is now on `setup-node`, in the release workflow and in the CI job that rehearses it. ([#6](https://github.com/wylieswanson/apple-mail-pz-mcp/pull/6))
+
+### Changed
+
+**Formatting is enforced.** `ruff format --check` now runs in `make lint`, and so in `make check-all`, and as its own CI step. Nothing ran it before, and 49 of 62 files had drifted; they were reformatted in one pass that leaves every file's parsed AST identical. That commit is listed in `.git-blame-ignore-revs`, which GitHub's blame view honors; locally, opt in with `git config blame.ignoreRevsFile .git-blame-ignore-revs`. ([#9](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/9), [#12](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/12))
+
+**`build-mcpb.sh` has tests.** They run the real script against a throwaway repository — a normal checkout, a linked worktree, and a tree with no git — with `uv` and `npx` stubbed, so they need neither Node nor the network.
+
+**The merge procedure can be followed from a worktree.** `MERGE_AND_STATUS.md` told every caller to `git checkout main`, which cannot work where `main` is checked out elsewhere. ([#8](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/8))
+
+**CI:** `actions/setup-node` 4 → 7.
+
+**Tool surface:** unchanged, 0 bytes.
+
+### Known issues
+
+Unchanged from v0.14.0, including the waived benchmark baseline and blind-eval snapshot ([#2](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/2), [#3](https://github.com/wylieswanson/apple-mail-pz-mcp/issues/3)). The integration suite was again not run.
+
 ## [0.14.2] - 2026-10-10
 
 The `.eml` export from v0.14.0, made fit to file as a record: it now says where its bytes came from, and it keeps its whole name.
