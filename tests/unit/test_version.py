@@ -177,4 +177,6 @@ class TestVersionBanner:
         )
         banner = version.version_banner()
         assert "0.10.2" in banner
-        assert "unknown" in banner
+        # The exact phrase scripts/build-mcpb.sh greps for to fail a bundle
+        # that lost its provenance. Reword one and the guard goes dead.
+        assert "commit unknown" in banner
