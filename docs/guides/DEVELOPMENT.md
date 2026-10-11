@@ -66,6 +66,10 @@ raising one needs justification). See [COMPLEXITY.md](COMPLEXITY.md).
   `feature/issue-42-thread-support`.
 - **`CHANGELOG.md` is only updated on release branches**, never on feature branches (the release
   skill owns it).
+- **Bulk reformats are hidden from blame.** [`.git-blame-ignore-revs`](../../.git-blame-ignore-revs)
+  lists them; GitHub honors it automatically, and locally it is a one-time opt-in:
+  `git config blame.ignoreRevsFile .git-blame-ignore-revs`. After a formatting-only PR merges, add
+  its squash commit's full hash to that file.
 
 ## Common make targets
 

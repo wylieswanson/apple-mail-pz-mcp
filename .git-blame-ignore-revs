@@ -1,0 +1,13 @@
+# Commits `git blame` should look through: bulk reformats that touch many
+# lines without changing what any of them do.
+#
+# GitHub's blame view reads this file automatically. Locally, opt in once:
+#
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Add a commit here only after it has merged, using the full 40-character hash
+# of the commit as it landed on main (PRs are squash-merged, so the hash does
+# not exist before that).
+
+# ci: enforce ruff format, after one formatting pass (#11)
+4a7ac6435d916112660f5f479c2d9dc6473edd9e
