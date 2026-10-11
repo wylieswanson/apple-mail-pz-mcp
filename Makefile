@@ -10,7 +10,7 @@ help:
 	@echo "  make test-integration - Run integration tests (requires Mail.app)"
 	@echo "  make test-e2e         - Run end-to-end tests"
 	@echo "  make test-verbose     - Run tests with verbose output"
-	@echo "  make lint             - Run ruff linter"
+	@echo "  make lint             - Run ruff linter + format check"
 	@echo "  make format           - Run ruff formatter"
 	@echo "  make typecheck        - Run mypy type checker"
 	@echo "  make complexity       - Check cyclomatic complexity"
@@ -60,8 +60,11 @@ benchmark-baseline:
 test-verbose:
 	uv run pytest tests/ -m "not integration and not e2e and not benchmark" -v --tb=long
 
+# The format check rides with lint so check-all and CI both get it. Without
+# it `make format` rewrote dozens of unrelated files: 49 of 62 had drifted (#9).
 lint:
 	uv run ruff check src/ tests/
+	uv run ruff format --check src/ tests/
 
 format:
 	uv run ruff format src/ tests/

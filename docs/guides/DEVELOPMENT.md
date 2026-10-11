@@ -27,6 +27,7 @@ apple_mail_fast_mcp.server`). `uv sync` also installs the `apple-mail-pz-mcp` co
 | Step | Command | Notes |
 |------|---------|-------|
 | Lint | `uv run ruff check src/ tests/` | blocking |
+| Format | `uv run ruff format --check src/ tests/` | blocking — run `make format` to fix |
 | Type check | `uv run mypy src/` | blocking (strict) |
 | Unit tests | `uv run pytest -m "not integration and not e2e and not benchmark"` | blocking; use `make coverage` for the separate 90% coverage gate |
 | Complexity | `./scripts/check_complexity.sh` | blocking — see below |

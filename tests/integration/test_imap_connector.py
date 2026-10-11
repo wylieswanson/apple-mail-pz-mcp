@@ -41,9 +41,7 @@ def _test_mode_enabled() -> bool:
 class TestEndToEndICloud:
     def test_end_to_end_search_returns_list(self):
         password = get_imap_password(ICLOUD_ACCOUNT_NAME, ICLOUD_EMAIL)
-        connector = ImapConnector(
-            ICLOUD_HOST, ICLOUD_PORT, ICLOUD_EMAIL, password
-        )
+        connector = ImapConnector(ICLOUD_HOST, ICLOUD_PORT, ICLOUD_EMAIL, password)
         result = connector.search_messages(limit=5)
         assert isinstance(result, list)
         # May be empty (per PR #70 spike finding — merged-away Apple ID's

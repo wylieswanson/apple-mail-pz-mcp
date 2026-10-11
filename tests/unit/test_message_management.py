@@ -20,16 +20,12 @@ class TestMoveMessages:
         return AppleMailConnector(timeout=30)
 
     @patch.object(AppleMailConnector, "_run_applescript")
-    def test_move_single_message(
-        self, mock_run: MagicMock, connector: AppleMailConnector
-    ) -> None:
+    def test_move_single_message(self, mock_run: MagicMock, connector: AppleMailConnector) -> None:
         """Test moving a single message."""
         mock_run.return_value = "1"
 
         result = connector.move_messages(
-            message_ids=["12345"],
-            destination_mailbox="Archive",
-            account="Gmail"
+            message_ids=["12345"], destination_mailbox="Archive", account="Gmail"
         )
 
         assert result == 1
@@ -45,9 +41,7 @@ class TestMoveMessages:
         mock_run.return_value = "3"
 
         result = connector.move_messages(
-            message_ids=["12345", "12346", "12347"],
-            destination_mailbox="Archive",
-            account="Gmail"
+            message_ids=["12345", "12346", "12347"], destination_mailbox="Archive", account="Gmail"
         )
 
         assert result == 3
@@ -60,9 +54,7 @@ class TestMoveMessages:
         mock_run.return_value = "1"
 
         result = connector.move_messages(
-            message_ids=["12345"],
-            destination_mailbox="Projects/Client Work",
-            account="Gmail"
+            message_ids=["12345"], destination_mailbox="Projects/Client Work", account="Gmail"
         )
 
         assert result == 1
@@ -77,10 +69,7 @@ class TestMoveMessages:
         mock_run.return_value = "1"
 
         result = connector.move_messages(
-            message_ids=["12345"],
-            destination_mailbox="Archive",
-            account="Gmail",
-            gmail_mode=True
+            message_ids=["12345"], destination_mailbox="Archive", account="Gmail", gmail_mode=True
         )
 
         assert result == 1
@@ -90,9 +79,7 @@ class TestMoveMessages:
     def test_move_empty_list(self, connector: AppleMailConnector) -> None:
         """Test moving with empty message list."""
         result = connector.move_messages(
-            message_ids=[],
-            destination_mailbox="Archive",
-            account="Gmail"
+            message_ids=[], destination_mailbox="Archive", account="Gmail"
         )
         assert result == 0
 
@@ -105,9 +92,7 @@ class TestMoveMessages:
 
         with pytest.raises(MailMailboxNotFoundError):
             connector.move_messages(
-                message_ids=["12345"],
-                destination_mailbox="NonExistent",
-                account="Gmail"
+                message_ids=["12345"], destination_mailbox="NonExistent", account="Gmail"
             )
 
     @patch.object(AppleMailConnector, "_run_applescript")
@@ -149,16 +134,11 @@ class TestFlagMessage:
         return AppleMailConnector(timeout=30)
 
     @patch.object(AppleMailConnector, "_run_applescript")
-    def test_flag_with_red(
-        self, mock_run: MagicMock, connector: AppleMailConnector
-    ) -> None:
+    def test_flag_with_red(self, mock_run: MagicMock, connector: AppleMailConnector) -> None:
         """Test flagging message with red flag."""
         mock_run.return_value = "1"
 
-        result = connector.flag_message(
-            message_ids=["12345"],
-            flag_color="red"
-        )
+        result = connector.flag_message(message_ids=["12345"], flag_color="red")
 
         assert result == 1
         call_args = mock_run.call_args[0][0]
@@ -166,16 +146,11 @@ class TestFlagMessage:
         assert "1" in call_args  # Red is index 1
 
     @patch.object(AppleMailConnector, "_run_applescript")
-    def test_flag_with_none(
-        self, mock_run: MagicMock, connector: AppleMailConnector
-    ) -> None:
+    def test_flag_with_none(self, mock_run: MagicMock, connector: AppleMailConnector) -> None:
         """Test removing flag from message."""
         mock_run.return_value = "1"
 
-        result = connector.flag_message(
-            message_ids=["12345"],
-            flag_color="none"
-        )
+        result = connector.flag_message(message_ids=["12345"], flag_color="none")
 
         assert result == 1
         call_args = mock_run.call_args[0][0]
@@ -188,34 +163,23 @@ class TestFlagMessage:
         """Test flagging multiple messages."""
         mock_run.return_value = "3"
 
-        result = connector.flag_message(
-            message_ids=["12345", "12346", "12347"],
-            flag_color="blue"
-        )
+        result = connector.flag_message(message_ids=["12345", "12346", "12347"], flag_color="blue")
 
         assert result == 3
 
     def test_flag_invalid_color(self, connector: AppleMailConnector) -> None:
         """Test error with invalid flag color."""
         with pytest.raises(ValueError):
-            connector.flag_message(
-                message_ids=["12345"],
-                flag_color="invalid"
-            )
+            connector.flag_message(message_ids=["12345"], flag_color="invalid")
 
     @patch.object(AppleMailConnector, "_run_applescript")
-    def test_flag_all_colors(
-        self, mock_run: MagicMock, connector: AppleMailConnector
-    ) -> None:
+    def test_flag_all_colors(self, mock_run: MagicMock, connector: AppleMailConnector) -> None:
         """Test all valid flag colors."""
         valid_colors = ["none", "orange", "red", "yellow", "blue", "green", "purple", "gray"]
 
         for color in valid_colors:
             mock_run.return_value = "1"
-            result = connector.flag_message(
-                message_ids=["12345"],
-                flag_color=color
-            )
+            result = connector.flag_message(message_ids=["12345"], flag_color=color)
             assert result == 1
 
 
@@ -234,10 +198,7 @@ class TestCreateMailbox:
         """Test creating a top-level mailbox."""
         mock_run.return_value = "success"
 
-        result = connector.create_mailbox(
-            account="Gmail",
-            name="Archive"
-        )
+        result = connector.create_mailbox(account="Gmail", name="Archive")
 
         assert result is True
         call_args = mock_run.call_args[0][0]
@@ -252,9 +213,7 @@ class TestCreateMailbox:
         mock_run.return_value = "success"
 
         result = connector.create_mailbox(
-            account="Gmail",
-            name="Client Work",
-            parent_mailbox="Projects"
+            account="Gmail", name="Client Work", parent_mailbox="Projects"
         )
 
         assert result is True
@@ -272,7 +231,7 @@ class TestCreateMailbox:
         with pytest.raises(MailAppleScriptError):
             connector.create_mailbox(
                 account="Gmail",
-                name="INBOX"  # Already exists
+                name="INBOX",  # Already exists
             )
 
     @patch.object(AppleMailConnector, "_run_applescript")
@@ -290,7 +249,7 @@ class TestCreateMailbox:
         with pytest.raises(ValueError):
             connector.create_mailbox(
                 account="Gmail",
-                name=""  # Empty name
+                name="",  # Empty name
             )
 
     @patch.object(AppleMailConnector, "_run_applescript")
@@ -303,7 +262,7 @@ class TestCreateMailbox:
         # Path traversal attempt should be sanitized to just "etc"
         result = connector.create_mailbox(
             account="Gmail",
-            name="../../../etc"  # Path traversal attempt gets sanitized
+            name="../../../etc",  # Path traversal attempt gets sanitized
         )
 
         assert result is True
@@ -329,10 +288,7 @@ class TestDeleteMessages:
         """Test deleting a single message (move to trash)."""
         mock_run.return_value = "1"
 
-        result = connector.delete_messages(
-            message_ids=["12345"],
-            permanent=False
-        )
+        result = connector.delete_messages(message_ids=["12345"], permanent=False)
 
         assert result == 1
         call_args = mock_run.call_args[0][0]
@@ -345,10 +301,7 @@ class TestDeleteMessages:
         """Test deleting multiple messages."""
         mock_run.return_value = "3"
 
-        result = connector.delete_messages(
-            message_ids=["12345", "12346", "12347"],
-            permanent=False
-        )
+        result = connector.delete_messages(message_ids=["12345", "12346", "12347"], permanent=False)
 
         assert result == 3
 
@@ -363,19 +316,13 @@ class TestDeleteMessages:
         mock_run.return_value = "1"
 
         with pytest.warns(DeprecationWarning, match="#111"):
-            result = connector.delete_messages(
-                message_ids=["12345"],
-                permanent=True
-            )
+            result = connector.delete_messages(message_ids=["12345"], permanent=True)
 
         assert result == 1
 
     def test_delete_empty_list(self, connector: AppleMailConnector) -> None:
         """Test deleting with empty message list."""
-        result = connector.delete_messages(
-            message_ids=[],
-            permanent=False
-        )
+        result = connector.delete_messages(message_ids=[], permanent=False)
         assert result == 0
 
     @patch.object(AppleMailConnector, "_run_applescript")
@@ -389,9 +336,7 @@ class TestDeleteMessages:
         # Should not allow deleting too many at once without confirmation
         with pytest.raises((ValueError, MailAppleScriptError)):
             connector.delete_messages(
-                message_ids=large_list,
-                permanent=False,
-                skip_bulk_check=False
+                message_ids=large_list, permanent=False, skip_bulk_check=False
             )
 
 

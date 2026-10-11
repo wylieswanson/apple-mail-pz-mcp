@@ -14,9 +14,7 @@ from .conftest import (
 
 
 @pytest.fixture(scope="module")
-def benchmark_mailbox(
-    connector: AppleMailConnector, test_account: str
-) -> str:
+def benchmark_mailbox(connector: AppleMailConnector, test_account: str) -> str:
     """Pick a mailbox in the test account that has at least 1 message.
 
     Tries INBOX, Archive, Sent Messages in that order. Skips if none
@@ -27,9 +25,7 @@ def benchmark_mailbox(
     mailbox."""
     for mb in ("INBOX", "Archive", "Sent Messages"):
         try:
-            results = connector.search_messages(
-                account=test_account, mailbox=mb, limit=1
-            )
+            results = connector.search_messages(account=test_account, mailbox=mb, limit=1)
         except Exception:
             continue
         if results:

@@ -153,9 +153,7 @@ class SmtpSender:
                     self._authenticate_and_send(client, msg, recipients, env_from)
                     accepted = True
             else:
-                with smtplib.SMTP(
-                    self._host, self._port, timeout=self._timeout
-                ) as client:
+                with smtplib.SMTP(self._host, self._port, timeout=self._timeout) as client:
                     client.ehlo()
                     client.starttls(context=context)
                     client.ehlo()

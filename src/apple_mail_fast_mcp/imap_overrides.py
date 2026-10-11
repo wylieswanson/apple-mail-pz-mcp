@@ -31,11 +31,7 @@ def _overrides_path() -> Path:
     are honored (same convention as templates/drafts ``default_root``).
     """
     home_override = os.environ.get("APPLE_MAIL_MCP_HOME")
-    base = (
-        Path(home_override)
-        if home_override
-        else Path.home() / ".apple_mail_mcp"
-    )
+    base = Path(home_override) if home_override else Path.home() / ".apple_mail_mcp"
     return base / "imap_login_overrides.json"
 
 
@@ -50,11 +46,7 @@ def _load() -> dict[str, str]:
     if not isinstance(data, dict):
         return {}
     # Keep only str->str entries; ignore anything malformed.
-    return {
-        str(k): str(v)
-        for k, v in data.items()
-        if isinstance(k, str) and isinstance(v, str)
-    }
+    return {str(k): str(v) for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
 
 
 def get_login_override(account: str) -> str | None:
@@ -120,11 +112,7 @@ def _server_overrides_path() -> Path:
     ``APPLE_MAIL_MCP_HOME`` (resolved at call time, same convention as
     :func:`_overrides_path`)."""
     home_override = os.environ.get("APPLE_MAIL_MCP_HOME")
-    base = (
-        Path(home_override)
-        if home_override
-        else Path.home() / ".apple_mail_mcp"
-    )
+    base = Path(home_override) if home_override else Path.home() / ".apple_mail_mcp"
     return base / "imap_server_overrides.json"
 
 
@@ -139,11 +127,7 @@ def _load_server() -> dict[str, dict[str, Any]]:
         return {}
     if not isinstance(data, dict):
         return {}
-    return {
-        str(k): v
-        for k, v in data.items()
-        if isinstance(k, str) and isinstance(v, dict)
-    }
+    return {str(k): v for k, v in data.items() if isinstance(k, str) and isinstance(v, dict)}
 
 
 def get_host_override(account: str) -> str | None:
@@ -165,9 +149,7 @@ def get_port_override(account: str) -> int | None:
     return None
 
 
-def set_server_override(
-    account: str, *, host: str | None, port: int | None
-) -> None:
+def set_server_override(account: str, *, host: str | None, port: int | None) -> None:
     """Persist host and/or port overrides for ``account`` (#405).
 
     Only the provided fields are stored; passing both ``None`` is a no-op

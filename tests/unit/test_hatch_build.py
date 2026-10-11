@@ -77,9 +77,7 @@ class TestFinalizeOnlyRemovesWhatItWrote:
         hook.finalize("standard", build_data, "artifact.whl")
         assert not (tmp_path / TARGET).exists()
 
-    def test_finalize_without_initialize_is_safe(
-        self, hook: _Hook, tmp_path: Path
-    ) -> None:
+    def test_finalize_without_initialize_is_safe(self, hook: _Hook, tmp_path: Path) -> None:
         staged = tmp_path / TARGET
         staged.write_text("COMMIT = 'staged'\n")
         hook.finalize("standard", {}, "artifact.whl")
@@ -99,9 +97,7 @@ class TestInitializeShipsTheProvenance:
         )
         build_data: dict[str, Any] = {}
         hook.initialize("standard", build_data)
-        assert list(build_data["force_include"].values()) == [
-            "apple_mail_fast_mcp/_build_info.py"
-        ]
+        assert list(build_data["force_include"].values()) == ["apple_mail_fast_mcp/_build_info.py"]
 
     def test_no_git_writes_nothing(
         self, hook: _Hook, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

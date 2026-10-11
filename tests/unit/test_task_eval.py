@@ -70,18 +70,22 @@ class TestCostIsMeasured:
                 tool_calls=[
                     ToolCall(
                         "search_messages",
-                        {"account": "Work", "mailbox": "INBOX",
-                         "sender_contains": "newsletter@example.com"},
+                        {
+                            "account": "Work",
+                            "mailbox": "INBOX",
+                            "sender_contains": "newsletter@example.com",
+                        },
                     )
                 ],
-                input_tokens=5000, output_tokens=60,
+                input_tokens=5000,
+                output_tokens=60,
             ),
             ChatResponse(
                 tool_calls=[
-                    ToolCall("update_message",
-                             {"message_ids": NEWSLETTER_IDS, "read_status": True})
+                    ToolCall("update_message", {"message_ids": NEWSLETTER_IDS, "read_status": True})
                 ],
-                input_tokens=5600, output_tokens=40,
+                input_tokens=5600,
+                output_tokens=40,
             ),
             ChatResponse(content="Marked 3 messages as read.", input_tokens=5700, output_tokens=12),
         )
@@ -97,8 +101,10 @@ class TestCostIsMeasured:
         chat = _scripted(
             ChatResponse(
                 tool_calls=[
-                    ToolCall("search_messages",
-                             {"account": "Work", "sender_contains": "newsletter@example.com"})
+                    ToolCall(
+                        "search_messages",
+                        {"account": "Work", "sender_contains": "newsletter@example.com"},
+                    )
                 ]
             ),
             ChatResponse(
@@ -110,11 +116,14 @@ class TestCostIsMeasured:
             ChatResponse(content="Marked them read."),
         )
         result = await run_task(BATCH_TASK, chat)
-        assert result.success is True          # the mailbox is correct...
-        assert result.tool_calls == 4          # ...and it cost double
+        assert result.success is True  # the mailbox is correct...
+        assert result.tool_calls == 4  # ...and it cost double
         assert result.over_budget is True
         assert result.call_sequence == [
-            "search_messages", "update_message", "update_message", "update_message",
+            "search_messages",
+            "update_message",
+            "update_message",
+            "update_message",
         ]
 
 
@@ -130,8 +139,10 @@ class TestScoringGradesTheMailboxNotTheProse:
         chat = _scripted(
             ChatResponse(
                 tool_calls=[
-                    ToolCall("update_message",
-                             {"message_ids": [*NEWSLETTER_IDS, "msg-4"], "read_status": True})
+                    ToolCall(
+                        "update_message",
+                        {"message_ids": [*NEWSLETTER_IDS, "msg-4"], "read_status": True},
+                    )
                 ]
             ),
             ChatResponse(content="Marked as read."),

@@ -392,9 +392,7 @@ def _select_attachments_within_caps(
     return allowed, rejected
 
 
-def _require_attachment_indices_in_range(
-    attachment_indices: list[int] | None, count: int
-) -> None:
+def _require_attachment_indices_in_range(attachment_indices: list[int] | None, count: int) -> None:
     """Reject a save that names an attachment the message doesn't have.
 
     Dropping the bad index and reporting ``saved: 0`` as a success left the
@@ -4844,9 +4842,7 @@ class AppleMailConnector:
             try:
                 host, port, email = self._resolve_imap_config(account)
                 password = self._get_imap_password_with_fallback(account, email)
-                ImapConnector(
-                    host, port, email, password, pool=self._imap_pool
-                ).ensure_folder(name)
+                ImapConnector(host, port, email, password, pool=self._imap_pool).ensure_folder(name)
                 return
             except _IMAP_FALLBACK_EXCS as exc:
                 self._log_imap_fallback(account, exc)

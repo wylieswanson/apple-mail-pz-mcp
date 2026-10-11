@@ -60,9 +60,7 @@ class SeedRecord:
 
 def _validate_draft_id(draft_id: str) -> None:
     if not isinstance(draft_id, str) or not _DRAFT_ID_RE.fullmatch(draft_id):
-        raise MailDraftInvalidIdError(
-            f"draft_id {draft_id!r} must match {_DRAFT_ID_RE.pattern}"
-        )
+        raise MailDraftInvalidIdError(f"draft_id {draft_id!r} must match {_DRAFT_ID_RE.pattern}")
 
 
 def default_root() -> Path:

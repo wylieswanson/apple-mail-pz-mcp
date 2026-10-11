@@ -28,7 +28,9 @@ pytestmark = pytest.mark.skipif(
 def _osascript_return(escaped: str) -> tuple[int, str, str]:
     r = subprocess.run(
         ["/usr/bin/osascript", "-e", f'return "{escaped}"'],
-        capture_output=True, text=True, timeout=10,
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
     # osascript appends exactly one trailing newline to its output.
     out = r.stdout[:-1] if r.stdout.endswith("\n") else r.stdout
@@ -39,9 +41,7 @@ def _osascript_return(escaped: str) -> tuple[int, str, str]:
 # and carriage return, which AppleScript normalizes to LF (covered by the
 # explicit example below). Everything else (quotes, backslashes, newlines,
 # tabs, unicode) must round-trip exactly.
-_TEXT = st.text(
-    alphabet=st.characters(exclude_categories=("Cs",), exclude_characters="\r")
-)
+_TEXT = st.text(alphabet=st.characters(exclude_categories=("Cs",), exclude_characters="\r"))
 
 
 @settings(max_examples=50, deadline=None, suppress_health_check=[HealthCheck.too_slow])
@@ -51,9 +51,7 @@ def test_escaped_string_round_trips_through_osascript(s: str) -> None:
     escaped = escape_applescript_string(expected)
     rc, out, err = _osascript_return(escaped)
     assert rc == 0, f"osascript failed to parse the literal: {err}"
-    assert out == expected, (
-        f"round-trip mismatch: in={expected!r} out={out!r}"
-    )
+    assert out == expected, f"round-trip mismatch: in={expected!r} out={out!r}"
 
 
 def test_carriage_return_is_normalized_to_newline() -> None:

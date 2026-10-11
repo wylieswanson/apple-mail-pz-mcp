@@ -54,15 +54,12 @@ GMAIL_BENCH_SOURCE_NAME = "[apple-mail-mcp-bench-gmail-source]"
 # Skip-unless-flag gate
 # ---------------------------------------------------------------------------
 
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Skip every test in this directory unless --run-benchmark is given."""
     if config.getoption("--run-benchmark"):
         return
-    skip_marker = pytest.mark.skip(
-        reason="Benchmarks are opt-in. Use --run-benchmark to enable."
-    )
+    skip_marker = pytest.mark.skip(reason="Benchmarks are opt-in. Use --run-benchmark to enable.")
     for item in items:
         # Only mark items in this directory; the hook fires globally.
         if "tests/benchmarks/" in str(item.fspath):
@@ -72,6 +69,7 @@ def pytest_collection_modifyitems(
 # ---------------------------------------------------------------------------
 # Timing harness
 # ---------------------------------------------------------------------------
+
 
 class BenchmarkResult:
     """Statistical summary of N timed runs of an operation.
@@ -130,6 +128,7 @@ def measure_median(
 # Baseline I/O + assertion
 # ---------------------------------------------------------------------------
 
+
 # baseline.json holds benchmark name -> median seconds (float), plus a
 # `_version` string stamp recording the release the timings were captured for
 # (the release-artifact gate, #356, checks it). Hence dict[str, Any].
@@ -141,9 +140,7 @@ def _load_baselines() -> dict[str, Any]:
 
 
 def _save_baselines(baselines: dict[str, Any]) -> None:
-    BASELINE_PATH.write_text(
-        json.dumps(baselines, indent=2, sort_keys=True) + "\n"
-    )
+    BASELINE_PATH.write_text(json.dumps(baselines, indent=2, sort_keys=True) + "\n")
 
 
 @pytest.fixture(scope="session")
@@ -177,10 +174,7 @@ def assert_within_baseline(
         _captured[name] = round(result.median, 3)
         return
     if name not in baselines:
-        pytest.skip(
-            f"No baseline for {name!r}. "
-            f"Run with --capture-baseline to create one."
-        )
+        pytest.skip(f"No baseline for {name!r}. Run with --capture-baseline to create one.")
     baseline = baselines[name]
     threshold = baseline * ratio
     assert result.median <= threshold, (
@@ -216,6 +210,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 # Shared fixtures: connector, test account, bench mailbox
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="session")
 def connector() -> AppleMailConnector:
     """Single connector reused across the entire benchmark session.
@@ -235,9 +230,7 @@ def test_account() -> str:
 
 
 @pytest.fixture(scope="session")
-def bench_source(
-    connector: AppleMailConnector, test_account: str
-) -> str:
+def bench_source(connector: AppleMailConnector, test_account: str) -> str:
     """Dedicated synthetic source pool for the bulk fixtures, also the
     move-back destination during teardown (#287).
 
@@ -290,9 +283,7 @@ def bench_source(
 
 
 @pytest.fixture(scope="session")
-def bench_mailbox(
-    connector: AppleMailConnector, test_account: str
-) -> str:
+def bench_mailbox(connector: AppleMailConnector, test_account: str) -> str:
     """Ensure the [apple-mail-mcp-bench] mailbox exists in the test
     account; create it via create_mailbox if missing. Returns its name."""
     mailboxes = connector.list_mailboxes(test_account)
@@ -428,9 +419,7 @@ def test_account_gmail() -> str:
 
 
 @pytest.fixture(scope="session")
-def gmail_bench_source(
-    connector: AppleMailConnector, test_account_gmail: str
-) -> str:
+def gmail_bench_source(connector: AppleMailConnector, test_account_gmail: str) -> str:
     """Create [apple-mail-mcp-bench-gmail-source] (if missing) and ensure
     it holds at least BULK_SIZE synthetic messages via IMAP APPEND.
 
@@ -444,9 +433,7 @@ def gmail_bench_source(
     mailboxes = connector.list_mailboxes(test_account_gmail)
     names = {mb["name"] for mb in mailboxes}
     if GMAIL_BENCH_SOURCE_NAME not in names:
-        connector.create_mailbox(
-            account=test_account_gmail, name=GMAIL_BENCH_SOURCE_NAME
-        )
+        connector.create_mailbox(account=test_account_gmail, name=GMAIL_BENCH_SOURCE_NAME)
 
     host, port, email = connector._resolve_imap_config(test_account_gmail)
     pw = get_imap_password(test_account_gmail, email)
@@ -458,9 +445,7 @@ def gmail_bench_source(
         if existing < BULK_SIZE:
             client.unselect_folder()
             for i in range(existing, BULK_SIZE):
-                client.append(
-                    GMAIL_BENCH_SOURCE_NAME, _make_synthetic_message(i)
-                )
+                client.append(GMAIL_BENCH_SOURCE_NAME, _make_synthetic_message(i))
     finally:
         client.logout()
 
@@ -468,16 +453,12 @@ def gmail_bench_source(
 
 
 @pytest.fixture(scope="session")
-def gmail_bench_mailbox(
-    connector: AppleMailConnector, test_account_gmail: str
-) -> str:
+def gmail_bench_mailbox(connector: AppleMailConnector, test_account_gmail: str) -> str:
     """Ensure [apple-mail-mcp-bench-gmail] exists in the Gmail account."""
     mailboxes = connector.list_mailboxes(test_account_gmail)
     names = {mb["name"] for mb in mailboxes}
     if GMAIL_BENCH_MAILBOX_NAME not in names:
-        connector.create_mailbox(
-            account=test_account_gmail, name=GMAIL_BENCH_MAILBOX_NAME
-        )
+        connector.create_mailbox(account=test_account_gmail, name=GMAIL_BENCH_MAILBOX_NAME)
     return GMAIL_BENCH_MAILBOX_NAME
 
 

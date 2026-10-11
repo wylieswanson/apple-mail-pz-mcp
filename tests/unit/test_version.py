@@ -19,9 +19,7 @@ def _clear_cache() -> None:
 
 
 class TestBuildInfoFromBuildHook:
-    def test_prefers_generated_build_info(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_prefers_generated_build_info(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = SimpleNamespace(
             COMMIT="abc123def456",
             COMMIT_DATE="2026-07-09T12:00:00-07:00",
@@ -30,9 +28,7 @@ class TestBuildInfoFromBuildHook:
         )
         monkeypatch.setitem(sys.modules, "apple_mail_fast_mcp._build_info", fake)
         # git must not even be consulted when the build hook baked it in
-        monkeypatch.setattr(
-            version, "_git", lambda *a: pytest.fail("git should not run")
-        )
+        monkeypatch.setattr(version, "_git", lambda *a: pytest.fail("git should not run"))
         info = version.build_info()
         assert info["source"] == "build"
         assert info["commit"] == "abc123def456"
@@ -41,9 +37,7 @@ class TestBuildInfoFromBuildHook:
 
 
 class TestBuildInfoFromGit:
-    def test_falls_back_to_git_in_a_checkout(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_falls_back_to_git_in_a_checkout(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(version, "_from_build_hook", lambda: None)
         calls: dict[tuple[str, ...], str | None] = {
             ("rev-parse", "--short=12", "HEAD"): "0ef7dd33b850",
@@ -56,9 +50,7 @@ class TestBuildInfoFromGit:
         assert info["commit"] == "0ef7dd33b850"
         assert info["dirty"] is False
 
-    def test_untracked_files_do_not_mean_dirty(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_untracked_files_do_not_mean_dirty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """uv leaves an untracked `.ok` in the checkout it builds from.
 
         Counting untracked files flagged every `uvx --from git+…` install as
@@ -79,18 +71,18 @@ class TestBuildInfoFromGit:
         monkeypatch.setattr(version, "_from_build_hook", lambda: None)
         monkeypatch.setattr(version, "_git", fake_git)
         assert version.build_info()["dirty"] is False
-        assert any("--untracked-files=no" in a for a in seen), (
-            "status must exclude untracked files"
-        )
+        assert any("--untracked-files=no" in a for a in seen), "status must exclude untracked files"
 
     def test_dirty_tree_is_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(version, "_from_build_hook", lambda: None)
         monkeypatch.setattr(
             version,
             "_git",
-            lambda *a: "deadbeefcafe"
-            if a[0] == "rev-parse"
-            else (" M src/x.py" if a[0] == "status" else "2026-07-09T00:00:00Z"),
+            lambda *a: (
+                "deadbeefcafe"
+                if a[0] == "rev-parse"
+                else (" M src/x.py" if a[0] == "status" else "2026-07-09T00:00:00Z")
+            ),
         )
         assert version.build_info()["dirty"] is True
 
@@ -105,9 +97,7 @@ class TestBuildInfoUnknown:
         # the version itself always resolves
         assert info["version"] == __version__
 
-    def test_never_raises_when_git_explodes(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_never_raises_when_git_explodes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def boom(*_a: Any, **_k: Any) -> Any:
             raise OSError("git segfaulted")
 
@@ -138,9 +128,7 @@ class TestBuildInfoUnknown:
 
 
 class TestVersionBanner:
-    def test_banner_includes_version_and_commit(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_banner_includes_version_and_commit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             version,
             "build_info",
@@ -174,9 +162,7 @@ class TestVersionBanner:
         )
         assert "abc123-dirty" in version.version_banner()
 
-    def test_banner_admits_unknown_provenance(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_banner_admits_unknown_provenance(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             version,
             "build_info",

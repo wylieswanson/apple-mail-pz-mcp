@@ -17,9 +17,7 @@ _ENV_TRUE = frozenset({"1", "true", "yes", "on"})
 _ENV_FALSE = frozenset({"0", "false", "no", "off", ""})
 
 
-def env_flag(
-    name: str, env: Mapping[str, str] | None = None, *, default: bool = False
-) -> bool:
+def env_flag(name: str, env: Mapping[str, str] | None = None, *, default: bool = False) -> bool:
     """Read a boolean env var without the ``bool("false") is True`` trap.
 
     Unset, empty, and unrecognized values fall back to ``default`` — an env
@@ -36,6 +34,7 @@ def env_flag(
     if normalized in _ENV_FALSE:
         return False
     return default
+
 
 # Cap for a single message body returned inline by get_messages (#365).
 # Bodies are returned as part of a possibly multi-message JSON-RPC response;
@@ -181,9 +180,7 @@ def address_domain(address: str) -> str:
     return address.rsplit("@", 1)[1].lower()
 
 
-def rank_senders(
-    rows: list[dict[str, Any]], by: str, limit: int
-) -> list[dict[str, Any]]:
+def rank_senders(rows: list[dict[str, Any]], by: str, limit: int) -> list[dict[str, Any]]:
     """Aggregate ``search_messages`` rows into a ranked sender list. (#378)
 
     Groups by full address (``by="address"``) or domain (``by="domain"``),
@@ -359,7 +356,7 @@ def sanitize_mailbox_name(name: str) -> str:
     name = name.replace("\\", "")
 
     # Remove dangerous characters but keep spaces, dashes, underscores
-    name = re.sub(r'[<>:"|?*]', '', name)
+    name = re.sub(r'[<>:"|?*]', "", name)
 
     # Trim whitespace
     name = name.strip()
@@ -438,8 +435,7 @@ def get_flag_index(color: str) -> int:
     color_lower = color.lower()
     if color_lower not in color_map:
         raise ValueError(
-            f"Invalid flag color: {color}. "
-            f"Valid colors: {', '.join(color_map.keys())}"
+            f"Invalid flag color: {color}. Valid colors: {', '.join(color_map.keys())}"
         )
 
     return color_map[color_lower]
@@ -470,7 +466,7 @@ def parse_applescript_json(result: str) -> Any:
 
     stripped = result.strip()
     if stripped.startswith("ERROR:"):
-        raise MailAppleScriptError(stripped[len("ERROR:"):].strip())
+        raise MailAppleScriptError(stripped[len("ERROR:") :].strip())
     return json.loads(stripped)
 
 
@@ -498,7 +494,7 @@ def normalize_subject(subject: str) -> str:
         changed = False
         for prefix in _REPLY_PREFIXES:
             if s.lower().startswith(prefix):
-                s = s[len(prefix):].lstrip()
+                s = s[len(prefix) :].lstrip()
                 changed = True
                 break
     return s
@@ -634,9 +630,7 @@ def is_apple_hosted_address(address: str) -> bool:
     ``@mac.com``). Used by ``_resolve_imap_config`` to pick the right IMAP
     login when an iCloud account's Apple ID is a third-party email (#299).
     """
-    return address.strip().lower().endswith(
-        ("@icloud.com", "@me.com", "@mac.com")
-    )
+    return address.strip().lower().endswith(("@icloud.com", "@me.com", "@mac.com"))
 
 
 def is_icloud_imap_host(host: str) -> bool:
@@ -664,9 +658,7 @@ def is_texty_mime(mime_type: str) -> bool:
     return m.endswith("+json") or m.endswith("+xml")
 
 
-def attachment_content_encoding(
-    payload: bytes, mime_type: str
-) -> tuple[str, str]:
+def attachment_content_encoding(payload: bytes, mime_type: str) -> tuple[str, str]:
     """Encode attachment bytes for inline return (#250).
 
     Returns ``(content, encoding)``. For texty MIME types

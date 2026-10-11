@@ -84,7 +84,5 @@ async def test_stdio_subprocess_lists_all_tools() -> None:
     layer: banner output contaminating stdout, stream closure, JSON-RPC framing,
     or protocol-version negotiation.
     """
-    names = await asyncio.wait_for(
-        _list_tools_over_stdio(), timeout=HANDSHAKE_TIMEOUT_SECONDS
-    )
+    names = await asyncio.wait_for(_list_tools_over_stdio(), timeout=HANDSHAKE_TIMEOUT_SECONDS)
     assert names == EXPECTED_TOOLS

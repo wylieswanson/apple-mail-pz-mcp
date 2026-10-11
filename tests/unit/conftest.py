@@ -16,9 +16,7 @@ def _reset_rate_limiter() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _block_real_io(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _block_real_io(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Fail fast on real network / DNS / subprocess in the unit suite (#408).
 
     A unit test that reaches real DNS, a real socket, or a real subprocess

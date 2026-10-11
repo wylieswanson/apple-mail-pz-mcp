@@ -78,9 +78,7 @@ class TestProviderTable:
             assert p.key and p.name and p.steps
         # Generic is the only one without a URL.
         assert GENERIC.app_password_url is None
-        assert all(
-            p.app_password_url for k, p in PROVIDERS.items() if k != "generic"
-        )
+        assert all(p.app_password_url for k, p in PROVIDERS.items() if k != "generic")
 
 
 class TestSmtpSavesSentCopy:
@@ -91,20 +89,10 @@ class TestSmtpSavesSentCopy:
 
     def test_only_gmail_auto_saves(self):
         assert PROVIDERS["gmail"].smtp_saves_sent_copy is True
-        assert all(
-            p.smtp_saves_sent_copy is False
-            for k, p in PROVIDERS.items()
-            if k != "gmail"
-        )
+        assert all(p.smtp_saves_sent_copy is False for k, p in PROVIDERS.items() if k != "gmail")
 
     def test_detect_carries_the_flag(self):
         # Both the SMTP host and the IMAP host resolve to the Gmail provider.
-        assert detect_provider(
-            "smtp.gmail.com", "me@x.test"
-        ).smtp_saves_sent_copy
-        assert detect_provider(
-            "imap.gmail.com", "me@gmail.com"
-        ).smtp_saves_sent_copy
-        assert not detect_provider(
-            "smtp.x.test", "me@x.test"
-        ).smtp_saves_sent_copy
+        assert detect_provider("smtp.gmail.com", "me@x.test").smtp_saves_sent_copy
+        assert detect_provider("imap.gmail.com", "me@gmail.com").smtp_saves_sent_copy
+        assert not detect_provider("smtp.x.test", "me@x.test").smtp_saves_sent_copy

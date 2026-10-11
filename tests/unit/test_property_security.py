@@ -41,8 +41,11 @@ class TestSanitizeInputProperties:
 
     @given(
         st.one_of(
-            st.integers(), st.floats(allow_nan=False), st.booleans(),
-            st.binary(), st.lists(st.integers()),
+            st.integers(),
+            st.floats(allow_nan=False),
+            st.booleans(),
+            st.binary(),
+            st.lists(st.integers()),
         )
     )
     def test_non_str_inputs_become_str(self, value: object) -> None:

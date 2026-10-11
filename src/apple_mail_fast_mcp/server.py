@@ -348,7 +348,11 @@ def _confirm_by_input_request(
         answer = raw if isinstance(raw, ElicitResult) else ElicitResult.model_validate(raw)
     except ValueError:
         answer = None
-    if answer is not None and answer.action == "accept" and (answer.content or {}).get("value") is True:
+    if (
+        answer is not None
+        and answer.action == "accept"
+        and (answer.content or {}).get("value") is True
+    ):
         return None
     operation_logger.log_operation(operation, params, "cancelled")
     return {
@@ -2939,7 +2943,9 @@ def save_template(name: str, body: str, subject: str | None = None) -> dict[str,
     {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True},
     mutating=True,
 )
-async def delete_template(name: str, ctx: Context | None = None) -> dict[str, Any] | InputRequiredResult:
+async def delete_template(
+    name: str, ctx: Context | None = None
+) -> dict[str, Any] | InputRequiredResult:
     """Delete a template by name.
 
     Destructive — requires user confirmation via MCP elicitation before

@@ -51,7 +51,9 @@ def mock_connector() -> MagicMock:
     m = MagicMock()
     m.list_accounts.return_value = _make_accounts()
     m._resolve_imap_config.return_value = (
-        "imap.mail.me.com", 993, "alice@icloud.com",
+        "imap.mail.me.com",
+        993,
+        "alice@icloud.com",
     )
     return m
 
@@ -97,7 +99,9 @@ class TestAccountValidation:
         # email_addresses populated — _resolve_imap_config returns "" for
         # the email field after the #201 fallback chain exhausts.
         mock_connector._resolve_imap_config.return_value = (
-            "imap.mail.me.com", 993, "",
+            "imap.mail.me.com",
+            993,
+            "",
         )
 
         rc = run_setup_imap(
@@ -122,7 +126,8 @@ class TestAccountValidation:
 
         set_calls: list[tuple[str, str, str]] = []
         monkeypatch.setattr(
-            cli_mod, "set_imap_password",
+            cli_mod,
+            "set_imap_password",
             lambda a, e, p: set_calls.append((a, e, p)),
         )
 
@@ -156,7 +161,8 @@ class TestSetupHappyPath:
 
         set_calls: list[tuple[str, str, str]] = []
         monkeypatch.setattr(
-            cli_mod, "set_imap_password",
+            cli_mod,
+            "set_imap_password",
             lambda a, e, p: set_calls.append((a, e, p)),
         )
 
@@ -203,13 +209,16 @@ class TestSetupHappyPath:
 
         set_calls: list[tuple[str, str, str]] = []
         monkeypatch.setattr(
-            cli_mod, "set_imap_password",
+            cli_mod,
+            "set_imap_password",
             lambda a, e, p: set_calls.append((a, e, p)),
         )
 
         # Resolver returns one value; user explicitly passes another.
         mock_connector._resolve_imap_config.return_value = (
-            "imap.mail.me.com", 993, "from-alias@example.com",
+            "imap.mail.me.com",
+            993,
+            "from-alias@example.com",
         )
 
         captured: list[tuple[str, int, str, str]] = []
@@ -254,7 +263,8 @@ class TestSetupFailurePaths:
 
         set_calls: list[Any] = []
         monkeypatch.setattr(
-            cli_mod, "set_imap_password",
+            cli_mod,
+            "set_imap_password",
             lambda *a, **k: set_calls.append(a),
         )
 
@@ -300,17 +310,17 @@ class TestSetupFailurePaths:
         set_calls: list[tuple[str, str, str]] = []
         delete_calls: list[tuple[str, str]] = []
         monkeypatch.setattr(
-            cli_mod, "set_imap_password",
+            cli_mod,
+            "set_imap_password",
             lambda a, e, p: set_calls.append((a, e, p)),
         )
         monkeypatch.setattr(
-            cli_mod, "delete_imap_password",
+            cli_mod,
+            "delete_imap_password",
             lambda a, e: delete_calls.append((a, e)),
         )
 
-        mock_imap_client.search_messages.side_effect = LoginError(
-            "AUTHENTICATIONFAILED"
-        )
+        mock_imap_client.search_messages.side_effect = LoginError("AUTHENTICATIONFAILED")
 
         rc = run_setup_imap(
             account_name="iCloud",
@@ -341,10 +351,13 @@ class TestSetupFailurePaths:
 
         delete_calls: list[Any] = []
         monkeypatch.setattr(
-            cli_mod, "set_imap_password", lambda a, e, p: None,
+            cli_mod,
+            "set_imap_password",
+            lambda a, e, p: None,
         )
         monkeypatch.setattr(
-            cli_mod, "delete_imap_password",
+            cli_mod,
+            "delete_imap_password",
             lambda *a, **k: delete_calls.append(a),
         )
 
@@ -375,15 +388,17 @@ class TestSetupFailurePaths:
         from apple_mail_fast_mcp import cli as cli_mod
 
         monkeypatch.setattr(
-            cli_mod, "set_imap_password", lambda a, e, p: None,
+            cli_mod,
+            "set_imap_password",
+            lambda a, e, p: None,
         )
         monkeypatch.setattr(
-            cli_mod, "delete_imap_password", lambda a, e: None,
+            cli_mod,
+            "delete_imap_password",
+            lambda a, e: None,
         )
 
-        mock_imap_client.search_messages.side_effect = IMAPClientError(
-            "BAD command"
-        )
+        mock_imap_client.search_messages.side_effect = IMAPClientError("BAD command")
 
         rc = run_setup_imap(
             account_name="iCloud",
@@ -440,7 +455,8 @@ class TestUninstall:
 
         delete_calls: list[tuple[str, str]] = []
         monkeypatch.setattr(
-            cli_mod, "delete_imap_password",
+            cli_mod,
+            "delete_imap_password",
             lambda a, e: delete_calls.append((a, e)),
         )
 
@@ -466,7 +482,9 @@ class TestUninstall:
             raise MailKeychainEntryNotFoundError("missing")
 
         monkeypatch.setattr(
-            cli_mod, "delete_imap_password", raise_not_found,
+            cli_mod,
+            "delete_imap_password",
+            raise_not_found,
         )
 
         rc = run_setup_imap(
@@ -486,7 +504,9 @@ class TestUninstall:
         from apple_mail_fast_mcp import cli as cli_mod
 
         monkeypatch.setattr(
-            cli_mod, "delete_imap_password", lambda a, e: None,
+            cli_mod,
+            "delete_imap_password",
+            lambda a, e: None,
         )
 
         def fail_if_called(prompt: str) -> str:
@@ -508,14 +528,14 @@ class TestUninstall:
 
 
 class TestServerMainDispatch:
-    def test_no_args_starts_mcp_server(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_no_args_starts_mcp_server(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from apple_mail_fast_mcp import server as server_mod
 
         run_calls: list[Any] = []
         monkeypatch.setattr(
-            server_mod.mcp, "run", lambda: run_calls.append(True),
+            server_mod.mcp,
+            "run",
+            lambda: run_calls.append(True),
         )
         rc = server_mod.main([])
         assert rc == 0
@@ -543,9 +563,7 @@ class TestServerMainDispatch:
 
         monkeypatch.setattr(cli_mod, "run_setup_imap", fake_run)
 
-        rc = server_mod.main(
-            ["setup-imap", "--account", "iCloud", "--uninstall"]
-        )
+        rc = server_mod.main(["setup-imap", "--account", "iCloud", "--uninstall"])
         assert rc == 7
         assert captured == {
             "account_name": "iCloud",
@@ -584,7 +602,9 @@ class TestLoginOverride:
         monkeypatch.setattr(cli_mod, "set_imap_password", lambda a, e, p: None)
         # iCloud account whose Mail.app login resolves to a gmail address.
         mock_connector._resolve_imap_config.return_value = (
-            "p42-imap.mail.me.com", 993, "someone@gmail.com",
+            "p42-imap.mail.me.com",
+            993,
+            "someone@gmail.com",
         )
         rc = run_setup_imap(
             account_name="iCloud",
@@ -674,11 +694,11 @@ class TestLoginOverride:
         monkeypatch.setattr(cli_mod, "set_imap_password", lambda a, e, p: None)
         monkeypatch.setattr(cli_mod, "delete_imap_password", lambda a, e: None)
         mock_connector._resolve_imap_config.return_value = (
-            "p42-imap.mail.me.com", 993, "someone@gmail.com",
+            "p42-imap.mail.me.com",
+            993,
+            "someone@gmail.com",
         )
-        mock_imap_client.search_messages.side_effect = LoginError(
-            "AUTHENTICATIONFAILED"
-        )
+        mock_imap_client.search_messages.side_effect = LoginError("AUTHENTICATIONFAILED")
         rc = run_setup_imap(
             account_name="iCloud",
             cli_email=None,
@@ -717,16 +737,19 @@ class TestGuidedProviderSetup:
         set_calls: list[tuple[str, str, str]] = []
         delete_calls: list[tuple[str, str]] = []
         monkeypatch.setattr(
-            cli_mod, "set_imap_password",
+            cli_mod,
+            "set_imap_password",
             lambda a, e, p: set_calls.append((a, e, p)),
         )
         monkeypatch.setattr(
-            cli_mod, "delete_imap_password",
+            cli_mod,
+            "delete_imap_password",
             lambda a, e: delete_calls.append((a, e)),
         )
         # First LOGIN rejected, second accepted.
         mock_imap_client.search_messages.side_effect = [
-            LoginError("AUTHENTICATIONFAILED"), [],
+            LoginError("AUTHENTICATIONFAILED"),
+            [],
         ]
         pws = iter(["wrongpw", "rightpw"])
 
@@ -798,7 +821,9 @@ class TestGuidedProviderSetup:
     ) -> None:
         # Unknown host + email → GENERIC (no app-password URL).
         mock_connector._resolve_imap_config.return_value = (
-            "imap.example.org", 993, "bob@example.org",
+            "imap.example.org",
+            993,
+            "bob@example.org",
         )
         prompts: list[str] = []
         opened: list[str] = []
@@ -848,12 +873,17 @@ class TestServerOverrideFlags:
         monkeypatch.setattr(cli_mod, "set_imap_password", lambda a, e, p: None)
         # Mail.app misreports the port as 143 (the #405 bug).
         mock_connector._resolve_imap_config.return_value = (
-            "imap.corp.example", 143, "me@corp.example",
+            "imap.corp.example",
+            143,
+            "me@corp.example",
         )
         seen: dict[str, Any] = {}
         rc = run_setup_imap(
-            account_name="iCloud", cli_email=None, uninstall=False,
-            cli_host=None, cli_port=993,
+            account_name="iCloud",
+            cli_email=None,
+            uninstall=False,
+            cli_host=None,
+            cli_port=993,
             connector_factory=lambda: mock_connector,
             getpass_fn=lambda prompt: "pw",
             imap_factory=_ok_imap_capture(seen),
@@ -872,12 +902,17 @@ class TestServerOverrideFlags:
 
         monkeypatch.setattr(cli_mod, "set_imap_password", lambda a, e, p: None)
         mock_connector._resolve_imap_config.return_value = (
-            "imap.wrong.example", 993, "me@corp.example",
+            "imap.wrong.example",
+            993,
+            "me@corp.example",
         )
         seen: dict[str, Any] = {}
         rc = run_setup_imap(
-            account_name="iCloud", cli_email=None, uninstall=False,
-            cli_host="imap.real.example", cli_port=None,
+            account_name="iCloud",
+            cli_email=None,
+            uninstall=False,
+            cli_host="imap.real.example",
+            cli_port=None,
             connector_factory=lambda: mock_connector,
             getpass_fn=lambda prompt: "pw",
             imap_factory=_ok_imap_capture(seen),
@@ -901,8 +936,11 @@ class TestServerOverrideFlags:
             return m
 
         rc = run_setup_imap(
-            account_name="iCloud", cli_email=None, uninstall=False,
-            cli_host=None, cli_port=993,
+            account_name="iCloud",
+            cli_email=None,
+            uninstall=False,
+            cli_host=None,
+            cli_port=993,
             connector_factory=lambda: mock_connector,
             getpass_fn=lambda prompt: "pw",
             imap_factory=_reject,
@@ -920,7 +958,9 @@ class TestServerOverrideFlags:
         imap_overrides.set_server_override("iCloud", host=None, port=993)
         monkeypatch.setattr(cli_mod, "delete_imap_password", lambda a, e: None)
         rc = run_setup_imap(
-            account_name="iCloud", cli_email=None, uninstall=True,
+            account_name="iCloud",
+            cli_email=None,
+            uninstall=True,
             connector_factory=lambda: mock_connector,
         )
         assert rc == 0
@@ -939,7 +979,9 @@ class TestServerOverrideFlags:
         monkeypatch.setattr(cli_mod, "set_imap_password", lambda a, e, p: None)
         # Resolver hands back the misreported plaintext port; no override given.
         mock_connector._resolve_imap_config.return_value = (
-            "imap.corp.example", 143, "me@corp.example",
+            "imap.corp.example",
+            143,
+            "me@corp.example",
         )
 
         def _ssl_fail(h: str, p: int, e: str, pw: str) -> MagicMock:
@@ -950,7 +992,9 @@ class TestServerOverrideFlags:
             return m
 
         rc = run_setup_imap(
-            account_name="iCloud", cli_email=None, uninstall=False,
+            account_name="iCloud",
+            cli_email=None,
+            uninstall=False,
             connector_factory=lambda: mock_connector,
             getpass_fn=lambda prompt: "pw",
             imap_factory=_ssl_fail,
@@ -972,7 +1016,9 @@ class TestServerOverrideFlags:
 
         monkeypatch.setattr(cli_mod, "set_imap_password", lambda a, e, p: None)
         mock_connector._resolve_imap_config.return_value = (
-            "imap.corp.example", 993, "me@corp.example",
+            "imap.corp.example",
+            993,
+            "me@corp.example",
         )
 
         def _ssl_fail(h: str, p: int, e: str, pw: str) -> MagicMock:
@@ -981,7 +1027,9 @@ class TestServerOverrideFlags:
             return m
 
         run_setup_imap(
-            account_name="iCloud", cli_email=None, uninstall=False,
+            account_name="iCloud",
+            cli_email=None,
+            uninstall=False,
             connector_factory=lambda: mock_connector,
             getpass_fn=lambda prompt: "pw",
             imap_factory=_ssl_fail,
@@ -1003,24 +1051,19 @@ class TestSetupImapArgParsing:
         from apple_mail_fast_mcp.server import _build_arg_parser
 
         with pytest.raises(SystemExit):
-            _build_arg_parser().parse_args(
-                ["setup-imap", "--account", "X", "--port", "0"]
-            )
+            _build_arg_parser().parse_args(["setup-imap", "--account", "X", "--port", "0"])
 
-    def test_main_forwards_host_and_port(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_main_forwards_host_and_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from apple_mail_fast_mcp import cli as cli_mod
         from apple_mail_fast_mcp import server as server_mod
 
         calls: dict[str, Any] = {}
         monkeypatch.setattr(
-            cli_mod, "run_setup_imap",
+            cli_mod,
+            "run_setup_imap",
             lambda **kw: calls.update(kw) or 0,
         )
-        rc = server_mod.main(
-            ["setup-imap", "--account", "X", "--host", "imap.h", "--port", "993"]
-        )
+        rc = server_mod.main(["setup-imap", "--account", "X", "--host", "imap.h", "--port", "993"])
         assert rc == 0
         assert calls["cli_host"] == "imap.h"
         assert calls["cli_port"] == 993

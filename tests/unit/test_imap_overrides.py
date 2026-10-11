@@ -19,9 +19,7 @@ def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 class TestImapOverrides:
     def test_home_env_honored(self, _home: Path) -> None:
-        assert imap_overrides._overrides_path() == (
-            _home / "imap_login_overrides.json"
-        )
+        assert imap_overrides._overrides_path() == (_home / "imap_login_overrides.json")
 
     def test_missing_file_returns_none(self) -> None:
         assert imap_overrides.get_login_override("iCloud") is None
@@ -30,9 +28,7 @@ class TestImapOverrides:
         imap_overrides.set_login_override("iCloud", "me@icloud.com")
         assert imap_overrides.get_login_override("iCloud") == "me@icloud.com"
         # Persisted as JSON on disk.
-        data = json.loads(
-            (_home / "imap_login_overrides.json").read_text()
-        )
+        data = json.loads((_home / "imap_login_overrides.json").read_text())
         assert data == {"iCloud": "me@icloud.com"}
 
     def test_set_strips_whitespace(self) -> None:
@@ -78,38 +74,28 @@ class TestServerOverrides:
     (#405). Stored in a separate file from the login override."""
 
     def test_home_env_honored(self, _home: Path) -> None:
-        assert imap_overrides._server_overrides_path() == (
-            _home / "imap_server_overrides.json"
-        )
+        assert imap_overrides._server_overrides_path() == (_home / "imap_server_overrides.json")
 
     def test_missing_file_returns_none(self) -> None:
         assert imap_overrides.get_host_override("Work") is None
         assert imap_overrides.get_port_override("Work") is None
 
     def test_set_get_roundtrip_host_and_port(self, _home: Path) -> None:
-        imap_overrides.set_server_override(
-            "Work", host="imap.corp.example", port=993
-        )
+        imap_overrides.set_server_override("Work", host="imap.corp.example", port=993)
         assert imap_overrides.get_host_override("Work") == "imap.corp.example"
         assert imap_overrides.get_port_override("Work") == 993
-        data = json.loads(
-            (_home / "imap_server_overrides.json").read_text()
-        )
+        data = json.loads((_home / "imap_server_overrides.json").read_text())
         assert data == {"Work": {"host": "imap.corp.example", "port": 993}}
 
     def test_port_only_override(self, _home: Path) -> None:
         imap_overrides.set_server_override("Work", host=None, port=993)
         assert imap_overrides.get_host_override("Work") is None
         assert imap_overrides.get_port_override("Work") == 993
-        data = json.loads(
-            (_home / "imap_server_overrides.json").read_text()
-        )
+        data = json.loads((_home / "imap_server_overrides.json").read_text())
         assert data == {"Work": {"port": 993}}
 
     def test_host_only_override(self) -> None:
-        imap_overrides.set_server_override(
-            "Work", host="imap.corp.example", port=None
-        )
+        imap_overrides.set_server_override("Work", host="imap.corp.example", port=None)
         assert imap_overrides.get_host_override("Work") == "imap.corp.example"
         assert imap_overrides.get_port_override("Work") is None
 
@@ -118,9 +104,7 @@ class TestServerOverrides:
         assert isinstance(imap_overrides.get_port_override("Work"), int)
 
     def test_set_strips_host_whitespace(self) -> None:
-        imap_overrides.set_server_override(
-            "Work", host="  imap.corp.example \n", port=None
-        )
+        imap_overrides.set_server_override("Work", host="  imap.corp.example \n", port=None)
         assert imap_overrides.get_host_override("Work") == "imap.corp.example"
 
     def test_merges_multiple_accounts(self) -> None:
