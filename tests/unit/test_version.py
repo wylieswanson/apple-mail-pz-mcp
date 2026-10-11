@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -120,6 +121,20 @@ class TestBuildInfoUnknown:
 
         monkeypatch.setattr(subprocess, "run", timeout)
         assert version._git("rev-parse", "HEAD") in (None,)
+
+    def test_a_linked_worktree_counts_as_a_checkout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """In a worktree `.git` is a file, not a directory (see
+        test_build_mcpb.py for the script that got this wrong)."""
+        (tmp_path / ".git").write_text("gitdir: /elsewhere/.git/worktrees/wt\n")
+        monkeypatch.setattr(version, "_repo_root", lambda: tmp_path)
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *_a, **_k: SimpleNamespace(returncode=0, stdout="abc123def456\n"),
+        )
+        assert version._git("rev-parse", "HEAD") == "abc123def456"
 
 
 class TestVersionBanner:
