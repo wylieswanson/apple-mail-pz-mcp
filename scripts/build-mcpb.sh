@@ -46,7 +46,17 @@ find "$BUILD_DIR" -name '*.pyc' -delete
 # "unknown". This script *does* run in the repo, so write _build_info.py now —
 # the same file the hook would have produced. Tracked modifications only, to
 # match `git describe --dirty` (see hatch_build.py).
-if [ -d .git ]; then
+#
+# `-e`, not `-d`: in a linked worktree `.git` is a file pointing at the real
+# git dir. `-d` skipped the freeze *and* the guard below there, so a worktree
+# build shipped "commit unknown" and reported success. Same test as
+# hatch_build.py and version.py — and deliberately not `git rev-parse`, which
+# would also say yes in an unpacked sdist that merely sits inside some other
+# repo, and freeze that repo's commit.
+IN_CHECKOUT=false
+if [ -e .git ]; then IN_CHECKOUT=true; fi
+
+if $IN_CHECKOUT; then
     COMMIT="$(git rev-parse --short=12 HEAD)"
     COMMIT_DATE="$(git log -1 --format=%cI)"
     BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
@@ -88,7 +98,7 @@ echo "  $SMOKE_OUT"
 # The bundle must carry its provenance. If this says "unknown", the frozen
 # _build_info.py did not survive the build and .mcpb users cannot tell which
 # commit they are running.
-if [ -d .git ] && echo "$SMOKE_OUT" | grep -q "unknown"; then
+if $IN_CHECKOUT && echo "$SMOKE_OUT" | grep -q "unknown"; then
     echo "ERROR: bundle reports an unknown commit; _build_info.py did not survive." >&2
     exit 1
 fi

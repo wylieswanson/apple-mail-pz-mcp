@@ -14,6 +14,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -160,3 +161,16 @@ class TestGitHelperNeverRaises:
 
         monkeypatch.setattr(subprocess, "run", boom)
         assert hatch_build._git(tmp_path, "rev-parse", "HEAD") is None
+
+    def test_a_linked_worktree_counts_as_a_repo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """In a worktree `.git` is a file, not a directory. Asking `is_dir()`
+        here is the bug build-mcpb.sh had: provenance silently "unknown"."""
+        (tmp_path / ".git").write_text("gitdir: /elsewhere/.git/worktrees/wt\n")
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *_a, **_k: SimpleNamespace(returncode=0, stdout="abc123def456\n"),
+        )
+        assert hatch_build._git(tmp_path, "rev-parse", "HEAD") == "abc123def456"
