@@ -100,7 +100,14 @@ echo "  $SMOKE_OUT"
 # tell which commit they are running. Match the banner's own phrase (see
 # version.py), not a bare "unknown": SMOKE_OUT also holds uv's stderr, and any
 # stray "unknown" in that chatter failed a good build.
-if $IN_CHECKOUT && echo "$SMOKE_OUT" | grep -q "commit unknown"; then
+#
+# Collapse whitespace first: `--version` is an argparse action and wraps at
+# COLUMNS, so in a ~40-column terminal the phrase is split across two lines and
+# a line-based grep let a bundle with no provenance through. The here-string,
+# not `echo | grep -q`, because under pipefail an early grep exit can SIGPIPE
+# echo and turn a match into a false `if`.
+SMOKE_FLAT="$(printf '%s' "$SMOKE_OUT" | tr -s '[:space:]' ' ')"
+if $IN_CHECKOUT && grep -q "commit unknown" <<<"$SMOKE_FLAT"; then
     echo "ERROR: bundle reports an unknown commit; _build_info.py did not survive." >&2
     exit 1
 fi

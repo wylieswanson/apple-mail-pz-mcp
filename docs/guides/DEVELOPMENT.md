@@ -68,8 +68,10 @@ raising one needs justification). See [COMPLEXITY.md](COMPLEXITY.md).
   skill owns it).
 - **Bulk reformats are hidden from blame.** [`.git-blame-ignore-revs`](../../.git-blame-ignore-revs)
   lists them; GitHub honors it automatically, and locally it is a one-time opt-in:
-  `git config blame.ignoreRevsFile .git-blame-ignore-revs`. After a formatting-only PR merges, add
-  its squash commit's full hash to that file.
+  `git config blame.ignoreRevsFile .git-blame-ignore-revs`. That setting makes `git blame` fail
+  ("could not open object name list") in any checkout without the file — every tag up to v0.14.2 —
+  and no command-line flag overrides it; run `git config --unset blame.ignoreRevsFile` before
+  blaming there. After a formatting-only PR merges, add its squash commit's full hash to that file.
 
 ## Common make targets
 
