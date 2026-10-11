@@ -28,7 +28,11 @@ SCRIPT = REPO_ROOT / "scripts" / "build-mcpb.sh"
 # Stands in for `uv run --directory <bundle> apple-mail-pz-mcp --version`:
 # reports the commit frozen into the staged tree, as the real banner would.
 # FAKE_UV_LOSE_BUILD_INFO simulates the frozen file not surviving the build.
+# FAKE_UV_NOISE adds the kind of stderr chatter the real uv prints around it.
 _FAKE_UV = """#!/bin/sh
+if [ -n "${FAKE_UV_NOISE:-}" ]; then
+    echo "warning: unknown field in pyproject.toml, ignoring" >&2
+fi
 info="$3/src/apple_mail_fast_mcp/_build_info.py"
 if [ -f "$info" ] && [ -z "${FAKE_UV_LOSE_BUILD_INFO:-}" ]; then
     commit="$(sed -n "s/^COMMIT = '\\(.*\\)'$/\\1/p" "$info")"
@@ -142,6 +146,16 @@ class TestInAGitCheckout:
 
         assert result.returncode == 1
         assert "unknown commit" in result.stderr
+
+    def test_an_unrelated_unknown_does_not_fail_the_build(
+        self, checkouts: dict[str, Path], bin_dir: Path, kind: str
+    ) -> None:
+        """The smoke output carries uv's stderr too. Only the banner's own
+        `commit unknown` means the provenance was lost (#7)."""
+        result = _build(checkouts[kind], bin_dir, FAKE_UV_NOISE="1")
+
+        assert result.returncode == 0, result.stderr
+        assert "unknown commit" not in result.stderr
 
 
 class TestOutsideAGitCheckout:
