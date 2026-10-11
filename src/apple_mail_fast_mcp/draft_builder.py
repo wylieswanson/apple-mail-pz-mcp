@@ -224,9 +224,7 @@ def derive_reply_recipients(
 
 def _quote_lines(text: str) -> str:
     """Prefix each line of ``text`` with ``> `` (email plain-text quoting)."""
-    return "\n".join(
-        (f"> {line}" if line else ">") for line in (text or "").splitlines()
-    )
+    return "\n".join((f"> {line}" if line else ">") for line in (text or "").splitlines())
 
 
 def build_reply_body(
@@ -240,11 +238,7 @@ def build_reply_body(
     line, then the original quoted with ``> ``.
     """
     attribution = f"On {original_date.strip()}, {original_from.strip()} wrote:"
-    return (
-        f"{new_body.rstrip()}\n\n"
-        f"{attribution}\n"
-        f"{_quote_lines(original_text)}\n"
-    )
+    return f"{new_body.rstrip()}\n\n{attribution}\n{_quote_lines(original_text)}\n"
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -315,9 +309,7 @@ def _attachment_payload_bytes(part: MIMEPart[Any, Any]) -> bytes:
     return b""
 
 
-def _walk_attachment_parts(
-    part: MIMEPart[Any, Any], out: list[MIMEPart[Any, Any]]
-) -> None:
+def _walk_attachment_parts(part: MIMEPart[Any, Any], out: list[MIMEPart[Any, Any]]) -> None:
     """Collect attachment parts in MIME document order.
 
     Applies the same inclusion predicate as the IMAP BODYSTRUCTURE metadata

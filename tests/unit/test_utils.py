@@ -206,7 +206,9 @@ class TestParseRfc822Ids:
 
     def test_multiple_space_separated(self) -> None:
         assert parse_rfc822_ids("<a@x.com> <b@x.com> <c@x.com>") == [
-            "a@x.com", "b@x.com", "c@x.com",
+            "a@x.com",
+            "b@x.com",
+            "c@x.com",
         ]
 
     def test_multiline_references(self) -> None:
@@ -312,35 +314,43 @@ class TestWalkThreadGraph:
 
 
 class TestIsAccountUUID:
-    @pytest.mark.parametrize("value", [
-        "DC5AC137-2F7A-4299-B3D0-4D3E06C18DD5",  # uppercase
-        "dc5ac137-2f7a-4299-b3d0-4d3e06c18dd5",  # lowercase
-        "Dc5Ac137-2F7a-4299-B3d0-4D3e06C18DD5",  # mixed case
-        "00000000-0000-0000-0000-000000000000",  # all zeros
-        "ffffffff-ffff-ffff-ffff-ffffffffffff",  # all f
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "DC5AC137-2F7A-4299-B3D0-4D3E06C18DD5",  # uppercase
+            "dc5ac137-2f7a-4299-b3d0-4d3e06c18dd5",  # lowercase
+            "Dc5Ac137-2F7a-4299-B3d0-4D3e06C18DD5",  # mixed case
+            "00000000-0000-0000-0000-000000000000",  # all zeros
+            "ffffffff-ffff-ffff-ffff-ffffffffffff",  # all f
+        ],
+    )
     def test_recognizes_uuid_formats(self, value: str) -> None:
         assert is_account_uuid(value) is True
 
-    @pytest.mark.parametrize("value", [
-        "iCloud", "Gmail", "Yahoo!", "Work Account",
-        "MobileMe", "",
-        "DC5AC137-2F7A-4299-B3D0",  # too short
-        "DC5AC137-2F7A-4299-B3D0-4D3E06C18DD5-extra",  # too long
-        "DC5AC137_2F7A_4299_B3D0_4D3E06C18DD5",  # underscores not dashes
-        "GHIJKLMN-2F7A-4299-B3D0-4D3E06C18DD5",  # non-hex chars
-        " DC5AC137-2F7A-4299-B3D0-4D3E06C18DD5",  # leading whitespace
-        "DC5AC137-2F7A-4299-B3D0-4D3E06C18DD5 ",  # trailing whitespace
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "iCloud",
+            "Gmail",
+            "Yahoo!",
+            "Work Account",
+            "MobileMe",
+            "",
+            "DC5AC137-2F7A-4299-B3D0",  # too short
+            "DC5AC137-2F7A-4299-B3D0-4D3E06C18DD5-extra",  # too long
+            "DC5AC137_2F7A_4299_B3D0_4D3E06C18DD5",  # underscores not dashes
+            "GHIJKLMN-2F7A-4299-B3D0-4D3E06C18DD5",  # non-hex chars
+            " DC5AC137-2F7A-4299-B3D0-4D3E06C18DD5",  # leading whitespace
+            "DC5AC137-2F7A-4299-B3D0-4D3E06C18DD5 ",  # trailing whitespace
+        ],
+    )
     def test_rejects_non_uuid_strings(self, value: str) -> None:
         assert is_account_uuid(value) is False
 
 
 class TestAppleScriptAccountClause:
     def test_uuid_input_emits_account_id_clause(self) -> None:
-        result = applescript_account_clause(
-            "DC5AC137-2F7A-4299-B3D0-4D3E06C18DD5"
-        )
+        result = applescript_account_clause("DC5AC137-2F7A-4299-B3D0-4D3E06C18DD5")
         assert result == 'account id "DC5AC137-2F7A-4299-B3D0-4D3E06C18DD5"'
 
     def test_name_input_emits_account_clause(self) -> None:
@@ -350,13 +360,11 @@ class TestAppleScriptAccountClause:
         result = applescript_account_clause('Weird "Name" Acct')
         assert '\\"Name\\"' in result
         assert result.startswith('account "')
-        assert not result.startswith('account id')
+        assert not result.startswith("account id")
 
     def test_lowercase_uuid_works(self) -> None:
         # Real Mail.app emits uppercase, but accepting either is harmless.
-        result = applescript_account_clause(
-            "dc5ac137-2f7a-4299-b3d0-4d3e06c18dd5"
-        )
+        result = applescript_account_clause("dc5ac137-2f7a-4299-b3d0-4d3e06c18dd5")
         assert result == 'account id "dc5ac137-2f7a-4299-b3d0-4d3e06c18dd5"'
 
 
@@ -403,19 +411,20 @@ class TestGetFlagIndex:
     2026-05-12). No tests existed on get_flag_index before this fix —
     that is how the bug went undetected."""
 
-    @pytest.mark.parametrize("color,expected_index", [
-        ("none", -1),
-        ("red", 0),
-        ("orange", 1),
-        ("yellow", 2),
-        ("green", 3),
-        ("blue", 4),
-        ("purple", 5),
-        ("gray", 6),
-    ])
-    def test_returns_correct_index_for_each_color(
-        self, color: str, expected_index: int
-    ) -> None:
+    @pytest.mark.parametrize(
+        "color,expected_index",
+        [
+            ("none", -1),
+            ("red", 0),
+            ("orange", 1),
+            ("yellow", 2),
+            ("green", 3),
+            ("blue", 4),
+            ("purple", 5),
+            ("gray", 6),
+        ],
+    )
+    def test_returns_correct_index_for_each_color(self, color: str, expected_index: int) -> None:
         assert get_flag_index(color) == expected_index
 
     def test_raises_on_unknown_color(self) -> None:
@@ -563,16 +572,12 @@ class TestIsTextyMime:
 
 class TestAttachmentContentEncoding:
     def test_text_mime_utf8_returns_text(self):
-        content, encoding = attachment_content_encoding(
-            b"hello, world\n", "text/plain"
-        )
+        content, encoding = attachment_content_encoding(b"hello, world\n", "text/plain")
         assert encoding == "text"
         assert content == "hello, world\n"
 
     def test_json_mime_returns_text(self):
-        content, encoding = attachment_content_encoding(
-            b'{"a": 1}', "application/json"
-        )
+        content, encoding = attachment_content_encoding(b'{"a": 1}', "application/json")
         assert encoding == "text"
         assert content == '{"a": 1}'
 
@@ -584,9 +589,7 @@ class TestAttachmentContentEncoding:
 
     def test_binary_mime_returns_base64(self):
         payload = b"%PDF-1.7\n\x00\x01\x02"
-        content, encoding = attachment_content_encoding(
-            payload, "application/pdf"
-        )
+        content, encoding = attachment_content_encoding(payload, "application/pdf")
         assert encoding == "base64"
         assert _base64.b64decode(content) == payload
 
@@ -602,9 +605,7 @@ class TestMakeBodySafe:
     or non-UTF8-encodable body crashes the whole stdio MCP server."""
 
     def test_small_clean_content_unchanged(self):
-        safe, truncated, original = make_body_safe(
-            "hello world", DEFAULT_MAX_BODY_BYTES
-        )
+        safe, truncated, original = make_body_safe("hello world", DEFAULT_MAX_BODY_BYTES)
         assert safe == "hello world"
         assert truncated is False
         assert original == len(b"hello world")
@@ -618,9 +619,7 @@ class TestMakeBodySafe:
         assert truncated is False
 
     def test_strips_nul_and_c0_control_chars(self):
-        safe, _, _ = make_body_safe(
-            "a\x00b\x07c\x1fd", DEFAULT_MAX_BODY_BYTES
-        )
+        safe, _, _ = make_body_safe("a\x00b\x07c\x1fd", DEFAULT_MAX_BODY_BYTES)
         assert safe == "abcd"
 
     def test_scrubs_lone_surrogate_to_be_serializable(self):

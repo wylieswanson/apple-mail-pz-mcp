@@ -20,9 +20,7 @@ class TestGetAttachments:
         return AppleMailConnector(timeout=30)
 
     @patch.object(AppleMailConnector, "_run_applescript")
-    def test_get_attachments_list(
-        self, mock_run: MagicMock, connector: AppleMailConnector
-    ) -> None:
+    def test_get_attachments_list(self, mock_run: MagicMock, connector: AppleMailConnector) -> None:
         """Test listing attachments from a message."""
         mock_run.return_value = (
             '[{"name":"document.pdf","mime_type":"application/pdf","size":524288,"downloaded":true},'
@@ -109,15 +107,12 @@ class TestSaveAttachments:
         """Test saving a single attachment."""
         # First call enumerates names; second call performs the save.
         mock_run.side_effect = [
-            '[{"name":"document.pdf","mime_type":"application/pdf",'
-            '"size":1,"downloaded":true}]',
+            '[{"name":"document.pdf","mime_type":"application/pdf","size":1,"downloaded":true}]',
             "1",
         ]
 
         result = connector.save_attachments(
-            message_id="12345",
-            save_directory=tmp_path,
-            attachment_indices=[0]
+            message_id="12345", save_directory=tmp_path, attachment_indices=[0]
         )
 
         assert result["saved"] == 1
@@ -137,10 +132,7 @@ class TestSaveAttachments:
             "3",
         ]
 
-        result = connector.save_attachments(
-            message_id="12345",
-            save_directory=tmp_path
-        )
+        result = connector.save_attachments(message_id="12345", save_directory=tmp_path)
 
         assert result["saved"] == 3
         assert result["rejected"] == []
@@ -186,9 +178,7 @@ class TestSaveAttachments:
         assert result["rejected"][0]["name"] == "b.bin"
 
     @patch.object(AppleMailConnector, "_run_applescript")
-    def test_fail_open_on_unknown_size(
-        self, mock_run: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_fail_open_on_unknown_size(self, mock_run: MagicMock, tmp_path: Path) -> None:
         """A reported size of 0 is treated as under-cap and saved (the
         post-write net would still delete it if it turned out oversized)."""
         connector = AppleMailConnector(timeout=30, max_attachment_bytes=10)
@@ -223,16 +213,13 @@ class TestSaveAttachments:
 
         assert result["saved"] == 0
         assert not written.exists()  # post-write net deleted it
-        assert [r["reason"] for r in result["rejected"]] == [
-            "per_attachment_cap_postwrite"
-        ]
+        assert [r["reason"] for r in result["rejected"]] == ["per_attachment_cap_postwrite"]
 
     def test_save_to_invalid_directory(self, connector: AppleMailConnector) -> None:
         """Test error when save directory is invalid."""
         with pytest.raises((ValueError, FileNotFoundError)):
             connector.save_attachments(
-                message_id="12345",
-                save_directory=Path("/nonexistent/directory")
+                message_id="12345", save_directory=Path("/nonexistent/directory")
             )
 
     @patch.object(AppleMailConnector, "_run_applescript")
@@ -243,10 +230,7 @@ class TestSaveAttachments:
         # Attempting path traversal should be blocked
         # Will fail with FileNotFoundError or ValueError depending on path
         with pytest.raises((ValueError, FileNotFoundError)):
-            connector.save_attachments(
-                message_id="12345",
-                save_directory=Path("../../etc")
-            )
+            connector.save_attachments(message_id="12345", save_directory=Path("../../etc"))
 
 
 class TestAttachmentSecurity:
@@ -380,9 +364,7 @@ class TestSaveAttachmentsPathTraversal:
     def test_compute_targets_absolute_name_contained(self, tmp_path: Path) -> None:
         from apple_mail_fast_mcp.mail_connector import _compute_attachment_save_targets
 
-        targets = _compute_attachment_save_targets(
-            ["/etc/cron.d/evil"], tmp_path.resolve(), None
-        )
+        targets = _compute_attachment_save_targets(["/etc/cron.d/evil"], tmp_path.resolve(), None)
         assert len(targets) == 1
         assert targets[0][1].resolve().is_relative_to(tmp_path.resolve())
         assert targets[0][1].name == "evil"
@@ -410,6 +392,7 @@ class TestSaveAttachmentsPathTraversal:
         targets = _compute_attachment_save_targets(names, tmp_path.resolve(), None)
 
         import unicodedata
+
         keys = {unicodedata.normalize("NFC", p.name).casefold() for _, p in targets}
         assert len(keys) == 4
 
@@ -440,8 +423,7 @@ class TestSaveAttachmentsPathTraversal:
         # First call enumerates attachments (returns a malicious name);
         # the second call saves to the precomputed, sanitized paths.
         mock_run.side_effect = [
-            '[{"name":"../../../../tmp/evil.sh","mime_type":"x",'
-            '"size":1,"downloaded":true}]',
+            '[{"name":"../../../../tmp/evil.sh","mime_type":"x","size":1,"downloaded":true}]',
             "1",
         ]
         result = connector.save_attachments(message_id="123", save_directory=tmp_path)
@@ -486,17 +468,20 @@ class TestGetAttachmentContent:
 
     def _imap_patches(self, connector, mock_imap):
         from unittest.mock import patch
+
         return [
-            patch("apple_mail_fast_mcp.mail_connector.ImapConnector",
-                  return_value=mock_imap),
-            patch.object(AppleMailConnector, "_get_imap_password_with_fallback",
-                         return_value="pw"),
-            patch.object(AppleMailConnector, "_resolve_imap_config",
-                         return_value=("h", 993, "me@example.invalid")),
+            patch("apple_mail_fast_mcp.mail_connector.ImapConnector", return_value=mock_imap),
+            patch.object(AppleMailConnector, "_get_imap_password_with_fallback", return_value="pw"),
+            patch.object(
+                AppleMailConnector,
+                "_resolve_imap_config",
+                return_value=("h", 993, "me@example.invalid"),
+            ),
         ]
 
     def test_imap_path_text_attachment(self, connector, tmp_path):
         import contextlib
+
         mock_imap = MagicMock()
         payload = b"hello from a text attachment\n"
         mock_imap.fetch_attachment_payload.return_value = {
@@ -508,19 +493,22 @@ class TestGetAttachmentContent:
         with contextlib.ExitStack() as stack:
             for p in self._imap_patches(connector, mock_imap):
                 stack.enter_context(p)
-            result = connector.get_attachment_content(
-                "<m@x>", 0, account="iCloud", mailbox="INBOX"
-            )
+            result = connector.get_attachment_content("<m@x>", 0, account="iCloud", mailbox="INBOX")
         assert result["name"] == "notes.txt"
         assert result["mime_type"] == "text/plain"
         assert result["payload"] == payload
         mock_imap.fetch_attachment_payload.assert_called_once_with(
-            "<m@x>", 0, mailbox="INBOX", offset=0, max_bytes=None,
+            "<m@x>",
+            0,
+            mailbox="INBOX",
+            offset=0,
+            max_bytes=None,
         )
         mock_imap.fetch_raw_message.assert_not_called()
 
     def test_imap_path_bounded_read_returns_range_metadata(self, connector, tmp_path):
         import contextlib
+
         payload = b"hello from a text attachment\n"
         mock_imap = MagicMock()
         mock_imap.fetch_attachment_payload.return_value = {
@@ -551,11 +539,16 @@ class TestGetAttachmentContent:
         assert result["content_truncated"] is True
         assert result["next_offset"] == 10
         mock_imap.fetch_attachment_payload.assert_called_once_with(
-            "<m@x>", 0, mailbox="INBOX", offset=6, max_bytes=4,
+            "<m@x>",
+            0,
+            mailbox="INBOX",
+            offset=6,
+            max_bytes=4,
         )
 
     def test_imap_path_binary_attachment(self, connector, tmp_path):
         import contextlib
+
         payload = b"\x00\x01\x02\xff\xfe"
         mock_imap = MagicMock()
         mock_imap.fetch_attachment_payload.return_value = {
@@ -567,9 +560,7 @@ class TestGetAttachmentContent:
         with contextlib.ExitStack() as stack:
             for p in self._imap_patches(connector, mock_imap):
                 stack.enter_context(p)
-            result = connector.get_attachment_content(
-                "<m@x>", 1, account="iCloud", mailbox="INBOX"
-        )
+            result = connector.get_attachment_content("<m@x>", 1, account="iCloud", mailbox="INBOX")
         assert result["name"] == "blob.bin"
         assert result["payload"] == payload
 
@@ -577,6 +568,7 @@ class TestGetAttachmentContent:
         import contextlib
 
         from apple_mail_fast_mcp.exceptions import MailAttachmentIndexError
+
         mock_imap = MagicMock()
         mock_imap.fetch_attachment_payload.side_effect = MailAttachmentIndexError(
             "attachment_index 9 out of range: message has 2 attachment(s)."
@@ -585,14 +577,13 @@ class TestGetAttachmentContent:
             for p in self._imap_patches(connector, mock_imap):
                 stack.enter_context(p)
             with pytest.raises(MailAttachmentIndexError):
-                connector.get_attachment_content(
-                    "<m@x>", 9, account="iCloud", mailbox="INBOX"
-                )
+                connector.get_attachment_content("<m@x>", 9, account="iCloud", mailbox="INBOX")
 
     def test_imap_oversize_raises_before_returning(self, tmp_path):
         import contextlib
 
         from apple_mail_fast_mcp.exceptions import MailAttachmentTooLargeError
+
         connector = AppleMailConnector(timeout=30, max_inline_attachment_bytes=4)
         payload = b"hello from a text attachment\n"
         mock_imap = MagicMock()
@@ -606,17 +597,12 @@ class TestGetAttachmentContent:
             for p in self._imap_patches(connector, mock_imap):
                 stack.enter_context(p)
             with pytest.raises(MailAttachmentTooLargeError):
-                connector.get_attachment_content(
-                    "<m@x>", 0, account="iCloud", mailbox="INBOX"
-                )
+                connector.get_attachment_content("<m@x>", 0, account="iCloud", mailbox="INBOX")
 
     @patch.object(AppleMailConnector, "_get_attachments_applescript")
-    def test_applescript_path_reads_saved_bytes(
-        self, mock_meta, connector, monkeypatch
-    ):
+    def test_applescript_path_reads_saved_bytes(self, mock_meta, connector, monkeypatch):
         mock_meta.return_value = [
-            {"name": "notes.txt", "mime_type": "text/plain",
-             "size": 12, "downloaded": True},
+            {"name": "notes.txt", "mime_type": "text/plain", "size": 12, "downloaded": True},
         ]
 
         def fake_save(message_id, one_based_index, dest_path):
@@ -624,27 +610,29 @@ class TestGetAttachmentContent:
             Path(dest_path).write_bytes(b"on-disk text")
             return True
 
-        monkeypatch.setattr(
-            connector, "_save_one_attachment_applescript", fake_save
-        )
+        monkeypatch.setattr(connector, "_save_one_attachment_applescript", fake_save)
         result = connector.get_attachment_content("12345", 0)
         assert result["name"] == "notes.txt"
         assert result["mime_type"] == "text/plain"
         assert result["payload"] == b"on-disk text"
 
     @patch.object(AppleMailConnector, "_get_attachments_applescript")
-    def test_applescript_oversize_rejected_without_save(
-        self, mock_meta, monkeypatch
-    ):
+    def test_applescript_oversize_rejected_without_save(self, mock_meta, monkeypatch):
         from apple_mail_fast_mcp.exceptions import MailAttachmentTooLargeError
+
         connector = AppleMailConnector(timeout=30, max_inline_attachment_bytes=10)
         mock_meta.return_value = [
-            {"name": "big.bin", "mime_type": "application/octet-stream",
-             "size": 100, "downloaded": True},
+            {
+                "name": "big.bin",
+                "mime_type": "application/octet-stream",
+                "size": 100,
+                "downloaded": True,
+            },
         ]
         save_calls = []
         monkeypatch.setattr(
-            connector, "_save_one_attachment_applescript",
+            connector,
+            "_save_one_attachment_applescript",
             lambda *a, **k: save_calls.append(1),
         )
         with pytest.raises(MailAttachmentTooLargeError):
@@ -652,22 +640,17 @@ class TestGetAttachmentContent:
         assert save_calls == [], "must not save when over the inline cap"
 
     @patch.object(AppleMailConnector, "_get_attachments_applescript")
-    def test_applescript_bounded_read_can_preview_oversize_attachment(
-        self, mock_meta, monkeypatch
-    ):
+    def test_applescript_bounded_read_can_preview_oversize_attachment(self, mock_meta, monkeypatch):
         connector = AppleMailConnector(timeout=30, max_inline_attachment_bytes=10)
         mock_meta.return_value = [
-            {"name": "big.txt", "mime_type": "text/plain",
-             "size": 100, "downloaded": True},
+            {"name": "big.txt", "mime_type": "text/plain", "size": 100, "downloaded": True},
         ]
 
         def fake_save(message_id, one_based_index, dest_path):
             Path(dest_path).write_bytes(b"0123456789" * 10)
             return True
 
-        monkeypatch.setattr(
-            connector, "_save_one_attachment_applescript", fake_save
-        )
+        monkeypatch.setattr(connector, "_save_one_attachment_applescript", fake_save)
 
         result = connector.get_attachment_content("12345", 0, max_bytes=8)
 
@@ -680,9 +663,9 @@ class TestGetAttachmentContent:
     @patch.object(AppleMailConnector, "_get_attachments_applescript")
     def test_applescript_index_out_of_range_raises(self, mock_meta, connector):
         from apple_mail_fast_mcp.exceptions import MailAttachmentIndexError
+
         mock_meta.return_value = [
-            {"name": "only.txt", "mime_type": "text/plain",
-             "size": 3, "downloaded": True},
+            {"name": "only.txt", "mime_type": "text/plain", "size": 3, "downloaded": True},
         ]
         with pytest.raises(MailAttachmentIndexError):
             connector.get_attachment_content("12345", 5)

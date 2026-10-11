@@ -164,7 +164,9 @@ def test_update_message_move_50_msgs_imap(
     rfc_ids = [
         m["id"]
         for m in connector._imap_search(
-            account=test_account, mailbox=bench_source, limit=50,
+            account=test_account,
+            mailbox=bench_source,
+            limit=50,
         )
     ]
     if len(rfc_ids) < 50:
@@ -191,7 +193,9 @@ def test_update_message_move_50_msgs_imap(
         current = [
             m["id"]
             for m in connector._imap_search(
-                account=test_account, mailbox=dst, limit=50,
+                account=test_account,
+                mailbox=dst,
+                limit=50,
             )
         ][:50]
         src, dst = dst, src

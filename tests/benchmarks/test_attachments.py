@@ -16,9 +16,7 @@ from .conftest import (
 
 
 @pytest.fixture(scope="module")
-def message_with_attachment(
-    connector: AppleMailConnector, test_account: str
-) -> tuple[str, str]:
+def message_with_attachment(connector: AppleMailConnector, test_account: str) -> tuple[str, str]:
     """Find a message in the test account that has at least one
     attachment. Returns ``(message_id, mailbox)``. Skips if none exists.
 
@@ -73,11 +71,7 @@ def test_save_attachments_one_file(
     # guard only rejects "@" ids, `whose id is N` is indexed and safe, and
     # passing account+mailbox with a numeric id routes it to an IMAP fetch
     # that cannot use it.
-    scope = (
-        {"account": test_account, "mailbox": mailbox}
-        if "@" in message_id
-        else {}
-    )
+    scope = {"account": test_account, "mailbox": mailbox} if "@" in message_id else {}
 
     def run() -> None:
         iteration[0] += 1

@@ -33,9 +33,7 @@ from .conftest import (
 )
 
 
-def _skip_if_no_imap(
-    connector: AppleMailConnector, test_account: str
-) -> tuple[str, str]:
+def _skip_if_no_imap(connector: AppleMailConnector, test_account: str) -> tuple[str, str]:
     """Verify IMAP is configured for the test account; skip if not.
 
     Returns (mailbox, message_id) for the burst. Tries common mailbox
@@ -60,7 +58,9 @@ def _skip_if_no_imap(
     for mb in ("INBOX", "Archive", "Sent Messages"):
         try:
             matches = connector.search_messages(
-                account=test_account, mailbox=mb, limit=1,
+                account=test_account,
+                mailbox=mb,
+                limit=1,
             )
         except Exception:
             continue
@@ -68,8 +68,7 @@ def _skip_if_no_imap(
             return (mb, matches[0]["id"])
 
     pytest.skip(
-        f"No mailbox in {test_account!r} has any messages "
-        f"(checked INBOX, Archive, Sent Messages)."
+        f"No mailbox in {test_account!r} has any messages (checked INBOX, Archive, Sent Messages)."
     )
 
 
@@ -87,7 +86,10 @@ def _five_call_burst(
     connector.get_message(message_id, account=test_account, mailbox=mailbox)
     connector.get_attachments(message_id, account=test_account, mailbox=mailbox)
     connector.search_messages(
-        account=test_account, mailbox=mailbox, sender_contains="@", limit=5,
+        account=test_account,
+        mailbox=mailbox,
+        sender_contains="@",
+        limit=5,
     )
     connector.get_message(message_id, account=test_account, mailbox=mailbox)
 

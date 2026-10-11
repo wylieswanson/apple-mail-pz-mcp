@@ -129,12 +129,8 @@ def test_body_and_body_html_uses_body_as_plain_part():
     )
     msg = email.message_from_bytes(raw, policy=policy.default)
     assert msg.get_content_type() == "multipart/alternative"
-    assert msg.get_body(preferencelist=("plain",)).get_content().strip() == (
-        "plain fallback text"
-    )
-    assert "<p>rich text</p>" in msg.get_body(
-        preferencelist=("html",)
-    ).get_content()
+    assert msg.get_body(preferencelist=("plain",)).get_content().strip() == ("plain fallback text")
+    assert "<p>rich text</p>" in msg.get_body(preferencelist=("html",)).get_content()
 
 
 def test_body_only_stays_single_text_plain():
@@ -299,6 +295,7 @@ def test_build_forward_body_has_header_block():
 
 def test_parse_original_message_extracts_fields_and_attachment():
     from apple_mail_fast_mcp.draft_builder import build_draft_mime, parse_original_message
+
     # Build a representative original (with an attachment) and round-trip it.
     _mid, raw = build_draft_mime(
         sender="Lazar <lazar@hadleigh.co.uk>",
@@ -324,6 +321,7 @@ def test_parse_original_html_only_falls_back_to_text():
     from email.message import EmailMessage
 
     from apple_mail_fast_mcp.draft_builder import parse_original_message
+
     m = EmailMessage()
     m["From"] = "x@y.com"
     m["Subject"] = "HTML only"
@@ -364,8 +362,10 @@ def test_parse_original_serializes_forwarded_rfc822_attachment():
     # A normal attachment alongside the forwarded message guards co-existence
     # (the fix must not regress ordinary attachments).
     outer.add_attachment(
-        b"%PDF-1.4 cover sheet", maintype="application",
-        subtype="pdf", filename="cover.pdf",
+        b"%PDF-1.4 cover sheet",
+        maintype="application",
+        subtype="pdf",
+        filename="cover.pdf",
     )
     outer.add_attachment(inner)  # message/rfc822
 
@@ -411,8 +411,7 @@ def test_parse_original_rfc822_base64_degrades_to_empty_not_corrupt():
     ).encode("ascii")
 
     fwd = [
-        a for a in parse_original_message(wire).attachments
-        if (a[1], a[2]) == ("message", "rfc822")
+        a for a in parse_original_message(wire).attachments if (a[1], a[2]) == ("message", "rfc822")
     ]
     assert len(fwd) == 1
     # Honest-empty, NOT 265 bytes of re-serialized base64 garbage.
@@ -448,26 +447,20 @@ def test_forwarded_rfc822_attachment_round_trips_through_build():
         forwarded_attachments=[("inner.eml", "message", "rfc822", inner.as_bytes())],
     )
     msg = email.message_from_bytes(raw, policy=_pol)
-    rfc822_parts = [
-        p for p in msg.iter_attachments()
-        if p.get_content_type() == "message/rfc822"
-    ]
+    rfc822_parts = [p for p in msg.iter_attachments() if p.get_content_type() == "message/rfc822"]
     assert len(rfc822_parts) == 1
 
     # Write-path contract (asserted directly, not just via the round-trip):
     # forwarded messages must be encoded idiomatically per RFC 2046 §5.2.1,
     # never base64 — a revert to raw-byte attachment would base64-encode and
     # break clean re-parsing (and the read guard would then degrade it).
-    cte = (
-        rfc822_parts[0].get("Content-Transfer-Encoding") or ""
-    ).strip().lower()
+    cte = (rfc822_parts[0].get("Content-Transfer-Encoding") or "").strip().lower()
     assert cte in ("", "7bit", "8bit", "binary")
 
     # Recover it the way get_attachment_content would, and confirm the inner
     # message survived the build round-trip intact.
     recovered = [
-        a for a in parse_original_message(raw).attachments
-        if (a[1], a[2]) == ("message", "rfc822")
+        a for a in parse_original_message(raw).attachments if (a[1], a[2]) == ("message", "rfc822")
     ]
     assert len(recovered) == 1
     sub = email.message_from_bytes(recovered[0][3], policy=_pol)
@@ -498,10 +491,7 @@ def test_build_draft_with_empty_rfc822_forward_does_not_raise():
     )
     assert isinstance(raw, bytes) and raw  # built, did not raise
     msg = email.message_from_bytes(raw, policy=_pol)
-    rfc822 = [
-        p for p in msg.iter_attachments()
-        if p.get_content_type() == "message/rfc822"
-    ]
+    rfc822 = [p for p in msg.iter_attachments() if p.get_content_type() == "message/rfc822"]
     assert len(rfc822) == 1  # an honest (empty) placeholder, not a crash
 
 
@@ -531,8 +521,7 @@ def test_extract_payloads_plain_attachment_is_unchanged():
     m = EmailMessage()
     m["Subject"] = "c1"
     m.set_content("body")
-    m.add_attachment(b"%PDF-1.4 data", maintype="application", subtype="pdf",
-                     filename="a.pdf")
+    m.add_attachment(b"%PDF-1.4 data", maintype="application", subtype="pdf", filename="a.pdf")
     atts = extract_attachment_payloads(m.as_bytes())
     assert _names_types(atts) == [("a.pdf", "application/pdf")]
     assert atts[0][3] == b"%PDF-1.4 data"
@@ -549,12 +538,14 @@ def test_extract_payloads_includes_inline_image_with_filename():
     m["Subject"] = "c2"
     m.set_content("plain")
     m.add_alternative("<img src=cid:x>", subtype="html")
-    m.get_payload()[1].add_related(b"\x89PNGdata", maintype="image",
-                                   subtype="png", cid="<x>", filename="logo.png")
+    m.get_payload()[1].add_related(
+        b"\x89PNGdata", maintype="image", subtype="png", cid="<x>", filename="logo.png"
+    )
 
     # iter_attachments misses it; the real fix must not.
-    assert list(email.message_from_bytes(m.as_bytes(), policy=policy.default)
-                .iter_attachments()) == []
+    assert (
+        list(email.message_from_bytes(m.as_bytes(), policy=policy.default).iter_attachments()) == []
+    )
     atts = extract_attachment_payloads(m.as_bytes())
     assert _names_types(atts) == [("logo.png", "image/png")]
     assert atts[0][3] == b"\x89PNGdata"
@@ -582,11 +573,11 @@ def test_extract_payloads_descends_under_multipart_alternative():
     outer.attach(mixed)
     raw = outer.as_bytes()
 
-    assert list(email.message_from_bytes(raw, policy=policy.default)
-                .iter_attachments()) == []
+    assert list(email.message_from_bytes(raw, policy=policy.default).iter_attachments()) == []
     atts = extract_attachment_payloads(raw)
     assert _names_types(atts) == [
-        ("a.pdf", "application/pdf"), ("b.pdf", "application/pdf"),
+        ("a.pdf", "application/pdf"),
+        ("b.pdf", "application/pdf"),
     ]
     assert atts[0][3] == b"%PDF one"
     assert atts[1][3] == b"%PDF two"
@@ -603,13 +594,14 @@ def test_extract_payloads_preserves_document_order():
     m["Subject"] = "c3"
     m.set_content("plain")
     m.add_alternative("<img src=cid:y>", subtype="html")
-    m.get_payload()[1].add_related(b"PNG", maintype="image", subtype="png",
-                                   cid="<y>", filename="inline.png")
-    m.add_attachment(b"%PDF real", maintype="application", subtype="pdf",
-                     filename="real.pdf")
+    m.get_payload()[1].add_related(
+        b"PNG", maintype="image", subtype="png", cid="<y>", filename="inline.png"
+    )
+    m.add_attachment(b"%PDF real", maintype="application", subtype="pdf", filename="real.pdf")
     atts = extract_attachment_payloads(m.as_bytes())
     assert _names_types(atts) == [
-        ("inline.png", "image/png"), ("real.pdf", "application/pdf"),
+        ("inline.png", "image/png"),
+        ("real.pdf", "application/pdf"),
     ]
 
 
@@ -624,14 +616,12 @@ def test_extract_payloads_rfc822_counted_once_not_descended():
     inner = EmailMessage()
     inner["Subject"] = "orig"
     inner.set_content("hi")
-    inner.add_attachment(b"%PDF inner", maintype="application", subtype="pdf",
-                         filename="inner.pdf")
+    inner.add_attachment(b"%PDF inner", maintype="application", subtype="pdf", filename="inner.pdf")
 
     m = EmailMessage()
     m["Subject"] = "c4"
     m.set_content("body")
-    m.add_attachment(b"%PDF cover", maintype="application", subtype="pdf",
-                     filename="cover.pdf")
+    m.add_attachment(b"%PDF cover", maintype="application", subtype="pdf", filename="cover.pdf")
     m.add_attachment(inner)
 
     atts = extract_attachment_payloads(m.as_bytes())
@@ -754,10 +744,8 @@ def test_extract_payloads_edge_shapes_match_the_bodystructure_rule():
 
     assert names(b'Content-Type: image/png; name=" "\r\n') == []
     assert names(
-        b"Content-Type: image/png\r\n"
-        b'Content-Disposition: form-data; filename="a.png"\r\n'
+        b'Content-Type: image/png\r\nContent-Disposition: form-data; filename="a.png"\r\n'
     ) == ["a.png"]
     assert names(
-        b'Content-Type: image/png; name="logo.png"\r\n'
-        b'Content-Disposition: inline; filename=""\r\n'
+        b'Content-Type: image/png; name="logo.png"\r\nContent-Disposition: inline; filename=""\r\n'
     ) == ["logo.png"]

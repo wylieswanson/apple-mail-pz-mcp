@@ -93,9 +93,7 @@ class TestEntryNotFound:
 class TestAccessDenied:
     @patch("apple_mail_fast_mcp.keychain.subprocess.run")
     def test_exit_128_raises_access_denied(self, mock_run):
-        mock_run.return_value = _mock_security(
-            128, stderr="User interaction is not allowed."
-        )
+        mock_run.return_value = _mock_security(128, stderr="User interaction is not allowed.")
         with pytest.raises(MailKeychainAccessDeniedError):
             get_imap_password("iCloud", "u@i.com")
 
@@ -112,9 +110,7 @@ class TestAccessDenied:
 class TestOtherFailure:
     @patch("apple_mail_fast_mcp.keychain.subprocess.run")
     def test_unknown_failure_raises_keychain_error(self, mock_run):
-        mock_run.return_value = _mock_security(
-            2, stderr="some other failure"
-        )
+        mock_run.return_value = _mock_security(2, stderr="some other failure")
         with pytest.raises(MailKeychainError) as exc_info:
             get_imap_password("iCloud", "u@i.com")
         # Must not be caught by more specific handlers.
@@ -175,9 +171,7 @@ class TestReadThroughFallback:
     def test_access_denied_does_not_fall_back(self, mock_run):
         # AccessDenied is an explicit macOS signal — surface it, don't mask
         # it by probing the legacy prefix.
-        mock_run.return_value = _mock_security(
-            128, stderr="User interaction is not allowed."
-        )
+        mock_run.return_value = _mock_security(128, stderr="User interaction is not allowed.")
         with pytest.raises(MailKeychainAccessDeniedError):
             get_imap_password("iCloud", "u@i.com")
         mock_run.assert_called_once()
@@ -216,17 +210,13 @@ class TestSetImapPassword:
 
     @patch("apple_mail_fast_mcp.keychain.subprocess.run")
     def test_access_denied_raises_access_denied(self, mock_run):
-        mock_run.return_value = _mock_security(
-            128, stderr="User interaction is not allowed."
-        )
+        mock_run.return_value = _mock_security(128, stderr="User interaction is not allowed.")
         with pytest.raises(MailKeychainAccessDeniedError):
             set_imap_password("iCloud", "u@i.com", "p")
 
     @patch("apple_mail_fast_mcp.keychain.subprocess.run")
     def test_other_failure_raises_keychain_error(self, mock_run):
-        mock_run.return_value = _mock_security(
-            2, stderr="duplicate entry without -U? unexpected"
-        )
+        mock_run.return_value = _mock_security(2, stderr="duplicate entry without -U? unexpected")
         with pytest.raises(MailKeychainError) as exc_info:
             set_imap_password("iCloud", "u@i.com", "p")
         assert type(exc_info.value) is MailKeychainError
@@ -270,9 +260,7 @@ class TestDeleteImapPassword:
 
     @patch("apple_mail_fast_mcp.keychain.subprocess.run")
     def test_access_denied_raises_access_denied(self, mock_run):
-        mock_run.return_value = _mock_security(
-            128, stderr="User interaction is not allowed."
-        )
+        mock_run.return_value = _mock_security(128, stderr="User interaction is not allowed.")
         with pytest.raises(MailKeychainAccessDeniedError):
             delete_imap_password("iCloud", "u@i.com")
 
@@ -322,9 +310,7 @@ class TestDeleteThroughFallback:
 
     @patch("apple_mail_fast_mcp.keychain.subprocess.run")
     def test_access_denied_does_not_fall_back(self, mock_run):
-        mock_run.return_value = _mock_security(
-            128, stderr="User interaction is not allowed."
-        )
+        mock_run.return_value = _mock_security(128, stderr="User interaction is not allowed.")
         with pytest.raises(MailKeychainAccessDeniedError):
             delete_imap_password("iCloud", "u@i.com")
         mock_run.assert_called_once()
@@ -363,9 +349,7 @@ class TestEnvVarFallback:
     """#248: env-var password fallback for uvx / headless / CI."""
 
     @patch("apple_mail_fast_mcp.keychain.subprocess.run")
-    def test_env_var_present_returns_value_without_shellout(
-        self, mock_run, monkeypatch
-    ):
+    def test_env_var_present_returns_value_without_shellout(self, mock_run, monkeypatch):
         monkeypatch.setenv("APPLE_MAIL_MCP_IMAP_PASSWORD_ICLOUD", "envpw")
         assert get_imap_password("iCloud", "u@icloud.com") == "envpw"
         mock_run.assert_not_called()
@@ -386,9 +370,7 @@ class TestEnvVarFallback:
         mock_run.assert_called_once()
 
     @patch("apple_mail_fast_mcp.keychain.subprocess.run")
-    def test_whitespace_only_env_var_falls_through_to_keychain(
-        self, mock_run, monkeypatch
-    ):
+    def test_whitespace_only_env_var_falls_through_to_keychain(self, mock_run, monkeypatch):
         mock_run.return_value = _mock_security(0, stdout="keychainpw\n")
         monkeypatch.setenv("APPLE_MAIL_MCP_IMAP_PASSWORD_ICLOUD", "   ")
         assert get_imap_password("iCloud", "u@icloud.com") == "keychainpw"
@@ -396,9 +378,7 @@ class TestEnvVarFallback:
 
     @patch("apple_mail_fast_mcp.keychain.subprocess.run")
     def test_absent_env_var_uses_keychain(self, mock_run, monkeypatch):
-        monkeypatch.delenv(
-            "APPLE_MAIL_MCP_IMAP_PASSWORD_ICLOUD", raising=False
-        )
+        monkeypatch.delenv("APPLE_MAIL_MCP_IMAP_PASSWORD_ICLOUD", raising=False)
         mock_run.return_value = _mock_security(0, stdout="keychainpw\n")
         assert get_imap_password("iCloud", "u@icloud.com") == "keychainpw"
         mock_run.assert_called_once()
@@ -407,9 +387,7 @@ class TestEnvVarFallback:
     def test_env_var_preserves_internal_whitespace(self, mock_run, monkeypatch):
         # A non-empty value with internal spaces keeps them (only surrounding
         # whitespace is stripped). The value is the password, not a name.
-        monkeypatch.setenv(
-            "APPLE_MAIL_MCP_IMAP_PASSWORD_ICLOUD", "pw with spaces"
-        )
+        monkeypatch.setenv("APPLE_MAIL_MCP_IMAP_PASSWORD_ICLOUD", "pw with spaces")
         assert get_imap_password("iCloud", "u@i.com") == "pw with spaces"
         mock_run.assert_not_called()
 
@@ -418,8 +396,6 @@ class TestEnvVarFallback:
         # #349: .env files / Docker / `export` commonly append a trailing
         # newline; it must not be sent as part of the password (mirrors the
         # Keychain path's rstrip). Surrounding whitespace is stripped.
-        monkeypatch.setenv(
-            "APPLE_MAIL_MCP_IMAP_PASSWORD_ICLOUD", "  secret\n"
-        )
+        monkeypatch.setenv("APPLE_MAIL_MCP_IMAP_PASSWORD_ICLOUD", "  secret\n")
         assert get_imap_password("iCloud", "u@i.com") == "secret"
         mock_run.assert_not_called()

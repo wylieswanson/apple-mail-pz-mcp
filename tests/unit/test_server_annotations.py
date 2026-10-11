@@ -65,8 +65,8 @@ MUTATING_TOOLS = DESTRUCTIVE_TOOLS | ADDITIVE_TOOLS
 
 # Idempotent: same args → same end state.
 NON_IDEMPOTENT_TOOLS: set[str] = {
-    "create_draft",   # each call may create a new draft
-    "create_rule",    # rules may be appended on each call
+    "create_draft",  # each call may create a new draft
+    "create_rule",  # rules may be appended on each call
 }
 
 
@@ -78,9 +78,7 @@ NON_IDEMPOTENT_TOOLS: set[str] = {
 class TestToolHelper:
     """The `_tool` decorator's read-only gating behavior."""
 
-    def test_mutating_tool_skipped_when_read_only(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_mutating_tool_skipped_when_read_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake_mcp = Mock()
         monkeypatch.setattr(server, "mcp", fake_mcp)
         monkeypatch.setattr(server, "_READ_ONLY", True)
@@ -88,9 +86,7 @@ class TestToolHelper:
         def my_mutator() -> int:
             return 42
 
-        result = server._tool(
-            {"destructiveHint": True}, mutating=True
-        )(my_mutator)
+        result = server._tool({"destructiveHint": True}, mutating=True)(my_mutator)
 
         assert result is my_mutator
         fake_mcp.tool.assert_not_called()
@@ -122,9 +118,7 @@ class TestToolHelper:
         assert ann == {"destructiveHint": True}
         assert fn is my_mutator
 
-    def test_read_only_tool_always_registered(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_read_only_tool_always_registered(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """mutating=False (default) registers even in read-only mode."""
         fake_mcp = Mock()
         fake_mcp.tool.return_value = lambda fn: fn
@@ -207,25 +201,17 @@ class TestProductionAnnotations:
 
 
 class TestReadOnlyFlag:
-    def test_pre_parse_returns_false_with_no_args(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_pre_parse_returns_false_with_no_args(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("sys.argv", ["apple-mail-pz-mcp"])
         assert server._pre_parse_read_only() is False
 
-    def test_pre_parse_returns_true_with_flag(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_pre_parse_returns_true_with_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("sys.argv", ["apple-mail-pz-mcp", "--read-only"])
         assert server._pre_parse_read_only() is True
 
-    def test_pre_parse_ignores_unknown_args(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_pre_parse_ignores_unknown_args(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The pre-parse uses parse_known_args; downstream args don't crash it."""
-        monkeypatch.setattr(
-            "sys.argv", ["apple-mail-pz-mcp", "setup-imap", "--account", "Gmail"]
-        )
+        monkeypatch.setattr("sys.argv", ["apple-mail-pz-mcp", "setup-imap", "--account", "Gmail"])
         assert server._pre_parse_read_only() is False
 
     def test_root_parser_advertises_flag(self) -> None:
@@ -235,9 +221,7 @@ class TestReadOnlyFlag:
         assert "--read-only" in help_text
 
     @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
-    def test_env_var_enables_read_only(
-        self, monkeypatch: pytest.MonkeyPatch, value: str
-    ) -> None:
+    def test_env_var_enables_read_only(self, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
         # The .mcpb bundle exposes read-only as a boolean user_config, which
         # reaches the server as an env var rather than a CLI flag.
         monkeypatch.setattr("sys.argv", ["apple-mail-pz-mcp"])
@@ -254,16 +238,12 @@ class TestReadOnlyFlag:
         monkeypatch.setenv("APPLE_MAIL_MCP_READ_ONLY", value)
         assert server._pre_parse_read_only() is False
 
-    def test_env_var_unset_leaves_writes_registered(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_env_var_unset_leaves_writes_registered(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("sys.argv", ["apple-mail-pz-mcp"])
         monkeypatch.delenv("APPLE_MAIL_MCP_READ_ONLY", raising=False)
         assert server._pre_parse_read_only() is False
 
-    def test_flag_wins_over_falsey_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_flag_wins_over_falsey_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """--read-only is an explicit narrowing; env must not re-widen it."""
         monkeypatch.setattr("sys.argv", ["apple-mail-pz-mcp", "--read-only"])
         monkeypatch.setenv("APPLE_MAIL_MCP_READ_ONLY", "false")
@@ -276,16 +256,12 @@ class TestReadOnlyFlag:
         monkeypatch.setenv("APPLE_MAIL_MCP_READ_ONLY", "maybe")
         assert server._pre_parse_read_only() is False
 
-    def test_root_parser_defaults_to_pz_command_name(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_root_parser_defaults_to_pz_command_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("sys.argv", ["pytest"])
         parser = server._build_arg_parser()
         assert parser.format_help().startswith("usage: apple-mail-pz-mcp")
 
-    def test_root_parser_uses_invoked_command_name(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_root_parser_uses_invoked_command_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("sys.argv", ["/Users/wylie/.local/bin/apple-mail-pz-mcp"])
         parser = server._build_arg_parser()
         assert parser.format_help().startswith("usage: apple-mail-pz-mcp")

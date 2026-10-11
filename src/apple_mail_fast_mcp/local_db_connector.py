@@ -453,8 +453,7 @@ class LocalDbConnector:
         params.append(int(query.limit) if query.limit is not None else _DEFAULT_LIMIT)
 
         return [
-            self._named(self._row_to_message(row), row, query)
-            for row in conn.execute(sql, params)
+            self._named(self._row_to_message(row), row, query) for row in conn.execute(sql, params)
         ]
 
     @staticmethod

@@ -77,6 +77,4 @@ class TestGateCatchesRegressions:
     @pytest.mark.parametrize("mode", ["read_only", "full"])
     def test_totals_equal_the_sum_of_entries(self, mode: str) -> None:
         data = json.loads(_run("--json").stdout)
-        assert data[mode]["total_bytes"] == sum(
-            e["bytes"] for e in data[mode]["entries"]
-        )
+        assert data[mode]["total_bytes"] == sum(e["bytes"] for e in data[mode]["entries"])

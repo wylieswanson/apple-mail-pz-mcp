@@ -33,12 +33,6 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "integration: mark test as integration test (requires --run-integration)"
     )
-    config.addinivalue_line(
-        "markers", "e2e: mark test as end-to-end test (full MCP stack)"
-    )
-    config.addinivalue_line(
-        "markers", "benchmark: mark test as performance benchmark"
-    )
-    config.addinivalue_line(
-        "markers", "slow: mark test as slow-running"
-    )
+    config.addinivalue_line("markers", "e2e: mark test as end-to-end test (full MCP stack)")
+    config.addinivalue_line("markers", "benchmark: mark test as performance benchmark")
+    config.addinivalue_line("markers", "slow: mark test as slow-running")

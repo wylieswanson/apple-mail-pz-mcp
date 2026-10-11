@@ -103,12 +103,10 @@ def _raise_security_failure(
         marker in stderr for marker in _ACCESS_DENIED_MARKERS
     ):
         raise MailKeychainAccessDeniedError(
-            f"Keychain access denied for service={service!r}, account={email!r}: "
-            f"{stderr.strip()}"
+            f"Keychain access denied for service={service!r}, account={email!r}: {stderr.strip()}"
         )
     raise MailKeychainError(
-        f"security {action} failed (exit {result.returncode}): "
-        f"{stderr.strip()}"
+        f"security {action} failed (exit {result.returncode}): {stderr.strip()}"
     )
 
 
@@ -201,14 +199,10 @@ def get_imap_password(mail_app_account: str, email: str) -> str:
     try:
         return _find_password(SERVICE_NAME_PREFIX + mail_app_account, email)
     except MailKeychainEntryNotFoundError:
-        return _find_password(
-            _LEGACY_SERVICE_NAME_PREFIX + mail_app_account, email
-        )
+        return _find_password(_LEGACY_SERVICE_NAME_PREFIX + mail_app_account, email)
 
 
-def set_imap_password(
-    mail_app_account: str, email: str, password: str
-) -> None:
+def set_imap_password(mail_app_account: str, email: str, password: str) -> None:
     """Write or update an IMAP app password to Keychain.
 
     Uses ``security add-generic-password ... -U`` so re-running with a

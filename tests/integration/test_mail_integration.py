@@ -35,7 +35,7 @@ from apple_mail_fast_mcp.utils import (
 # Run with: pytest --run-integration
 pytestmark = pytest.mark.skipif(
     "not config.getoption('--run-integration')",
-    reason="Integration tests disabled by default. Use --run-integration to run."
+    reason="Integration tests disabled by default. Use --run-integration to run.",
 )
 
 
@@ -53,12 +53,11 @@ def test_account() -> str:
     This matches the account name the server.py safety gate verifies.
     """
     import os
+
     return os.getenv("MAIL_TEST_ACCOUNT", "Gmail")
 
 
-def _newest_inbox_ids(
-    connector: AppleMailConnector, account: str
-) -> tuple[str, str] | None:
+def _newest_inbox_ids(connector: AppleMailConnector, account: str) -> tuple[str, str] | None:
     """Both id forms for one real message in ``account``'s inbox (#419).
 
     Returns ``(numeric_id, rfc_message_id)``, or ``None`` if the inbox is
@@ -86,9 +85,7 @@ def _newest_inbox_ids(
     end tell
     '''
     raw = parse_applescript_json(
-        connector._run_applescript(
-            _wrap_as_json_script(body, timeout=connector.timeout)
-        )
+        connector._run_applescript(_wrap_as_json_script(body, timeout=connector.timeout))
     )
     if not isinstance(raw, dict):
         return None
@@ -109,9 +106,7 @@ class TestMailIntegration:
         # Should have at least INBOX
         assert len(result) > 0
 
-    def test_list_mailboxes_by_uuid(
-        self, connector: AppleMailConnector, test_account: str
-    ) -> None:
+    def test_list_mailboxes_by_uuid(self, connector: AppleMailConnector, test_account: str) -> None:
         """#61: account-gated tools also accept the account UUID.
 
         Discovers the test account's UUID at runtime via list_accounts,
@@ -125,6 +120,7 @@ class TestMailIntegration:
 
         # Sanity check: it really is a UUID-shaped string.
         from apple_mail_fast_mcp.utils import is_account_uuid
+
         assert is_account_uuid(uuid), f"Expected UUID, got {uuid!r}"
 
         by_uuid = connector.list_mailboxes(uuid)
@@ -137,23 +133,14 @@ class TestMailIntegration:
 
     def test_search_messages(self, connector: AppleMailConnector, test_account: str) -> None:
         """Test searching messages in real mailbox."""
-        result = connector.search_messages(
-            account=test_account,
-            mailbox="INBOX",
-            limit=5
-        )
+        result = connector.search_messages(account=test_account, mailbox="INBOX", limit=5)
         assert isinstance(result, list)
         # Mailbox might be empty, so just check type
 
-    def test_search_unread_messages(
-        self, connector: AppleMailConnector, test_account: str
-    ) -> None:
+    def test_search_unread_messages(self, connector: AppleMailConnector, test_account: str) -> None:
         """Test searching for unread messages."""
         result = connector.search_messages(
-            account=test_account,
-            mailbox="INBOX",
-            read_status=False,
-            limit=10
+            account=test_account, mailbox="INBOX", read_status=False, limit=10
         )
         assert isinstance(result, list)
 
@@ -175,9 +162,7 @@ class TestMailIntegration:
         for msg in result:
             assert msg["flagged"] is True
 
-    def test_search_with_date_range(
-        self, connector: AppleMailConnector, test_account: str
-    ) -> None:
+    def test_search_with_date_range(self, connector: AppleMailConnector, test_account: str) -> None:
         """New in #28: date_from + date_to stack in the whose clause.
 
         Uses a wide range so the query is guaranteed to return something on
@@ -223,7 +208,11 @@ class TestMailIntegration:
         assert len(result) >= 1
         for acct in result:
             assert set(acct.keys()) >= {
-                "id", "name", "email_addresses", "account_type", "enabled",
+                "id",
+                "name",
+                "email_addresses",
+                "account_type",
+                "enabled",
             }
             assert isinstance(acct["id"], str) and acct["id"]
             assert isinstance(acct["name"], str) and acct["name"]
@@ -256,9 +245,7 @@ class TestMailIntegration:
         end-to-end without needing a known-threaded message. Skips if the
         inbox is empty.
         """
-        matches = connector.search_messages(
-            account=test_account, mailbox="INBOX", limit=1
-        )
+        matches = connector.search_messages(account=test_account, mailbox="INBOX", limit=1)
         if not matches:
             pytest.skip("test inbox has no messages")
 
@@ -267,17 +254,20 @@ class TestMailIntegration:
         assert len(thread) >= 1
         for m in thread:
             assert set(m.keys()) >= {
-                "id", "subject", "sender", "date_received",
-                "read_status", "flagged",
+                "id",
+                "subject",
+                "sender",
+                "date_received",
+                "read_status",
+                "flagged",
             }
         # Anchor must be in the result.
         assert any(m["id"] == matches[0]["id"] for m in thread)
 
-    def test_get_thread_rejects_nonexistent_anchor(
-        self, connector: AppleMailConnector
-    ) -> None:
+    def test_get_thread_rejects_nonexistent_anchor(self, connector: AppleMailConnector) -> None:
         """Nonexistent anchor raises MailMessageNotFoundError."""
         from apple_mail_fast_mcp.exceptions import MailMessageNotFoundError
+
         with pytest.raises(MailMessageNotFoundError):
             connector.get_thread("99999999999")
 
@@ -308,16 +298,12 @@ class TestMailIntegration:
         IMAP timeout takes the degraded-result branch below instead of being
         misreported here as a code regression.
         """
-        matches = connector.search_messages(
-            account=test_account, mailbox="INBOX", limit=1
-        )
+        matches = connector.search_messages(account=test_account, mailbox="INBOX", limit=1)
         if not matches:
             pytest.skip("test inbox has no messages")
 
         start = time.monotonic()
-        thread, degraded_reason = connector._get_thread_with_status(
-            matches[0]["id"]
-        )
+        thread, degraded_reason = connector._get_thread_with_status(matches[0]["id"])
         elapsed = time.monotonic() - start
 
         assert isinstance(thread, list) and len(thread) >= 1
@@ -371,10 +357,7 @@ class TestMailIntegration:
             "AppleScript just read out of the unified inbox"
         )
         assert probe_anchor["account"] == test_account
-        assert (
-            probe_anchor["rfc_message_id"].strip("<>")
-            == rfc_message_id.strip("<>")
-        )
+        assert probe_anchor["rfc_message_id"].strip("<>") == rfc_message_id.strip("<>")
         walk_anchor = connector._resolve_thread_anchor_applescript(numeric_id)
         assert probe_anchor == walk_anchor
 
@@ -443,24 +426,17 @@ class TestMailIntegration:
             pytest.skip("IMAP unavailable — cannot resolve the RFC anchor")
 
         def _keys(thread: list[dict[str, Any]]) -> set[str]:
-            return {
-                str(m.get("rfc_message_id") or m["id"]).strip("<>")
-                for m in thread
-            }
+            return {str(m.get("rfc_message_id") or m["id"]).strip("<>") for m in thread}
 
         assert _keys(by_numeric) == _keys(by_rfc)
 
-    def test_get_message(
-        self, connector: AppleMailConnector, test_account: str
-    ) -> None:
+    def test_get_message(self, connector: AppleMailConnector, test_account: str) -> None:
         """Real get_message returns a full structured message.
 
         Chains off search_messages for a real ID. Guards against the
         NSJSONSerialization `|id|` selector-collision bug fixed in #23.
         """
-        matches = connector.search_messages(
-            account=test_account, mailbox="INBOX", limit=1
-        )
+        matches = connector.search_messages(account=test_account, mailbox="INBOX", limit=1)
         if not matches:
             pytest.skip("test inbox has no messages")
 
@@ -468,8 +444,13 @@ class TestMailIntegration:
         result = connector.get_message(target_id)
 
         assert set(result.keys()) >= {
-            "id", "subject", "sender", "date_received",
-            "read_status", "flagged", "content",
+            "id",
+            "subject",
+            "sender",
+            "date_received",
+            "read_status",
+            "flagged",
+            "content",
         }
         assert result["id"] == target_id
         assert isinstance(result["subject"], str)
@@ -494,9 +475,7 @@ class TestMailIntegration:
         from apple_mail_fast_mcp.server import get_messages
         from apple_mail_fast_mcp.utils import DEFAULT_MAX_BODY_BYTES
 
-        matches = connector.search_messages(
-            account=test_account, mailbox="INBOX", limit=3
-        )
+        matches = connector.search_messages(account=test_account, mailbox="INBOX", limit=3)
         if not matches:
             pytest.skip("test inbox has no messages")
 
@@ -513,9 +492,7 @@ class TestMailIntegration:
             if msg.get("content_truncated"):
                 assert msg["content_original_bytes"] > DEFAULT_MAX_BODY_BYTES
 
-    def test_get_message_via_imap(
-        self, connector: AppleMailConnector, test_account: str
-    ) -> None:
+    def test_get_message_via_imap(self, connector: AppleMailConnector, test_account: str) -> None:
         """Issue #72: when account+mailbox are provided AND the account
         has a Keychain entry, get_message uses the IMAP fast path.
 
@@ -544,9 +521,7 @@ class TestMailIntegration:
                 f"can't be exercised. Run `apple-mail-pz-mcp setup-imap` first."
             )
 
-        matches = connector.search_messages(
-            account=test_account, mailbox="INBOX", limit=1
-        )
+        matches = connector.search_messages(account=test_account, mailbox="INBOX", limit=1)
         if not matches:
             pytest.skip("test inbox has no messages")
         target_id = matches[0]["id"]
@@ -554,38 +529,48 @@ class TestMailIntegration:
         # Same shape as the AppleScript path — callers don't have to
         # special-case which dispatch fired.
         result = connector.get_message(
-            target_id, account=test_account, mailbox="INBOX",
+            target_id,
+            account=test_account,
+            mailbox="INBOX",
         )
         assert set(result.keys()) >= {
-            "id", "subject", "sender", "date_received",
-            "read_status", "flagged", "content",
+            "id",
+            "subject",
+            "sender",
+            "date_received",
+            "read_status",
+            "flagged",
+            "content",
         }
         assert isinstance(result["content"], str)
 
         # headers_only=True: same shape, content empty. Useful for
         # preview-style callers.
         head_only = connector.get_message(
-            target_id, account=test_account, mailbox="INBOX",
+            target_id,
+            account=test_account,
+            mailbox="INBOX",
             headers_only=True,
         )
         assert set(head_only.keys()) >= {
-            "id", "subject", "sender", "date_received",
-            "read_status", "flagged", "content",
+            "id",
+            "subject",
+            "sender",
+            "date_received",
+            "read_status",
+            "flagged",
+            "content",
         }
         assert head_only["content"] == ""
 
-    def test_get_attachments(
-        self, connector: AppleMailConnector, test_account: str
-    ) -> None:
+    def test_get_attachments(self, connector: AppleMailConnector, test_account: str) -> None:
         """Real get_attachments returns a structured list (possibly empty).
 
         Chains off search_messages for a real ID. Guards against the
         NSJSONSerialization `|size|` selector-collision bug fixed in #23.
         Empty list is a valid pass — most messages have no attachments.
         """
-        matches = connector.search_messages(
-            account=test_account, mailbox="INBOX", limit=1
-        )
+        matches = connector.search_messages(account=test_account, mailbox="INBOX", limit=1)
         if not matches:
             pytest.skip("test inbox has no messages")
 
@@ -613,9 +598,7 @@ class TestMailIntegration:
         nothing lands outside the directory. Scans a few INBOX messages for
         one with attachments; skips if none is found.
         """
-        matches = connector.search_messages(
-            account=test_account, mailbox="INBOX", limit=10
-        )
+        matches = connector.search_messages(account=test_account, mailbox="INBOX", limit=10)
         target_id = next(
             (m["id"] for m in matches if connector.get_attachments(m["id"])),
             None,
@@ -624,9 +607,7 @@ class TestMailIntegration:
             pytest.skip("no INBOX message with attachments to save")
 
         before = {p.resolve() for p in tmp_path.rglob("*")}
-        count = connector.save_attachments(
-            message_id=target_id, save_directory=tmp_path
-        )
+        count = connector.save_attachments(message_id=target_id, save_directory=tmp_path)
         assert isinstance(count, int)
 
         written = {p.resolve() for p in tmp_path.rglob("*") if p.is_file()}
@@ -647,9 +628,7 @@ class TestMailIntegration:
         """
         import base64 as _b64
 
-        matches = connector.search_messages(
-            account=test_account, mailbox="INBOX", limit=10
-        )
+        matches = connector.search_messages(account=test_account, mailbox="INBOX", limit=10)
         target = next(
             (
                 (m["id"], connector.get_attachments(m["id"]))
@@ -669,9 +648,7 @@ class TestMailIntegration:
         # Server-layer encode must produce a coherent text/base64 blob.
         from apple_mail_fast_mcp.utils import attachment_content_encoding
 
-        content, encoding = attachment_content_encoding(
-            result["payload"], result["mime_type"]
-        )
+        content, encoding = attachment_content_encoding(result["payload"], result["mime_type"])
         if encoding == "base64":
             assert _b64.b64decode(content) == result["payload"]
         else:
@@ -705,9 +682,7 @@ class TestMailIntegration:
                 f"can't be exercised. Run `apple-mail-pz-mcp setup-imap` first."
             )
 
-        matches = connector.search_messages(
-            account=test_account, mailbox="INBOX", limit=1
-        )
+        matches = connector.search_messages(account=test_account, mailbox="INBOX", limit=1)
         if not matches:
             pytest.skip("test inbox has no messages")
         target_id = matches[0]["id"]
@@ -716,7 +691,9 @@ class TestMailIntegration:
         # is always False on the IMAP path (BODYSTRUCTURE doesn't expose
         # Mail.app's local cache state).
         result = connector.get_attachments(
-            target_id, account=test_account, mailbox="INBOX",
+            target_id,
+            account=test_account,
+            mailbox="INBOX",
         )
         assert isinstance(result, list)
         for att in result:
@@ -752,9 +729,7 @@ class TestMailIntegration:
         try:
             pw = get_imap_password(test_account, email)
         except (MailKeychainEntryNotFoundError, MailKeychainAccessDeniedError):
-            pytest.skip(
-                f"No Keychain entry for {test_account!r} — run setup-imap."
-            )
+            pytest.skip(f"No Keychain entry for {test_account!r} — run setup-imap.")
 
         suffix = _uuid.uuid4().hex[:8]
         box = f"ZZZ-AMM-ATT-{suffix}"
@@ -770,9 +745,7 @@ class TestMailIntegration:
             m["Date"] = format_datetime(datetime.now(tz=timezone.utc))
             m["Message-ID"] = f"<{msg_id_local}>"
             m.set_content("body")
-            m.add_attachment(
-                payload, maintype="application", subtype="pdf", filename="doc.pdf"
-            )
+            m.add_attachment(payload, maintype="application", subtype="pdf", filename="doc.pdf")
 
             ac = IMAPClient(host, port=port, ssl=True, timeout=30)
             ac.login(email, pw)
@@ -788,9 +761,7 @@ class TestMailIntegration:
             assert (tmp_path / "doc.pdf").read_bytes() == payload
         finally:
             try:
-                connector.delete_mailbox(
-                    account=test_account, name=box, delete_messages=True
-                )
+                connector.delete_mailbox(account=test_account, name=box, delete_messages=True)
             except Exception:
                 pass
 
@@ -828,14 +799,11 @@ class TestDraftsLifecycleIntegration:
             except MailDraftNotFoundError:
                 time.sleep(1.0)
         pytest.fail(
-            f"draft {draft_id!r} not visible {timeout_s}s after create "
-            "(IMAP-APPEND sync lag)"
+            f"draft {draft_id!r} not visible {timeout_s}s after create (IMAP-APPEND sync lag)"
         )
 
     @pytest.fixture
-    def anchor_message_id(
-        self, connector: AppleMailConnector, test_account: str
-    ) -> str:
+    def anchor_message_id(self, connector: AppleMailConnector, test_account: str) -> str:
         """Return Mail.app's internal id of the newest INBOX message —
         used as a seed for reply / forward tests.
 
@@ -845,6 +813,7 @@ class TestDraftsLifecycleIntegration:
         integration test self-contained.
         """
         import subprocess
+
         script = f'''
         tell application "Mail"
             set acc to first account whose name is "{test_account}"
@@ -855,16 +824,16 @@ class TestDraftsLifecycleIntegration:
         '''
         result = subprocess.run(
             ["/usr/bin/osascript", "-e", script],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         seed_id = result.stdout.strip()
         if not seed_id:
             pytest.skip("test account has no INBOX messages to anchor on")
         return seed_id
 
-    def test_fresh_save_then_read_state_then_delete(
-        self, connector: AppleMailConnector
-    ) -> None:
+    def test_fresh_save_then_read_state_then_delete(self, connector: AppleMailConnector) -> None:
         result = connector.create_draft(
             seed="new",
             to=["test1@example.com"],
@@ -988,9 +957,7 @@ class TestDraftsLifecycleIntegration:
             body="post-append sync visibility body",
         )
         draft_id = result["draft_id"]
-        assert "@" in draft_id, (
-            f"expected IMAP-APPEND path (bare Message-ID); got {draft_id!r}"
-        )
+        assert "@" in draft_id, f"expected IMAP-APPEND path (bare Message-ID); got {draft_id!r}"
         try:
             state = None
             for _ in range(10):
@@ -1043,12 +1010,11 @@ class TestDraftsLifecycleIntegration:
             body_html=f"<p>Revenue <b>{marker}</b></p>",
         )
         draft_id = result["draft_id"]
-        assert "@" in draft_id, (
-            f"expected IMAP-APPEND path (bare Message-ID); got {draft_id!r}"
-        )
+        assert "@" in draft_id, f"expected IMAP-APPEND path (bare Message-ID); got {draft_id!r}"
         try:
             # Fetch the raw draft back over IMAP from the Drafts folder.
             import imaplib as _imaplib
+
             imap = ImapConnector(host, port, email, password)
             raw = None
             for folder in ImapConnector._CONVENTIONAL_DRAFTS_NAMES:
@@ -1092,7 +1058,8 @@ class TestDraftsLifecycleIntegration:
         silently not exercise the fix at all.
         """
         monkeypatch.setattr(
-            AppleMailConnector, "_try_clean_create_or_send",
+            AppleMailConnector,
+            "_try_clean_create_or_send",
             lambda self, **kwargs: None,
         )
         marker = "ZZZ-AMM-421-APPLESCRIPT-NEW"
@@ -1108,8 +1075,7 @@ class TestDraftsLifecycleIntegration:
             "diff ran before Mail materialised the draft (#421)"
         )
         assert "@" not in draft_id, (
-            f"expected Mail's internal numeric id from the AppleScript path; "
-            f"got {draft_id!r}"
+            f"expected Mail's internal numeric id from the AppleScript path; got {draft_id!r}"
         )
         try:
             # The id must be immediately usable — that is the whole point of
@@ -1145,8 +1111,9 @@ class TestDraftsLifecycleIntegration:
             # Threading header populated by Mail.app's reply primitive.
             assert state["in_reply_to"], "reply must have In-Reply-To"
             # Subject auto-prefixed by Mail.
-            assert state["subject"].startswith("Re:"), \
+            assert state["subject"].startswith("Re:"), (
                 f"expected Re: prefix; got {state['subject']!r}"
+            )
             # User body replaces Mail's auto-quote (per design tradeoff:
             # auto-quote isn't readable from outgoing-msg-ref before save).
             assert "ZZZ-AMM-INTEG-REPLY-BODY" in state["body"]
@@ -1176,9 +1143,7 @@ class TestDraftsLifecycleIntegration:
         finally:
             client.logout()
 
-    def _skip_without_keychain(
-        self, connector: AppleMailConnector, test_account: str
-    ) -> None:
+    def _skip_without_keychain(self, connector: AppleMailConnector, test_account: str) -> None:
         from apple_mail_fast_mcp.exceptions import (
             MailKeychainAccessDeniedError,
             MailKeychainEntryNotFoundError,
@@ -1249,9 +1214,7 @@ class TestDraftsLifecycleIntegration:
                 imap.fetch_raw_message(msg_id_local, "INBOX")
         finally:
             try:
-                connector.delete_mailbox(
-                    account=test_account, name=src, delete_messages=True
-                )
+                connector.delete_mailbox(account=test_account, name=src, delete_messages=True)
             except Exception:
                 pass
 
@@ -1320,8 +1283,7 @@ class TestDraftsLifecycleIntegration:
 
             assert state["in_reply_to"], "reply must carry In-Reply-To"
             assert orig_id in state["in_reply_to"], (
-                f"In-Reply-To should reference the original; got "
-                f"{state['in_reply_to']!r}"
+                f"In-Reply-To should reference the original; got {state['in_reply_to']!r}"
             )
             assert state["subject"].startswith("Re:"), (
                 f"expected Re: prefix; got {state['subject']!r}"
@@ -1338,9 +1300,8 @@ class TestDraftsLifecycleIntegration:
             assert "This is the original message body." in body, (
                 f"original must be quoted into the reply; body was {body!r}"
             )
-            assert (
-                body.index("ZZZ-AMM-293-REPLY-BODY")
-                < body.index("This is the original message body.")
+            assert body.index("ZZZ-AMM-293-REPLY-BODY") < body.index(
+                "This is the original message body."
             ), "user's new text should sit above the quoted original"
         finally:
             if draft_id:
@@ -1349,9 +1310,7 @@ class TestDraftsLifecycleIntegration:
                 except Exception:
                     pass
             try:
-                connector.delete_mailbox(
-                    account=test_account, name=src, delete_messages=True
-                )
+                connector.delete_mailbox(account=test_account, name=src, delete_messages=True)
             except Exception:
                 pass
 
@@ -1536,16 +1495,12 @@ class TestDraftsLifecycleIntegration:
         assert connector.create_mailbox(account=test_account, name=fixture)
 
         try:
-            count = connector.delete_mailbox(
-                account=test_account, name=fixture
-            )
+            count = connector.delete_mailbox(account=test_account, name=fixture)
             assert count == 0  # empty fixture
         except Exception:
             # Best-effort cleanup if delete itself fails so we don't orphan.
             try:
-                connector.delete_mailbox(
-                    account=test_account, name=fixture, delete_messages=True
-                )
+                connector.delete_mailbox(account=test_account, name=fixture, delete_messages=True)
             except Exception:
                 pass
             raise
@@ -1636,9 +1591,7 @@ class TestDraftsLifecycleIntegration:
             # Best-effort cleanup of both fixture mailboxes.
             for name in (src, dst):
                 try:
-                    connector.delete_mailbox(
-                        account=test_account, name=name, delete_messages=True
-                    )
+                    connector.delete_mailbox(account=test_account, name=name, delete_messages=True)
                 except Exception:
                     pass
 
@@ -1726,15 +1679,11 @@ class TestDraftsLifecycleIntegration:
 
             assert src_uids == [], f"still in source label: {src_uids}"
             assert len(dst_uids) == 1, f"not in destination label: {dst_uids}"
-            assert trash_uids == [], (
-                f"#364 regression — message routed through Trash: {trash_uids}"
-            )
+            assert trash_uids == [], f"#364 regression — message routed through Trash: {trash_uids}"
         finally:
             for name in (src, dst):
                 try:
-                    connector.delete_mailbox(
-                        account=test_account, name=name, delete_messages=True
-                    )
+                    connector.delete_mailbox(account=test_account, name=name, delete_messages=True)
                 except Exception:
                     pass
 
@@ -1804,8 +1753,10 @@ class TestDraftsLifecycleIntegration:
             try:
                 trash_name = None
                 conventional = (
-                    "Trash", "[Gmail]/Trash",
-                    "Deleted Messages", "Deleted Items",
+                    "Trash",
+                    "[Gmail]/Trash",
+                    "Deleted Messages",
+                    "Deleted Items",
                 )
                 listing = verify.list_folders()
                 for flags, _delim, name in listing:
@@ -1819,16 +1770,15 @@ class TestDraftsLifecycleIntegration:
                 if trash_name is None:
                     present = {
                         n.decode("utf-8", errors="replace")
-                        if isinstance(n, (bytes, bytearray)) else n
+                        if isinstance(n, (bytes, bytearray))
+                        else n
                         for _f, _d, n in listing
                     }
                     for candidate in conventional:
                         if candidate in present:
                             trash_name = candidate
                             break
-                assert trash_name is not None, (
-                    "Test account has no discoverable Trash folder"
-                )
+                assert trash_name is not None, "Test account has no discoverable Trash folder"
 
                 verify.select_folder(src, readonly=True)
                 src_uids = verify.search(["HEADER", "Message-ID", bracketed])
@@ -1837,19 +1787,13 @@ class TestDraftsLifecycleIntegration:
             finally:
                 verify.logout()
 
-            assert src_uids == [], (
-                f"message still in source after delete: {src_uids}"
-            )
-            assert len(trash_uids) >= 1, (
-                f"message not in Trash after delete: {trash_uids}"
-            )
+            assert src_uids == [], f"message still in source after delete: {src_uids}"
+            assert len(trash_uids) >= 1, f"message not in Trash after delete: {trash_uids}"
         finally:
             # Best-effort cleanup of the source fixture mailbox. Don't
             # touch Trash — that's the user's domain.
             try:
-                connector.delete_mailbox(
-                    account=test_account, name=src, delete_messages=True
-                )
+                connector.delete_mailbox(account=test_account, name=src, delete_messages=True)
             except Exception:
                 pass
 
@@ -1951,9 +1895,7 @@ class TestDraftsLifecycleIntegration:
                 verify.logout()
         finally:
             try:
-                connector.delete_mailbox(
-                    account=test_account, name=src, delete_messages=True
-                )
+                connector.delete_mailbox(account=test_account, name=src, delete_messages=True)
             except Exception:
                 pass
 
@@ -2033,9 +1975,7 @@ class TestDraftsLifecycleIntegration:
             assert not seen(), "fetch_raw_message set \\Seen"
         finally:
             try:
-                connector.delete_mailbox(
-                    account=test_account, name=src, delete_messages=True
-                )
+                connector.delete_mailbox(account=test_account, name=src, delete_messages=True)
             except Exception:
                 pass
 
@@ -2085,7 +2025,11 @@ class TestDraftsLifecycleIntegration:
                 append_client.logout()
 
             result = connector.save_attachments(
-                msg_id_local, tmp_path, [], account=test_account, mailbox=src,
+                msg_id_local,
+                tmp_path,
+                [],
+                account=test_account,
+                mailbox=src,
                 include_message=True,
             )
 
@@ -2101,9 +2045,7 @@ class TestDraftsLifecycleIntegration:
             assert source["flags_before"] == source["flags_after"]
         finally:
             try:
-                connector.delete_mailbox(
-                    account=test_account, name=src, delete_messages=True
-                )
+                connector.delete_mailbox(account=test_account, name=src, delete_messages=True)
             except Exception:
                 pass
 
@@ -2200,9 +2142,7 @@ class TestDraftsLifecycleIntegration:
                 verify.logout()
         finally:
             try:
-                connector.delete_mailbox(
-                    account=test_account, name=src, delete_messages=True
-                )
+                connector.delete_mailbox(account=test_account, name=src, delete_messages=True)
             except Exception:
                 pass
 
@@ -2226,9 +2166,7 @@ class TestDraftsLifecycleIntegration:
 
         suffix = _uuid.uuid4().hex[:8]
         src = f"ZZZ-AMM-OR316-{suffix}"
-        ids_local = [
-            f"{_uuid.uuid4().hex}@apple-mail-pz-mcp-test.invalid" for _ in range(2)
-        ]
+        ids_local = [f"{_uuid.uuid4().hex}@apple-mail-pz-mcp-test.invalid" for _ in range(2)]
 
         host, port, email = connector._resolve_imap_config(test_account)
         pw = get_imap_password(test_account, email)
@@ -2254,7 +2192,9 @@ class TestDraftsLifecycleIntegration:
 
             # Both ids in one call → one OR search resolves both.
             marked = connector.update_message(
-                ids_local, flagged=True, account=test_account,
+                ids_local,
+                flagged=True,
+                account=test_account,
                 source_mailbox=src,
             )
             assert marked == 2
@@ -2271,9 +2211,7 @@ class TestDraftsLifecycleIntegration:
                 verify.logout()
         finally:
             try:
-                connector.delete_mailbox(
-                    account=test_account, name=src, delete_messages=True
-                )
+                connector.delete_mailbox(account=test_account, name=src, delete_messages=True)
             except Exception:
                 pass
 
@@ -2328,27 +2266,24 @@ class TestDraftsLifecycleIntegration:
             # Force the AppleScript path so we exercise the dual-emit
             # we just added (IMAP path's dual-emit is identical-id and
             # already covered by unit tests).
-            connector._imap_failure_until[test_account] = (
-                __import__("time").monotonic() + 60
-            )
+            connector._imap_failure_until[test_account] = __import__("time").monotonic() + 60
 
             # Mail.app's IMAP sync may lag the APPEND. Poll up to ~30s.
             import time as _time
+
             for _ in range(10):
                 rows = connector.search_messages(
-                    account=test_account, mailbox=src, limit=10,
+                    account=test_account,
+                    mailbox=src,
+                    limit=10,
                 )
-                match = [
-                    r for r in rows
-                    if r.get("rfc_message_id") == msg_id_local
-                ]
+                match = [r for r in rows if r.get("rfc_message_id") == msg_id_local]
                 if match:
                     break
                 _time.sleep(3)
             else:
                 raise AssertionError(
-                    "Mail.app never surfaced the APPENDed message via "
-                    "AppleScript search within 30s"
+                    "Mail.app never surfaced the APPENDed message via AppleScript search within 30s"
                 )
 
             row = match[0]
@@ -2360,14 +2295,11 @@ class TestDraftsLifecycleIntegration:
             # AppleScript path: `id` is Mail.app's internal numeric id,
             # NOT equal to the RFC id.
             assert row["id"] != row["rfc_message_id"], (
-                "AppleScript path should yield divergent id and "
-                "rfc_message_id; got equal values"
+                "AppleScript path should yield divergent id and rfc_message_id; got equal values"
             )
         finally:
             try:
-                connector.delete_mailbox(
-                    account=test_account, name=src, delete_messages=True
-                )
+                connector.delete_mailbox(account=test_account, name=src, delete_messages=True)
             except Exception:
                 pass
 
@@ -2423,23 +2355,21 @@ class TestDraftsLifecycleIntegration:
                 append_client.logout()
 
             # Force the AppleScript pass (flag_color can't use IMAP anyway).
-            connector._imap_failure_until[test_account] = (
-                _time.monotonic() + 60
-            )
+            connector._imap_failure_until[test_account] = _time.monotonic() + 60
 
             # Mail.app's IMAP sync may lag the APPEND. Poll up to ~30s for
             # the message to surface before we flag it by RFC id.
             for _ in range(10):
                 rows = connector.search_messages(
-                    account=test_account, mailbox=src, limit=10,
+                    account=test_account,
+                    mailbox=src,
+                    limit=10,
                 )
                 if any(r.get("rfc_message_id") == msg_id_local for r in rows):
                     break
                 _time.sleep(3)
             else:
-                raise AssertionError(
-                    "Mail.app never surfaced the APPENDed message within 30s"
-                )
+                raise AssertionError("Mail.app never surfaced the APPENDed message within 30s")
 
             updated = connector.update_message(
                 [msg_id_local],
@@ -2453,9 +2383,7 @@ class TestDraftsLifecycleIntegration:
             )
         finally:
             try:
-                connector.delete_mailbox(
-                    account=test_account, name=src, delete_messages=True
-                )
+                connector.delete_mailbox(account=test_account, name=src, delete_messages=True)
             except Exception:
                 pass
 
@@ -2471,6 +2399,7 @@ class TestDraftsLifecycleIntegration:
         the test leaves the renamed fixture mailbox behind for cleanup
         via Mail.app's GUI."""
         import uuid as _uuid
+
         fixture = f"ZZZ-AMM-RENAME-INT-{_uuid.uuid4().hex[:8]}"
         new_name = f"{fixture}-renamed"
 
@@ -2478,18 +2407,12 @@ class TestDraftsLifecycleIntegration:
         assert connector.create_mailbox(account=test_account, name=fixture)
 
         # Rename via update_mailbox.
-        assert connector.update_mailbox(
-            account=test_account, name=fixture, new_name=new_name
-        )
+        assert connector.update_mailbox(account=test_account, name=fixture, new_name=new_name)
 
         # Verify via list_mailboxes — old name gone, new name present.
         names = {m["name"] for m in connector.list_mailboxes(test_account)}
-        assert new_name in names, (
-            f"renamed mailbox {new_name!r} not in listing"
-        )
-        assert fixture not in names, (
-            f"old name {fixture!r} still in listing"
-        )
+        assert new_name in names, f"renamed mailbox {new_name!r} not in listing"
+        assert fixture not in names, f"old name {fixture!r} still in listing"
 
     def test_from_account_emits_display_name_sender(
         self,
@@ -2504,9 +2427,7 @@ class TestDraftsLifecycleIntegration:
         bare email is exercised by unit tests; integration covers the
         happy path)."""
         accounts = connector.list_accounts()
-        match = next(
-            (a for a in accounts if a["name"] == test_account), None
-        )
+        match = next((a for a in accounts if a["name"] == test_account), None)
         if not match:
             pytest.skip(f"test account {test_account!r} not found")
         full_name = (match.get("full_name") or "").strip()
@@ -2537,9 +2458,7 @@ class TestDraftsLifecycleIntegration:
         lookup_id = draft_id
         if "@" in draft_id:
             self._wait_for_draft(connector, draft_id)
-            lookup_id = (
-                connector._resolve_draft_internal_id(draft_id) or draft_id
-            )
+            lookup_id = connector._resolve_draft_internal_id(draft_id) or draft_id
 
         try:
             # Read the draft's headers via osascript and confirm the
@@ -2547,6 +2466,7 @@ class TestDraftsLifecycleIntegration:
             # the unified "drafts mailbox" (locale-independent, Gmail-mirror-
             # safe), not per-account name-matched mailboxes (#407).
             import subprocess as _subprocess
+
             script = f'''
             tell application "Mail"
                 repeat with d in messages of drafts mailbox
@@ -2559,16 +2479,16 @@ class TestDraftsLifecycleIntegration:
             '''
             r = _subprocess.run(
                 ["/usr/bin/osascript", "-e", script],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             sender_value = r.stdout.strip()
             assert full_name in sender_value, (
-                f"sender {sender_value!r} should contain full_name "
-                f"{full_name!r}"
+                f"sender {sender_value!r} should contain full_name {full_name!r}"
             )
             assert emails[0] in sender_value, (
-                f"sender {sender_value!r} should contain email "
-                f"{emails[0]!r}"
+                f"sender {sender_value!r} should contain email {emails[0]!r}"
             )
         finally:
             connector.delete_draft(draft_id)
@@ -2584,17 +2504,12 @@ class TestErrorHandling:
         with pytest.raises(MailAccountNotFoundError):
             connector.list_mailboxes("NonExistentAccount12345")
 
-    def test_nonexistent_mailbox(
-        self, connector: AppleMailConnector, test_account: str
-    ) -> None:
+    def test_nonexistent_mailbox(self, connector: AppleMailConnector, test_account: str) -> None:
         """Test error when mailbox doesn't exist."""
         from apple_mail_fast_mcp.exceptions import MailMailboxNotFoundError
 
         with pytest.raises(MailMailboxNotFoundError):
-            connector.search_messages(
-                account=test_account,
-                mailbox="NonExistentMailbox12345"
-            )
+            connector.search_messages(account=test_account, mailbox="NonExistentMailbox12345")
 
 
 class TestRuleCRUDIntegration:
@@ -2612,17 +2527,13 @@ class TestRuleCRUDIntegration:
 
     TEST_RULE_NAME = "[apple-mail-fast-mcp-test] integration test rule"
 
-    def _delete_test_rule_if_present(
-        self, connector: AppleMailConnector
-    ) -> None:
+    def _delete_test_rule_if_present(self, connector: AppleMailConnector) -> None:
         """Find and delete any rule with TEST_RULE_NAME, regardless of state."""
         for r in connector.list_rules():
             if r["name"] == self.TEST_RULE_NAME:
                 connector.delete_rule(r["index"])
 
-    def test_full_crud_cycle(
-        self, connector: AppleMailConnector, test_account: str
-    ) -> None:
+    def test_full_crud_cycle(self, connector: AppleMailConnector, test_account: str) -> None:
         """Create → list → enable-toggle → update → delete a test rule."""
         # Pre-clean: in case a previous run left a leftover.
         self._delete_test_rule_if_present(connector)
@@ -2651,8 +2562,7 @@ class TestRuleCRUDIntegration:
                 None,
             )
             assert test_rule is not None, (
-                f"Created rule not found in list_rules output. "
-                f"Saw: {[r['name'] for r in rules]}"
+                f"Created rule not found in list_rules output. Saw: {[r['name'] for r in rules]}"
             )
             assert test_rule["index"] == new_index
             assert test_rule["enabled"] is True
@@ -2660,9 +2570,7 @@ class TestRuleCRUDIntegration:
             # 3. SET_RULE_ENABLED: toggle off.
             connector.set_rule_enabled(new_index, enabled=False)
             rules = connector.list_rules()
-            test_rule = next(
-                r for r in rules if r["name"] == self.TEST_RULE_NAME
-            )
+            test_rule = next(r for r in rules if r["name"] == self.TEST_RULE_NAME)
             assert test_rule["enabled"] is False
 
             # 4. UPDATE: rename + re-enable + change actions + match_logic.
@@ -2681,12 +2589,9 @@ class TestRuleCRUDIntegration:
                 actions={"mark_flagged": True, "flag_color": "red"},
             )
             rules = connector.list_rules()
-            updated_rule = next(
-                (r for r in rules if r["name"] == renamed), None
-            )
+            updated_rule = next((r for r in rules if r["name"] == renamed), None)
             assert updated_rule is not None, (
-                f"Updated rule with new name not found. "
-                f"Saw: {[r['name'] for r in rules]}"
+                f"Updated rule with new name not found. Saw: {[r['name'] for r in rules]}"
             )
             assert updated_rule["enabled"] is True
 
@@ -2694,10 +2599,7 @@ class TestRuleCRUDIntegration:
             connector.update_rule(rule_index=updated_rule["index"], name=self.TEST_RULE_NAME)
 
             # 5. DELETE: remove it. delete_rule returns the rule's name.
-            test_rule = next(
-                r for r in connector.list_rules()
-                if r["name"] == self.TEST_RULE_NAME
-            )
+            test_rule = next(r for r in connector.list_rules() if r["name"] == self.TEST_RULE_NAME)
             deleted_name = connector.delete_rule(test_rule["index"])
             assert deleted_name == self.TEST_RULE_NAME
 
@@ -2716,9 +2618,7 @@ class TestRuleNameGuardIntegration:
     """delete_rule / update_rule re-check the confirmed name inside the
     mutating script, so a shifted index can't hit a different rule."""
 
-    def test_wrong_expected_name_changes_nothing(
-        self, connector: AppleMailConnector
-    ) -> None:
+    def test_wrong_expected_name_changes_nothing(self, connector: AppleMailConnector) -> None:
         import uuid as _uuid
 
         from apple_mail_fast_mcp.exceptions import MailRuleNotFoundError
@@ -2732,9 +2632,7 @@ class TestRuleNameGuardIntegration:
         )
         try:
             with pytest.raises(MailRuleNotFoundError):
-                connector.update_rule(
-                    rule_index=index, enabled=True, expected_name=name + "-other"
-                )
+                connector.update_rule(rule_index=index, enabled=True, expected_name=name + "-other")
             with pytest.raises(MailRuleNotFoundError):
                 connector.delete_rule(rule_index=index, expected_name=name + "-other")
             rules = {r["index"]: r for r in connector.list_rules()}
@@ -2780,9 +2678,7 @@ class TestTemplateIntegration:
         msg: dict | None = None
         for mb in ("INBOX", "Archive", "Sent Messages"):
             try:
-                matches = connector.search_messages(
-                    account=test_account, mailbox=mb, limit=1
-                )
+                matches = connector.search_messages(account=test_account, mailbox=mb, limit=1)
             except Exception:
                 continue
             if matches:
@@ -2796,10 +2692,7 @@ class TestTemplateIntegration:
             Template(
                 name="integration-reply",
                 subject="Re: {original_subject}",
-                body=(
-                    "Hi {recipient_name},\n\n"
-                    "Thanks for reaching out (writing on {today}).\n"
-                ),
+                body=("Hi {recipient_name},\n\nThanks for reaching out (writing on {today}).\n"),
             )
         )
 
@@ -2839,19 +2732,13 @@ class TestAnchorLookupIncompleteIntegration:
     OSError, which is a member of ``_IMAP_FALLBACK_EXCS``).
     """
 
-    def _real_rfc_id(
-        self, connector: AppleMailConnector, test_account: str
-    ) -> str:
-        rows = connector.search_messages(
-            account=test_account, mailbox="INBOX", limit=1
-        )
+    def _real_rfc_id(self, connector: AppleMailConnector, test_account: str) -> str:
+        rows = connector.search_messages(account=test_account, mailbox="INBOX", limit=1)
         if not rows:
             pytest.skip(f"{test_account} INBOX has no messages to test against")
         rfc_id = rows[0].get("rfc_message_id") or rows[0].get("id")
         if not rfc_id or "@" not in rfc_id:
-            pytest.skip(
-                "test_account is not on the IMAP path (no RFC Message-ID)"
-            )
+            pytest.skip("test_account is not on the IMAP path (no RFC Message-ID)")
         return str(rfc_id)
 
     def test_real_message_never_reported_missing_when_probes_fail(
@@ -2898,9 +2785,7 @@ class TestAnchorLookupIncompleteIntegration:
         host, _port, _email = connector._resolve_imap_config(test_account)
         original = ImapConnector.resolve_anchor
 
-        def _fail_other_hosts(
-            self: ImapConnector, message_id: str
-        ) -> dict[str, Any] | None:
+        def _fail_other_hosts(self: ImapConnector, message_id: str) -> dict[str, Any] | None:
             if getattr(self, "_host", None) != host:
                 raise OSError("simulated timeout on an unrelated account")
             return original(self, message_id)
@@ -2933,9 +2818,7 @@ class TestBulkRfcIdDoesNotFreezeMail:
         import subprocess
         import threading
 
-        rows = connector.search_messages(
-            account=test_account, mailbox="INBOX", limit=1
-        )
+        rows = connector.search_messages(account=test_account, mailbox="INBOX", limit=1)
         if not rows:
             pytest.skip(f"{test_account} INBOX has no messages")
         rfc_id = rows[0].get("rfc_message_id") or rows[0].get("id")
@@ -2948,9 +2831,7 @@ class TestBulkRfcIdDoesNotFreezeMail:
         def _bulk() -> None:
             try:
                 # No account / source_mailbox on purpose — the freezing shape.
-                result["count"] = connector.update_message(
-                    [str(rfc_id)], flag_color="orange"
-                )
+                result["count"] = connector.update_message([str(rfc_id)], flag_color="orange")
             except BaseException as exc:  # noqa: BLE001 - reported below
                 result["error"] = exc
             finally:
@@ -2961,9 +2842,14 @@ class TestBulkRfcIdDoesNotFreezeMail:
         try:
             probe_start = time.monotonic()
             probe = subprocess.run(
-                ["/usr/bin/osascript", "-e",
-                 'tell application "Mail" to return (count of accounts) as text'],
-                capture_output=True, text=True, timeout=30,
+                [
+                    "/usr/bin/osascript",
+                    "-e",
+                    'tell application "Mail" to return (count of accounts) as text',
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             probe_elapsed = time.monotonic() - probe_start
         except subprocess.TimeoutExpired:
@@ -3014,9 +2900,7 @@ class TestGetThreadPartialFlagIntegration:
     ) -> None:
         from apple_mail_fast_mcp.imap_connector import ImapConnector
 
-        rows = connector.search_messages(
-            account=test_account, mailbox="INBOX", limit=1
-        )
+        rows = connector.search_messages(account=test_account, mailbox="INBOX", limit=1)
         if not rows:
             pytest.skip(f"{test_account} INBOX has no messages")
         anchor_id = rows[0].get("rfc_message_id") or rows[0].get("id")
@@ -3042,9 +2926,7 @@ class TestGetThreadPartialFlagIntegration:
         self, connector: AppleMailConnector, test_account: str
     ) -> None:
         """The flag must not cry wolf — a normal run reports no degradation."""
-        rows = connector.search_messages(
-            account=test_account, mailbox="INBOX", limit=1
-        )
+        rows = connector.search_messages(account=test_account, mailbox="INBOX", limit=1)
         if not rows:
             pytest.skip(f"{test_account} INBOX has no messages")
         anchor_id = rows[0].get("rfc_message_id") or rows[0].get("id")
@@ -3083,9 +2965,7 @@ class TestFindMessageByMessageIdIntegration:
         import subprocess
         import threading
 
-        rows = connector.search_messages(
-            account=test_account, mailbox="INBOX", limit=1
-        )
+        rows = connector.search_messages(account=test_account, mailbox="INBOX", limit=1)
         if not rows:
             pytest.skip(f"{test_account} INBOX has no messages")
         rfc_id = rows[0].get("rfc_message_id") or rows[0].get("id")
@@ -3105,9 +2985,14 @@ class TestFindMessageByMessageIdIntegration:
         try:
             probe_start = time.monotonic()
             probe = subprocess.run(
-                ["/usr/bin/osascript", "-e",
-                 'tell application "Mail" to return (count of accounts) as text'],
-                capture_output=True, text=True, timeout=30,
+                [
+                    "/usr/bin/osascript",
+                    "-e",
+                    'tell application "Mail" to return (count of accounts) as text',
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             probe_elapsed = time.monotonic() - probe_start
         except subprocess.TimeoutExpired:
@@ -3135,9 +3020,7 @@ class TestFindMessageByMessageIdIntegration:
         Mail's internal id — the contract ``create_draft(reply_to=...)``
         and ``create_draft(forward_of=...)`` rely on for #205.
         """
-        rows = connector.search_messages(
-            account=test_account, mailbox="INBOX", limit=1
-        )
+        rows = connector.search_messages(account=test_account, mailbox="INBOX", limit=1)
         if not rows:
             pytest.skip(f"{test_account} INBOX has no messages to test against")
 
@@ -3147,8 +3030,7 @@ class TestFindMessageByMessageIdIntegration:
         # is specifically about that form.
         if rfc_id.startswith("<") and rfc_id.endswith(">"):
             pytest.skip(
-                "search_messages returned a bracketed id — "
-                "test_account is not on the IMAP path"
+                "search_messages returned a bracketed id — test_account is not on the IMAP path"
             )
 
         internal_id = connector.find_message_by_message_id(rfc_id)
@@ -3168,9 +3050,7 @@ class TestFindMessageByMessageIdIntegration:
         passing In-Reply-To with brackets, create_draft passing a bare
         seed_id from search_messages) can hand us either form.
         """
-        rows = connector.search_messages(
-            account=test_account, mailbox="INBOX", limit=1
-        )
+        rows = connector.search_messages(account=test_account, mailbox="INBOX", limit=1)
         if not rows:
             pytest.skip(f"{test_account} INBOX has no messages to test against")
 
@@ -3196,9 +3076,7 @@ class TestFindMessageByMessageIdIntegration:
         through create_draft(seed='reply') without MailMessageNotFoundError.
         Cleans up the created draft.
         """
-        rows = connector.search_messages(
-            account=test_account, mailbox="INBOX", limit=1
-        )
+        rows = connector.search_messages(account=test_account, mailbox="INBOX", limit=1)
         if not rows:
             pytest.skip(f"{test_account} INBOX has no messages to test against")
 
@@ -3233,30 +3111,22 @@ class TestTimeoutWrappingCompiles:
     osascript to prove it compiles and executes.
     """
 
-    def test_handler_prefixed_timeout_script_executes(
-        self, connector: AppleMailConnector
-    ) -> None:
+    def test_handler_prefixed_timeout_script_executes(self, connector: AppleMailConnector) -> None:
         # Mirror the handler-prefixed shape used by mark_as_read / move_messages
         # / create_rule etc.: handlers OUTSIDE the timeout block, a trivial
         # tell-block INSIDE. A syntax error (handler inside `with timeout`)
         # would surface here as a non-zero osascript exit.
         script = f"{_MAILBOX_RESOLVER_HANDLERS}\n" + _wrap_with_timeout(
-            'tell application "Mail"\n'
-            "    return (count of accounts) as text\n"
-            "end tell",
+            'tell application "Mail"\n    return (count of accounts) as text\nend tell',
             timeout=connector.timeout,
         )
         result = connector._run_applescript(script)
         assert result.isdigit()
 
-    def test_no_handler_timeout_script_executes(
-        self, connector: AppleMailConnector
-    ) -> None:
+    def test_no_handler_timeout_script_executes(self, connector: AppleMailConnector) -> None:
         # Mirror the no-handler shape (set_rule_enabled / save_attachments etc.).
         script = _wrap_with_timeout(
-            'tell application "Mail"\n'
-            "    return (count of accounts) as text\n"
-            "end tell",
+            'tell application "Mail"\n    return (count of accounts) as text\nend tell',
             timeout=connector.timeout,
         )
         result = connector._run_applescript(script)
@@ -3407,8 +3277,6 @@ class TestDeleteStagingIntegration:
                 if name is None:
                     continue
                 try:
-                    connector.delete_mailbox(
-                        account=test_account, name=name, delete_messages=True
-                    )
+                    connector.delete_mailbox(account=test_account, name=name, delete_messages=True)
                 except Exception:
                     pass

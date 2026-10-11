@@ -78,9 +78,7 @@ class TestIMAPDelegation:
         # If IMAP succeeds, _imap_failures stays empty. If anything falls back,
         # the set will contain iCloud. We assert the IMAP path executed.
         with caplog.at_level(logging.DEBUG, logger="apple_mail_fast_mcp"):
-            result = connector.search_messages(
-                account=ICLOUD_ACCOUNT_NAME, limit=5
-            )
+            result = connector.search_messages(account=ICLOUD_ACCOUNT_NAME, limit=5)
 
         assert isinstance(result, list)
         # Search may be empty (iCloud inbox often is for this user), but the
@@ -96,8 +94,12 @@ class TestIMAPDelegation:
         # Any messages returned must have the standard keys. (iCloud may
         # legitimately return [] — that's a successful IMAP search.)
         expected_keys = {
-            "id", "subject", "sender", "date_received",
-            "read_status", "flagged",
+            "id",
+            "subject",
+            "sender",
+            "date_received",
+            "read_status",
+            "flagged",
         }
         for msg in result:
             assert set(msg.keys()) == expected_keys
@@ -117,6 +119,7 @@ class TestIMAPDelegation:
         we want the 3s IMAP connect timeout to fire, OSError to propagate,
         and the first-failure WARNING path to execute.
         """
+
         def fake_config(_account: str) -> tuple[str, int, str]:
             return ("10.255.255.1", 993, "fake@example.com")
 
@@ -127,9 +130,7 @@ class TestIMAPDelegation:
         )
 
         with caplog.at_level(logging.DEBUG, logger="apple_mail_fast_mcp"):
-            result = connector.search_messages(
-                account=ICLOUD_ACCOUNT_NAME, limit=5
-            )
+            result = connector.search_messages(account=ICLOUD_ACCOUNT_NAME, limit=5)
 
         # AppleScript path succeeded despite IMAP failure. iCloud may return
         # an empty inbox; the key assertion is that we got a list back at all
@@ -169,11 +170,14 @@ class TestIMAPDelegation:
         # Find any iCloud message to use as anchor.
         anchor_finder = subprocess.run(
             [
-                "/usr/bin/osascript", "-e",
+                "/usr/bin/osascript",
+                "-e",
                 'tell application "Mail" to return id of '
                 '(first message of mailbox "Sent Messages" of account "iCloud")',
             ],
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         if anchor_finder.returncode != 0:
             pytest.skip(
@@ -212,11 +216,14 @@ class TestIMAPDelegation:
         # Find an anchor first (anchor resolution stays AppleScript).
         anchor_finder = subprocess.run(
             [
-                "/usr/bin/osascript", "-e",
+                "/usr/bin/osascript",
+                "-e",
                 'tell application "Mail" to return id of '
                 '(first message of mailbox "Sent Messages" of account "iCloud")',
             ],
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         if anchor_finder.returncode != 0:
             pytest.skip(f"No anchor message available: {anchor_finder.stderr.strip()}")

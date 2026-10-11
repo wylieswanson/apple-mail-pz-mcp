@@ -125,9 +125,7 @@ class TestSerializeTemplate:
             serialize_template,
         )
 
-        original = Template(
-            name="r", subject="Hi {name}", body="Body line.\n\nMore.\n"
-        )
+        original = Template(name="r", subject="Hi {name}", body="Body line.\n\nMore.\n")
         text = serialize_template(original)
         parsed = parse_template_file(text, name="r")
         assert parsed == original
@@ -157,9 +155,7 @@ class TestTemplateRender:
         from apple_mail_fast_mcp.templates import Template
 
         t = Template(name="x", subject=None, body="{a} and {b} and {c}.\n")
-        with pytest.raises(
-            MailTemplateMissingVariableError, match=r"a.*b.*c|c.*b.*a"
-        ):
+        with pytest.raises(MailTemplateMissingVariableError, match=r"a.*b.*c|c.*b.*a"):
             t.render({"a": "1"})
 
     def test_extra_vars_are_ignored(self):
@@ -225,10 +221,7 @@ class TestTemplateStore:
 
         store = self._store(tmp_path)
         store.save(Template(name="foo", subject=None, body="v1\n"))
-        assert (
-            store.save(Template(name="foo", subject=None, body="v2\n"))
-            is False
-        )
+        assert store.save(Template(name="foo", subject=None, body="v2\n")) is False
         assert store.get("foo").body == "v2\n"
 
     def test_get_round_trips_through_disk(self, tmp_path: Path):

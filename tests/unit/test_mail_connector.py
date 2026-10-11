@@ -77,9 +77,7 @@ class TestAppleScriptSerialization:
     The connector serializes its osascript calls and waits for its turn
     before the timeout clock starts."""
 
-    def test_concurrent_calls_never_overlap(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_concurrent_calls_never_overlap(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import subprocess
         import threading
 
@@ -100,8 +98,7 @@ class TestAppleScriptSerialization:
         monkeypatch.setattr(subprocess, "run", fake_run)
         connector = AppleMailConnector(timeout=5)
         threads = [
-            threading.Thread(target=connector._run_applescript, args=("s",))
-            for _ in range(4)
+            threading.Thread(target=connector._run_applescript, args=("s",)) for _ in range(4)
         ]
         for t in threads:
             t.start()
@@ -266,7 +263,8 @@ class TestAppleMailConnector:
     ) -> None:
         """A mailbox echoed in a not-found error can contain any text."""
         mock_run.return_value = MagicMock(
-            returncode=1, stdout="",
+            returncode=1,
+            stdout="",
             stderr='Can\u2019t get mailbox "Not authorized vendors". (-1728)',
         )
         with pytest.raises(MailMailboxNotFoundError):
@@ -528,9 +526,7 @@ class TestAppleMailConnector:
     ) -> None:
         from apple_mail_fast_mcp.exceptions import MailRuleNotFoundError
 
-        mock_run.side_effect = MailAppleScriptError(
-            "execution error: RULE_CHANGED (-2700)"
-        )
+        mock_run.side_effect = MailAppleScriptError("execution error: RULE_CHANGED (-2700)")
         with pytest.raises(MailRuleNotFoundError, match="list_rules"):
             connector.delete_rule(rule_index=4, expected_name="B")
 
@@ -5892,7 +5888,10 @@ class TestSaveAttachmentsImapFastPath:
                 stack.enter_context(p)
             with patch.object(AppleMailConnector, "_run_applescript"):
                 result = connector.save_attachments(
-                    "att-test@example.com", tmp_path, account="Gmail", mailbox="INBOX",
+                    "att-test@example.com",
+                    tmp_path,
+                    account="Gmail",
+                    mailbox="INBOX",
                 )
 
         assert result["saved"] == 2
@@ -8905,7 +8904,9 @@ class TestSmtpSendPath:
             "_get_imap_password_with_fallback",
             lambda account, e: password,
         )
-        monkeypatch.setattr(connector, "_resolve_account_to_sender", lambda account, from_address=None: email)
+        monkeypatch.setattr(
+            connector, "_resolve_account_to_sender", lambda account, from_address=None: email
+        )
         monkeypatch.setattr(connector, "_imap_breaker_open", lambda account: False)
         monkeypatch.setattr(connector, "_imap_clear_breaker", lambda account: None)
 
@@ -8996,7 +8997,9 @@ class TestSmtpSendPath:
     ) -> None:
         monkeypatch.setattr(connector, "_resolve_smtp_config", lambda account: ("", 0, ""))
         monkeypatch.setattr(connector, "_imap_breaker_open", lambda account: False)
-        monkeypatch.setattr(connector, "_resolve_account_to_sender", lambda account, from_address=None: "me@x.test")
+        monkeypatch.setattr(
+            connector, "_resolve_account_to_sender", lambda account, from_address=None: "me@x.test"
+        )
         scripts: list[str] = []
         monkeypatch.setattr(connector, "_run_applescript", lambda s: scripts.append(s) or "SENT")
         with patch("apple_mail_fast_mcp.mail_connector.SmtpSender") as sender_cls:
@@ -10281,7 +10284,8 @@ class TestDeleteStagingConnector:
     ) -> None:
         calls: list[str] = []
         monkeypatch.setattr(
-            connector, "_ensure_mailbox",
+            connector,
+            "_ensure_mailbox",
             lambda account, name: calls.append(f"ensure {account} {name}"),
         )
 
@@ -10292,7 +10296,9 @@ class TestDeleteStagingConnector:
         monkeypatch.setattr(connector, "update_message", fake_update)
 
         count = connector.stage_messages_for_deletion(
-            ["a@x", "b@x"], account="Work", source_mailbox="INBOX",
+            ["a@x", "b@x"],
+            account="Work",
+            source_mailbox="INBOX",
             staging_mailbox="To Delete",
         )
 
@@ -10306,12 +10312,8 @@ class TestDeleteStagingConnector:
     def test_ensure_mailbox_uses_imap_when_configured(
         self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(
-            connector, "_resolve_imap_config", lambda a: ("h", 993, "u@e.com")
-        )
-        monkeypatch.setattr(
-            connector, "_get_imap_password_with_fallback", lambda a, e: "pw"
-        )
+        monkeypatch.setattr(connector, "_resolve_imap_config", lambda a: ("h", 993, "u@e.com"))
+        monkeypatch.setattr(connector, "_get_imap_password_with_fallback", lambda a, e: "pw")
         run = MagicMock()
         monkeypatch.setattr(connector, "_run_applescript", run)
         with patch("apple_mail_fast_mcp.mail_connector.ImapConnector") as imap_cls:
@@ -10322,9 +10324,7 @@ class TestDeleteStagingConnector:
     def test_ensure_mailbox_falls_back_to_applescript_without_imap(
         self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(
-            connector, "_resolve_imap_config", lambda a: ("h", 993, "u@e.com")
-        )
+        monkeypatch.setattr(connector, "_resolve_imap_config", lambda a: ("h", 993, "u@e.com"))
 
         def no_keychain(account: str, email: str) -> str:
             raise MailKeychainEntryNotFoundError("none")
@@ -10337,7 +10337,7 @@ class TestDeleteStagingConnector:
 
         script = run.call_args[0][0]
         assert 'exists mailbox "To Delete"' in script
-        assert 'make new mailbox' in script
+        assert "make new mailbox" in script
 
     def test_stage_mailbox_refuses_inbox(self, connector: AppleMailConnector) -> None:
         with pytest.raises(ValueError, match="INBOX"):
@@ -10345,9 +10345,7 @@ class TestDeleteStagingConnector:
                 account="Work", name="INBOX", staging_mailbox="To Delete"
             )
 
-    def test_stage_mailbox_refuses_gmail_system_labels(
-        self, connector: AppleMailConnector
-    ) -> None:
+    def test_stage_mailbox_refuses_gmail_system_labels(self, connector: AppleMailConnector) -> None:
         from apple_mail_fast_mcp.exceptions import (
             MailUnsupportedGmailSystemLabelError,
         )
@@ -10362,9 +10360,7 @@ class TestDeleteStagingConnector:
     ) -> None:
         from apple_mail_fast_mcp.exceptions import MailImapRequiredError
 
-        monkeypatch.setattr(
-            connector, "_resolve_imap_config", lambda a: ("h", 993, "u@e.com")
-        )
+        monkeypatch.setattr(connector, "_resolve_imap_config", lambda a: ("h", 993, "u@e.com"))
 
         def no_keychain(account: str, email: str) -> str:
             raise MailKeychainEntryNotFoundError("none")
@@ -10378,12 +10374,8 @@ class TestDeleteStagingConnector:
     def test_stage_mailbox_returns_the_new_path(
         self, connector: AppleMailConnector, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(
-            connector, "_resolve_imap_config", lambda a: ("h", 993, "u@e.com")
-        )
-        monkeypatch.setattr(
-            connector, "_get_imap_password_with_fallback", lambda a, e: "pw"
-        )
+        monkeypatch.setattr(connector, "_resolve_imap_config", lambda a: ("h", 993, "u@e.com"))
+        monkeypatch.setattr(connector, "_get_imap_password_with_fallback", lambda a, e: "pw")
         with patch("apple_mail_fast_mcp.mail_connector.ImapConnector") as imap_cls:
             imap_cls.return_value.stage_mailbox.return_value = "To Delete/Spam"
             staged = connector.stage_mailbox_for_deletion(
@@ -10395,12 +10387,18 @@ class TestDeleteStagingConnector:
 
 _TWO_ACCOUNTS = [
     {
-        "id": "UUID-1", "name": "iCloud", "full_name": "Alice Smith",
-        "email_addresses": ["alice@me.com", "alice@icloud.com"], "enabled": True,
+        "id": "UUID-1",
+        "name": "iCloud",
+        "full_name": "Alice Smith",
+        "email_addresses": ["alice@me.com", "alice@icloud.com"],
+        "enabled": True,
     },
     {
-        "id": "UUID-2", "name": "Work", "full_name": None,
-        "email_addresses": ["alice@work.example"], "enabled": True,
+        "id": "UUID-2",
+        "name": "Work",
+        "full_name": None,
+        "email_addresses": ["alice@work.example"],
+        "enabled": True,
     },
 ]
 
@@ -10414,16 +10412,15 @@ class TestDraftFromAddress:
 
     @pytest.fixture(autouse=True)
     def no_retry_delay(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            "apple_mail_fast_mcp.mail_connector._SENDER_LOOKUP_RETRY_DELAY_S", 0
-        )
+        monkeypatch.setattr("apple_mail_fast_mcp.mail_connector._SENDER_LOOKUP_RETRY_DELAY_S", 0)
 
     @patch.object(AppleMailConnector, "list_accounts", return_value=_TWO_ACCOUNTS)
     def test_default_is_the_accounts_first_address(
         self, _list: MagicMock, connector: AppleMailConnector
     ) -> None:
         assert connector._resolve_draft_sender("iCloud", None) == (
-            "iCloud", "Alice Smith <alice@me.com>",
+            "iCloud",
+            "Alice Smith <alice@me.com>",
         )
 
     @patch.object(AppleMailConnector, "list_accounts", return_value=_TWO_ACCOUNTS)
@@ -10432,7 +10429,8 @@ class TestDraftFromAddress:
     ) -> None:
         """Matched case-insensitively; the address goes out as Mail lists it."""
         assert connector._resolve_draft_sender("UUID-1", "Alice@iCloud.com") == (
-            "UUID-1", "Alice Smith <alice@icloud.com>",
+            "UUID-1",
+            "Alice Smith <alice@icloud.com>",
         )
 
     @patch.object(AppleMailConnector, "list_accounts", return_value=_TWO_ACCOUNTS)
@@ -10449,7 +10447,8 @@ class TestDraftFromAddress:
         self, _list: MagicMock, connector: AppleMailConnector
     ) -> None:
         assert connector._resolve_draft_sender(None, "alice@work.example") == (
-            "Work", "alice@work.example",
+            "Work",
+            "alice@work.example",
         )
 
     @patch.object(AppleMailConnector, "list_accounts", return_value=_TWO_ACCOUNTS)
@@ -10474,9 +10473,7 @@ class TestDraftFromAddress:
             assert connector._resolve_draft_sender(None, None) == (None, None)
         mock_list.assert_not_called()
 
-    def test_empty_address_list_is_asked_for_again(
-        self, connector: AppleMailConnector
-    ) -> None:
+    def test_empty_address_list_is_asked_for_again(self, connector: AppleMailConnector) -> None:
         """Mail has answered with no addresses for an account that has them.
         One more ask costs a fraction of a second; failing the draft costs
         the caller the whole operation."""
@@ -10485,13 +10482,12 @@ class TestDraftFromAddress:
             AppleMailConnector, "list_accounts", side_effect=[blank, _TWO_ACCOUNTS]
         ) as mock_list:
             assert connector._resolve_draft_sender("iCloud", None) == (
-                "iCloud", "Alice Smith <alice@me.com>",
+                "iCloud",
+                "Alice Smith <alice@me.com>",
             )
         assert mock_list.call_count == 2
 
-    def test_still_empty_says_what_mail_returned(
-        self, connector: AppleMailConnector
-    ) -> None:
+    def test_still_empty_says_what_mail_returned(self, connector: AppleMailConnector) -> None:
         """Not "no email addresses configured" — list_accounts can show them
         a moment later. Say what happened and what to do."""
         from apple_mail_fast_mcp.exceptions import MailAccountAddressesUnavailableError
@@ -10499,7 +10495,9 @@ class TestDraftFromAddress:
         blank = [dict(_TWO_ACCOUNTS[0], email_addresses=[])]
         with (
             patch.object(AppleMailConnector, "list_accounts", return_value=blank),
-            pytest.raises(MailAccountAddressesUnavailableError, match="returned no email addresses"),
+            pytest.raises(
+                MailAccountAddressesUnavailableError, match="returned no email addresses"
+            ),
         ):
             connector._resolve_draft_sender("iCloud", None)
 
@@ -10507,20 +10505,31 @@ class TestDraftFromAddress:
     @patch("apple_mail_fast_mcp.mail_connector.ImapConnector")
     @patch("apple_mail_fast_mcp.mail_connector.get_imap_password", return_value="pw")
     @patch.object(
-        AppleMailConnector, "_resolve_imap_config",
+        AppleMailConnector,
+        "_resolve_imap_config",
         return_value=("imap.host", 993, "alice@me.com"),
     )
     @patch.object(AppleMailConnector, "list_accounts", return_value=_TWO_ACCOUNTS)
     def test_draft_goes_out_from_the_chosen_address(
-        self, _list, _cfg, _pw, mock_imap_cls, _applescript,
-        connector: AppleMailConnector, tmp_path: Path,
+        self,
+        _list,
+        _cfg,
+        _pw,
+        mock_imap_cls,
+        _applescript,
+        connector: AppleMailConnector,
+        tmp_path: Path,
     ) -> None:
         note = tmp_path / "note (1).txt"
         note.write_text("x")
 
         result = connector.create_draft(
-            seed="new", to=["bob@example.com"], subject="hi", body="x",
-            from_address="alice@icloud.com", attachment_paths=[note],
+            seed="new",
+            to=["bob@example.com"],
+            subject="hi",
+            body="x",
+            from_address="alice@icloud.com",
+            attachment_paths=[note],
         )
 
         raw = mock_imap_cls.return_value.append_draft.call_args[0][0]
@@ -10535,8 +10544,13 @@ class TestDraftFromAddress:
         self, _list, _smtp, mock_run, connector: AppleMailConnector
     ) -> None:
         connector.create_draft(
-            seed="new", to=["bob@example.com"], subject="hi", body="x",
-            from_account="iCloud", from_address="alice@icloud.com", send_now=True,
+            seed="new",
+            to=["bob@example.com"],
+            subject="hi",
+            body="x",
+            from_account="iCloud",
+            from_address="alice@icloud.com",
+            send_now=True,
         )
 
         script = mock_run.call_args[0][0]
@@ -10574,8 +10588,13 @@ class TestSearchAllMailboxesDispatch:
 
 
 _SOURCE = {
-    "host": "imap.example.com", "mailbox": "INBOX", "uidvalidity": 7, "uid": 42,
-    "rfc822_size": 123, "flags_before": ["\\Seen"], "flags_after": ["\\Seen"],
+    "host": "imap.example.com",
+    "mailbox": "INBOX",
+    "uidvalidity": 7,
+    "uid": 42,
+    "rfc822_size": 123,
+    "flags_before": ["\\Seen"],
+    "flags_after": ["\\Seen"],
     "fetched_at": "2026-01-02T03:04:05+00:00",
 }
 
@@ -10587,7 +10606,9 @@ class TestSaveMessageAsEml:
     def connector(self) -> AppleMailConnector:
         return AppleMailConnector(timeout=30)
 
-    def _save(self, connector: AppleMailConnector, raw: bytes | Exception, tmp_path: Path, **kw: Any):
+    def _save(
+        self, connector: AppleMailConnector, raw: bytes | Exception, tmp_path: Path, **kw: Any
+    ):
         import contextlib
 
         mock_imap = MagicMock()
@@ -10601,9 +10622,7 @@ class TestSaveMessageAsEml:
         with contextlib.ExitStack() as stack:
             for p in TestSaveAttachmentsImapFastPath._imap_patches(self, mock_imap):
                 stack.enter_context(p)
-            self.mock_as = stack.enter_context(
-                patch.object(AppleMailConnector, "_run_applescript")
-            )
+            self.mock_as = stack.enter_context(patch.object(AppleMailConnector, "_run_applescript"))
             kw.setdefault("account", "Gmail")
             kw.setdefault("mailbox", "INBOX")
             return connector.save_attachments("att-test@example.com", tmp_path, **kw)
@@ -10648,16 +10667,12 @@ class TestSaveMessageAsEml:
     ) -> None:
         raw = _raw_with_attachments([("a.pdf", "pdf", b"AAA")])
 
-        result = self._save(
-            connector, raw, tmp_path, include_message=True, attachment_indices=[]
-        )
+        result = self._save(connector, raw, tmp_path, include_message=True, attachment_indices=[])
 
         assert result["saved"] == 0
         assert [p.name for p in tmp_path.iterdir()] == ["with attachments.eml"]
 
-    def test_not_written_unless_asked(
-        self, connector: AppleMailConnector, tmp_path: Path
-    ) -> None:
+    def test_not_written_unless_asked(self, connector: AppleMailConnector, tmp_path: Path) -> None:
         result = self._save(connector, _raw_with_attachments([("a.pdf", "pdf", b"A")]), tmp_path)
 
         assert "message_file" not in result
@@ -10677,7 +10692,10 @@ class TestSaveMessageAsEml:
     @pytest.mark.parametrize(
         ("subject", "expected"),
         [
-            ("Weekly summary for Sat, 10/10 is ready", "Weekly summary for Sat, 10_10 is ready.eml"),
+            (
+                "Weekly summary for Sat, 10/10 is ready",
+                "Weekly summary for Sat, 10_10 is ready.eml",
+            ),
             ("Q3 / Q4 plan", "Q3 _ Q4 plan.eml"),
             ("C:\\temp\\x", "C__temp_x.eml"),
             ("a/b/..", "a_b_...eml"),
@@ -10718,15 +10736,17 @@ class TestSaveMessageAsEml:
         assert target.parent == tmp_path
 
         raw = b"Subject: ..\r\nMessage-ID: <att-test@example.com>\r\n\r\nbody\r\n"
-        assert Path(
-            self._save(connector, raw, tmp_path, include_message=True)["message_file"]
-        ) == tmp_path / "message.eml"
+        assert (
+            Path(self._save(connector, raw, tmp_path, include_message=True)["message_file"])
+            == tmp_path / "message.eml"
+        )
         (tmp_path / "message.eml").unlink()
 
         raw = b"Message-ID: <att-test@example.com>\r\n\r\nbody\r\n"
-        assert Path(
-            self._save(connector, raw, tmp_path, include_message=True)["message_file"]
-        ) == tmp_path / "message.eml"
+        assert (
+            Path(self._save(connector, raw, tmp_path, include_message=True)["message_file"])
+            == tmp_path / "message.eml"
+        )
 
     def test_over_the_size_cap_is_rejected_not_written(
         self, connector: AppleMailConnector, tmp_path: Path
@@ -10743,9 +10763,7 @@ class TestSaveMessageAsEml:
         ]
         assert list(tmp_path.iterdir()) == []
 
-    def test_needs_account_and_mailbox(
-        self, connector: AppleMailConnector, tmp_path: Path
-    ) -> None:
+    def test_needs_account_and_mailbox(self, connector: AppleMailConnector, tmp_path: Path) -> None:
         from apple_mail_fast_mcp.exceptions import MailImapRequiredError
 
         with (
@@ -10779,7 +10797,9 @@ class TestSaveMessageAsEml:
         try:
             with pytest.raises(PermissionError):
                 self._save(
-                    connector, _raw_with_attachments([("a.pdf", "pdf", b"A")]), target,
+                    connector,
+                    _raw_with_attachments([("a.pdf", "pdf", b"A")]),
+                    target,
                     include_message=True,
                 )
         finally:
@@ -10831,9 +10851,9 @@ class TestSaveMessageAsEml:
             b"Subject: hello\r\nMIME-Version: 1.0\r\n"
             b'Content-Type: multipart/mixed; boundary="m"\r\n\r\n'
             b"--m\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
-            b'--m\r\nContent-Type: application/octet-stream\r\n'
+            b"--m\r\nContent-Type: application/octet-stream\r\n"
             b'Content-Disposition: attachment; filename="hello.eml"\r\n\r\nONE\r\n'
-            b'--m\r\nContent-Type: application/octet-stream\r\n'
+            b"--m\r\nContent-Type: application/octet-stream\r\n"
             b'Content-Disposition: attachment; filename="message_hello.eml"\r\n\r\nTWO\r\n'
             b"--m--\r\n"
         )

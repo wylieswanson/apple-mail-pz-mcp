@@ -166,21 +166,15 @@ class TestDraftStateStore:
         nested = tmp_path / "nested" / "drafts"
         assert not nested.exists()
         store = DraftStateStore(root=nested)
-        store.set_seed(
-            "160991", SeedRecord(seed_kind="reply", seed_id="999888")
-        )
+        store.set_seed("160991", SeedRecord(seed_kind="reply", seed_id="999888"))
         assert nested.is_dir()
 
     def test_set_overwrites_existing_entry(self, tmp_path):
         from apple_mail_fast_mcp.drafts import DraftStateStore, SeedRecord
 
         store = DraftStateStore(root=tmp_path)
-        store.set_seed(
-            "160991", SeedRecord(seed_kind="reply", seed_id="aaa")
-        )
-        store.set_seed(
-            "160991", SeedRecord(seed_kind="forward", seed_id="bbb")
-        )
+        store.set_seed("160991", SeedRecord(seed_kind="reply", seed_id="aaa"))
+        store.set_seed("160991", SeedRecord(seed_kind="forward", seed_id="bbb"))
         seed = store.get_seed("160991")
         assert seed is not None
         assert seed.seed_kind == "forward"
@@ -190,9 +184,7 @@ class TestDraftStateStore:
         from apple_mail_fast_mcp.drafts import DraftStateStore, SeedRecord
 
         store = DraftStateStore(root=tmp_path)
-        store.set_seed(
-            "160991", SeedRecord(seed_kind="reply", seed_id="999888")
-        )
+        store.set_seed("160991", SeedRecord(seed_kind="reply", seed_id="999888"))
         store.delete("160991")
         assert store.get_seed("160991") is None
 
@@ -215,9 +207,7 @@ class TestDraftStateStore:
 
         store = DraftStateStore(root=tmp_path)
         with pytest.raises(MailDraftInvalidIdError):
-            store.set_seed(
-                "../escape", SeedRecord(seed_kind="reply", seed_id="x")
-            )
+            store.set_seed("../escape", SeedRecord(seed_kind="reply", seed_id="x"))
 
     def test_delete_with_invalid_id_raises(self, tmp_path):
         from apple_mail_fast_mcp.drafts import DraftStateStore
@@ -250,9 +240,7 @@ class TestDraftStateStore:
         store = DraftStateStore(root=tmp_path)
         tmp_path.mkdir(parents=True, exist_ok=True)
         # "new" is not a persisted seed kind — fresh drafts get no file.
-        (tmp_path / "160991.json").write_text(
-            '{"seed_kind": "new", "seed_id": "x"}'
-        )
+        (tmp_path / "160991.json").write_text('{"seed_kind": "new", "seed_id": "x"}')
         assert store.get_seed("160991") is None
 
     def test_default_constructor_uses_default_root(self, monkeypatch, tmp_path):
@@ -311,9 +299,7 @@ class TestExtractDraftAttachmentsPathTraversal:
         conn = AppleMailConnector(timeout=30)
         with patch.object(AppleMailConnector, "_run_applescript") as mock_run:
             mock_run.return_value = "0"
-            conn.extract_draft_attachments(
-                "160991", ["../../../../tmp/evil.sh"], tmp_path
-            )
+            conn.extract_draft_attachments("160991", ["../../../../tmp/evil.sh"], tmp_path)
             script = mock_run.call_args[0][0]
 
         # The AppleScript saves to the sanitized path under dest_dir/0/,

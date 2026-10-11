@@ -58,9 +58,7 @@ class TestKeychainFallbackChain:
         self, monkeypatch: pytest.MonkeyPatch, service: str
     ) -> None:
         """A key stored under any name this project ever used must keep working."""
-        monkeypatch.setattr(
-            run_eval, "_keychain_lookup", _keychain_with(**{service: "stored"})
-        )
+        monkeypatch.setattr(run_eval, "_keychain_lookup", _keychain_with(**{service: "stored"}))
         assert run_eval.get_api_key() == "stored"
 
     def test_env_var_beats_the_keychain(self, monkeypatch: pytest.MonkeyPatch) -> None:

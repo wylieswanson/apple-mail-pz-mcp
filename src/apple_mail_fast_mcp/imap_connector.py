@@ -95,9 +95,7 @@ def _to_server_folder_name(path: str, delimiter: str, prefix: str) -> str:
     if path.upper() == "INBOX":
         return path
     if "/" in path and not delimiter:
-        raise ValueError(
-            f"cannot create {path!r}: the server has no mailbox hierarchy"
-        )
+        raise ValueError(f"cannot create {path!r}: the server has no mailbox hierarchy")
     name = path.replace("/", delimiter) if delimiter else path
     if prefix and not name.startswith(prefix):
         name = prefix + name
@@ -109,6 +107,7 @@ def _apply_operation_timeout(client: IMAPClient) -> None:
     OPERATION_TIMEOUT_S, post-login. Call immediately after
     ``client.login(...)`` at every connection-open site. (#249)"""
     client.socket().settimeout(OPERATION_TIMEOUT_S)
+
 
 POOL_IDLE_TIMEOUT_S: float = 270.0
 """Default pool idle threshold. iCloud and most providers drop IMAP
@@ -131,6 +130,7 @@ _FLAG_ANSWERED = b"\\Answered"
 # ---------------------------------------------------------------------------
 # Connection pool (issue #75)
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class _PooledClient:
@@ -198,10 +198,7 @@ class ImapConnectionPool:
 
         with self._cache_lock:
             entry = self._cache.get(key)
-            stale = (
-                entry is not None
-                and time.monotonic() - entry.last_used > self._idle_timeout_s
-            )
+            stale = entry is not None and time.monotonic() - entry.last_used > self._idle_timeout_s
             if entry is None or stale:
                 if entry is not None:
                     # Stale — try to be polite about closing it.
@@ -210,9 +207,7 @@ class ImapConnectionPool:
                         entry.client.logout()
                     except Exception:  # noqa: BLE001 — best effort
                         pass
-                client = IMAPClient(
-                    host, port=port, ssl=True, timeout=connect_timeout
-                )
+                client = IMAPClient(host, port=port, ssl=True, timeout=connect_timeout)
                 client.login(email, password)
                 _apply_operation_timeout(client)
                 entry = _PooledClient(client=client)
@@ -262,6 +257,7 @@ class ImapConnectionPool:
                 except Exception:  # noqa: BLE001 — best effort
                     pass
 
+
 _IMAP_MONTHS = (
     "Jan",
     "Feb",
@@ -280,9 +276,7 @@ _IMAP_MONTHS = (
 
 def _iso_to_imap_date(iso: str, field: str) -> str:
     if not _ISO_DATE_RE.match(iso):
-        raise ValueError(
-            f"{field} must be ISO 8601 YYYY-MM-DD, got: {iso!r}"
-        )
+        raise ValueError(f"{field} must be ISO 8601 YYYY-MM-DD, got: {iso!r}")
     d = _date.fromisoformat(iso)
     return f"{d.day:02d}-{_IMAP_MONTHS[d.month - 1]}-{d.year}"
 
@@ -290,9 +284,7 @@ def _iso_to_imap_date(iso: str, field: str) -> str:
 def _iso_to_imap_before(iso: str, field: str) -> str:
     """Upper-bound helper: IMAP BEFORE is exclusive; pass date + 1 day."""
     if not _ISO_DATE_RE.match(iso):
-        raise ValueError(
-            f"{field} must be ISO 8601 YYYY-MM-DD, got: {iso!r}"
-        )
+        raise ValueError(f"{field} must be ISO 8601 YYYY-MM-DD, got: {iso!r}")
     d = _date.fromisoformat(iso) + _timedelta(days=1)
     return f"{d.day:02d}-{_IMAP_MONTHS[d.month - 1]}-{d.year}"
 
@@ -356,10 +348,7 @@ def _or_message_id_criteria(message_ids: list[str]) -> list[Any]:
     into right-nested binary ``OR`` (IMAP's ``OR`` takes exactly two keys):
     ``["OR", a, ["OR", b, c]]``. Assumes ``message_ids`` is non-empty.
     """
-    clauses = [
-        ["HEADER", "Message-ID", _bracket_message_id(mid)]
-        for mid in message_ids
-    ]
+    clauses = [["HEADER", "Message-ID", _bracket_message_id(mid)] for mid in message_ids]
     criteria: list[Any] = clauses[-1]
     for clause in reversed(clauses[:-1]):
         criteria = ["OR", clause, criteria]
@@ -745,9 +734,7 @@ def _leaf_disposition(leaf: tuple[Any, ...]) -> tuple[bytes | None, Any]:
     return None, ()
 
 
-def _leaf_attachment_info(
-    leaf: tuple[Any, ...], section: str
-) -> dict[str, Any] | None:
+def _leaf_attachment_info(leaf: tuple[Any, ...], section: str) -> dict[str, Any] | None:
     """Attachment metadata for one leaf part, or ``None`` if it is body text.
 
     Spec positions: type, subtype, params, id, desc, encoding, size.
@@ -761,10 +748,9 @@ def _leaf_attachment_info(
     disp_kind, disp_params = _leaf_disposition(leaf)
     # Filename precedence: disposition's filename → content-type's `name`,
     # the first that is not blank (a whitespace-only name is no name).
-    name = (
-        (_param_value(disp_params, "filename") or "").strip()
-        or (_param_value(ct_params, "name") or "").strip()
-    )
+    name = (_param_value(disp_params, "filename") or "").strip() or (
+        _param_value(ct_params, "name") or ""
+    ).strip()
     is_rfc822 = type_.lower() == b"message" and subtype.lower() == b"rfc822"
     if not (disp_kind == b"attachment" or name or is_rfc822):
         return None
@@ -882,9 +868,7 @@ def _validate_payload_range(offset: int, max_bytes: int | None) -> None:
         raise ValueError("max_bytes must be a positive integer when provided")
 
 
-def _range_end(
-    total_size: int, *, offset: int, max_bytes: int | None
-) -> int:
+def _range_end(total_size: int, *, offset: int, max_bytes: int | None) -> int:
     if offset > total_size:
         raise ValueError(f"offset {offset} is beyond attachment size {total_size}")
     if max_bytes is None:
@@ -989,9 +973,7 @@ def _bodystructure_has_attachment(structure: Any) -> bool:
     return bool(_bodystructure_attachment_infos(structure))
 
 
-def _envelope_to_dict(
-    envelope: Envelope, flags: tuple[bytes, ...]
-) -> dict[str, Any]:
+def _envelope_to_dict(envelope: Envelope, flags: tuple[bytes, ...]) -> dict[str, Any]:
     date = envelope.date
     if isinstance(date, _datetime):
         date_str = date.isoformat()
@@ -1056,11 +1038,7 @@ def _select_body_bytes(entry: dict[bytes, Any], body_key: bytes) -> bytes:
     body_bytes = entry.get(body_key)
     if body_bytes is None:
         for k, v in entry.items():
-            if (
-                isinstance(k, bytes)
-                and k.startswith(b"BODY[")
-                and b"HEADER" not in k
-            ):
+            if isinstance(k, bytes) and k.startswith(b"BODY[") and b"HEADER" not in k:
                 body_bytes = v
                 break
     return body_bytes or b""
@@ -1141,21 +1119,16 @@ def _build_get_message_result(
     body_bytes = b""
     if want_body:
         body_bytes = _select_body_bytes(entry, body_key)
-        result["content"] = (
-            _extract_text_body(body_bytes) if text_mode else _decode(body_bytes)
-        )
+        result["content"] = _extract_text_body(body_bytes) if text_mode else _decode(body_bytes)
     else:
         result["content"] = ""
     if include_attachments:
         if want_body and text_mode:
             result["attachments"] = [
-                _payload_to_attachment_meta(fa)
-                for fa in extract_attachment_payloads(body_bytes)
+                _payload_to_attachment_meta(fa) for fa in extract_attachment_payloads(body_bytes)
             ]
         else:
-            result["attachments"] = _bodystructure_extract_attachments(
-                entry.get(b"BODYSTRUCTURE")
-            )
+            result["attachments"] = _bodystructure_extract_attachments(entry.get(b"BODYSTRUCTURE"))
     return result
 
 
@@ -1189,15 +1162,16 @@ class ImapConnector:
         """
         if self._pool is not None:
             with self._pool.session(
-                self._host, self._port, self._email,
-                self._password, self._connect_timeout,
+                self._host,
+                self._port,
+                self._email,
+                self._password,
+                self._connect_timeout,
             ) as client:
                 yield client
             return
 
-        client = IMAPClient(
-            self._host, port=self._port, ssl=True, timeout=self._connect_timeout
-        )
+        client = IMAPClient(self._host, port=self._port, ssl=True, timeout=self._connect_timeout)
         try:
             client.login(self._email, self._password)
             _apply_operation_timeout(client)
@@ -1327,11 +1301,7 @@ class ImapConnector:
         # Pass charset only when a non-ASCII term needs it — keeps ASCII
         # searches on the default us-ascii path (max server compatibility)
         # while letting Korean/CJK terms ride a CHARSET UTF-8 literal.
-        uids = (
-            client.search(criteria)
-            if charset is None
-            else client.search(criteria, charset)
-        )
+        uids = client.search(criteria) if charset is None else client.search(criteria, charset)
         # `limit` bounds MATCHING results. With no post-filter, every
         # candidate matches, so truncating the window up front is both
         # correct and the cheapest possible FETCH. With has_attachment
@@ -1399,16 +1369,12 @@ class ImapConnector:
                 if entry is None or b"ENVELOPE" not in entry:
                     continue
                 if has_attachment is not None:
-                    has = _bodystructure_has_attachment(
-                        entry.get(b"BODYSTRUCTURE")
-                    )
+                    has = _bodystructure_has_attachment(entry.get(b"BODYSTRUCTURE"))
                     if has_attachment is True and not has:
                         continue
                     if has_attachment is False and has:
                         continue
-                row = _envelope_to_dict(
-                    entry[b"ENVELOPE"], tuple(entry.get(b"FLAGS", ()))
-                )
+                row = _envelope_to_dict(entry[b"ENVELOPE"], tuple(entry.get(b"FLAGS", ())))
                 if include_attachments:
                     row["attachments"] = _bodystructure_extract_attachments(
                         entry.get(b"BODYSTRUCTURE")
@@ -1505,8 +1471,7 @@ class ImapConnector:
             uids = client.search(["HEADER", "Message-ID", bracketed])
             if not uids:
                 raise MailMessageNotFoundError(
-                    f"Message-ID {message_id!r} not found in mailbox "
-                    f"{mailbox!r} on {self._host}."
+                    f"Message-ID {message_id!r} not found in mailbox {mailbox!r} on {self._host}."
                 )
 
             fetched = client.fetch(uids[:1], fetch_keys)
@@ -1528,9 +1493,7 @@ class ImapConnector:
                 include_attachments=include_attachments,
             )
 
-    def fetch_raw_message(
-        self, message_id: str, mailbox: str = "INBOX"
-    ) -> bytes:
+    def fetch_raw_message(self, message_id: str, mailbox: str = "INBOX") -> bytes:
         """Fetch the full raw RFC 822 bytes of a message by Message-ID.
 
         Used to rebuild a clean reply/forward draft (#245 follow-up):
@@ -1555,8 +1518,7 @@ class ImapConnector:
             uids = client.search(["HEADER", "Message-ID", bracketed])
             if not uids:
                 raise MailMessageNotFoundError(
-                    f"Message-ID {message_id!r} not found in mailbox "
-                    f"{mailbox!r} on {self._host}."
+                    f"Message-ID {message_id!r} not found in mailbox {mailbox!r} on {self._host}."
                 )
             fetched = client.fetch(uids[:1], [_peek(b"BODY[]")])
             entry = next(iter(fetched.values()))
@@ -1669,16 +1631,13 @@ class ImapConnector:
             uids = client.search(["HEADER", "Message-ID", bracketed])
             if not uids:
                 raise MailMessageNotFoundError(
-                    f"Message-ID {message_id!r} not found in mailbox "
-                    f"{mailbox!r} on {self._host}."
+                    f"Message-ID {message_id!r} not found in mailbox {mailbox!r} on {self._host}."
                 )
 
             uid = uids[0]
             fetched = client.fetch([uid], [b"BODYSTRUCTURE"])
             entry = fetched.get(uid)
-            infos = _bodystructure_attachment_infos(
-                entry.get(b"BODYSTRUCTURE") if entry else None
-            )
+            infos = _bodystructure_attachment_infos(entry.get(b"BODYSTRUCTURE") if entry else None)
             if not 0 <= attachment_index < len(infos):
                 raise MailAttachmentIndexError(
                     f"attachment_index {attachment_index} out of range: "
@@ -1735,12 +1694,10 @@ class ImapConnector:
                 if wanted == 0:
                     payload = b""
                 else:
-                    transfer_start, transfer_count, decoded_skip = (
-                        _base64_transfer_window(
-                            decoded_offset=offset,
-                            decoded_count=wanted,
-                            encoded_size=encoded_size,
-                        )
+                    transfer_start, transfer_count, decoded_skip = _base64_transfer_window(
+                        decoded_offset=offset,
+                        decoded_count=wanted,
+                        encoded_size=encoded_size,
                     )
                     encoded_payload = fetch_encoded(
                         _section_fetch_key(
@@ -1753,15 +1710,9 @@ class ImapConnector:
                     payload = decoded[decoded_skip : decoded_skip + wanted]
                     if len(payload) < wanted:
                         full_payload, total_size = fetch_full_decoded()
-                        end = _range_end(
-                            total_size, offset=offset, max_bytes=max_bytes
-                        )
+                        end = _range_end(total_size, offset=offset, max_bytes=max_bytes)
                         payload = full_payload[offset:end]
-            elif (
-                requested_range
-                and enc in {"", "7bit", "8bit", "binary"}
-                and size_hint > 0
-            ):
+            elif requested_range and enc in {"", "7bit", "8bit", "binary"} and size_hint > 0:
                 total_size = size_hint
                 end = _range_end(total_size, offset=offset, max_bytes=max_bytes)
                 wanted = end - offset
@@ -1848,15 +1799,12 @@ class ImapConnector:
             uids = client.search(["HEADER", "Message-ID", bracketed])
             if not uids:
                 raise MailMessageNotFoundError(
-                    f"Message-ID {message_id!r} not found in mailbox "
-                    f"{mailbox!r} on {self._host}."
+                    f"Message-ID {message_id!r} not found in mailbox {mailbox!r} on {self._host}."
                 )
 
             fetched = client.fetch(uids[:1], [b"BODYSTRUCTURE"])
             entry = next(iter(fetched.values()))
-            return _bodystructure_extract_attachments(
-                entry.get(b"BODYSTRUCTURE")
-            )
+            return _bodystructure_extract_attachments(entry.get(b"BODYSTRUCTURE"))
 
     def locate_message(self, message_id: str) -> dict[str, Any] | None:
         """Locate an RFC 5322 Message-ID and return where and *when* it is.
@@ -1890,9 +1838,7 @@ class ImapConnector:
                     client.select_folder(folder, readonly=True)
                     uids = client.search(["HEADER", "Message-ID", bracketed])
                 except IMAPClientError as exc:
-                    logger.debug(
-                        "locate_message: skipping %s (%s)", folder, exc
-                    )
+                    logger.debug("locate_message: skipping %s (%s)", folder, exc)
                     continue
                 if not uids:
                     continue
@@ -1938,9 +1884,7 @@ class ImapConnector:
                     client.select_folder(folder, readonly=True)
                     uids = client.search(["HEADER", "Message-ID", bracketed])
                 except IMAPClientError as exc:
-                    logger.debug(
-                        "resolve_anchor: skipping %s (%s)", folder, exc
-                    )
+                    logger.debug("resolve_anchor: skipping %s (%s)", folder, exc)
                     continue
                 if not uids:
                     continue
@@ -1949,8 +1893,7 @@ class ImapConnector:
                         [uids[0]],
                         [
                             b"ENVELOPE",
-                            b"BODY.PEEK[HEADER.FIELDS "
-                            b"(REFERENCES IN-REPLY-TO)]",
+                            b"BODY.PEEK[HEADER.FIELDS (REFERENCES IN-REPLY-TO)]",
                         ],
                     )
                 except IMAPClientError:
@@ -2033,16 +1976,13 @@ class ImapConnector:
                     return tier1
 
                 # Tier 1.5: Gmail X-GM-THRID per-mailbox (when All Mail hidden)
-                tier_1_5 = self._thread_via_xgm_per_mailbox(
-                    client, anchor_rfc_message_id
-                )
+                tier_1_5 = self._thread_via_xgm_per_mailbox(client, anchor_rfc_message_id)
                 if tier_1_5 is not None:
                     return tier_1_5
 
             # Tier 2: RFC 5256 THREAD (Fastmail, Dovecot)
-            if (
-                self._has_capability(client, b"THREAD=REFERENCES")
-                or self._has_capability(client, b"THREAD=REFS")
+            if self._has_capability(client, b"THREAD=REFERENCES") or self._has_capability(
+                client, b"THREAD=REFS"
             ):
                 tier2 = self._thread_via_imap_thread(
                     client, anchor_rfc_message_id, anchor_references
@@ -2052,7 +1992,9 @@ class ImapConnector:
 
             # Tier 3: header-search BFS — universal fallback.
             return self._find_thread_members_bfs(
-                client, anchor_rfc_message_id, anchor_references,
+                client,
+                anchor_rfc_message_id,
+                anchor_references,
             )
 
     def delete_mailbox(self, name: str, *, allow_non_empty: bool = False) -> int:
@@ -2195,9 +2137,7 @@ class ImapConnector:
         _reject_control_chars(staging_path, "staging_path")
         with self._session() as client:
             present, delimiter, prefix = self._folder_layout(client)
-            source = name if name in present else _to_server_folder_name(
-                name, delimiter, prefix
-            )
+            source = name if name in present else _to_server_folder_name(name, delimiter, prefix)
             if source not in present:
                 raise MailMailboxNotFoundError(f"mailbox {name!r} not found")
             staging = _to_server_folder_name(staging_path, delimiter, prefix)
@@ -2236,7 +2176,7 @@ class ImapConnector:
         uids: list[int] = []
         seen: set[int] = set()
         for i in range(0, len(message_ids), _MSGID_SEARCH_CHUNK):
-            chunk = message_ids[i:i + _MSGID_SEARCH_CHUNK]
+            chunk = message_ids[i : i + _MSGID_SEARCH_CHUNK]
             for uid in client.search(_or_message_id_criteria(chunk)):
                 if uid not in seen:
                     seen.add(uid)
@@ -2353,9 +2293,7 @@ class ImapConnector:
         ``raw_message`` via :func:`apple_mail_fast_mcp.draft_builder.build_draft_mime`.
         """
         with self._session() as client:
-            folder = self._find_drafts_folder(
-                client
-            ) or self._find_drafts_by_convention(client)
+            folder = self._find_drafts_folder(client) or self._find_drafts_by_convention(client)
             if folder is None:
                 raise MailMessageNotFoundError(
                     f"No Drafts folder found on {self._host} "
@@ -2391,9 +2329,7 @@ class ImapConnector:
                 return candidate
         return None
 
-    def append_sent_copy(
-        self, raw_message: bytes, *, answered: bool = False
-    ) -> str:
+    def append_sent_copy(self, raw_message: bytes, *, answered: bool = False) -> str:
         """APPEND a copy of an already-sent message to the Sent folder.
 
         Restores the Sent-mailbox copy that the SMTP send path (#322)
@@ -2433,9 +2369,7 @@ class ImapConnector:
         if answered:
             flags.append(_FLAG_ANSWERED)
         with self._session() as client:
-            folder = self._find_sent_folder(
-                client
-            ) or self._find_sent_by_convention(client)
+            folder = self._find_sent_folder(client) or self._find_sent_by_convention(client)
             if folder is None:
                 raise MailMessageNotFoundError(
                     f"No Sent folder found on {self._host} "
@@ -2690,9 +2624,7 @@ class ImapConnector:
                 return cast(str, name)
         return None
 
-    def _find_trash_by_convention(
-        self, client: IMAPClient
-    ) -> str | None:
+    def _find_trash_by_convention(self, client: IMAPClient) -> str | None:
         """Fall back to a hard-coded list of conventional Trash names
         for servers that don't advertise SPECIAL-USE ``\\Trash`` (#150).
         Scans the folder listing once and returns the first conventional
@@ -2734,9 +2666,7 @@ class ImapConnector:
             if clean_msgid in collected:
                 continue
             fetch_flags = tuple(fetch_entry.get(b"FLAGS", ()) or ())
-            collected[clean_msgid] = _envelope_to_dict(
-                envelope, fetch_flags
-            )
+            collected[clean_msgid] = _envelope_to_dict(envelope, fetch_flags)
 
     def _thread_via_xgm_thrid(
         self,
@@ -2865,16 +2795,17 @@ class ImapConnector:
             except IMAPClientError as exc:
                 logger.debug(
                     "Tier 1.5: skipping mailbox %s (SELECT rejected): %s",
-                    folder_name, exc,
+                    folder_name,
+                    exc,
                 )
                 continue
             try:
                 uids = client.search(["X-GM-THRID", thrid_str])
             except IMAPClientError as exc:
                 logger.debug(
-                    "Tier 1.5: skipping mailbox %s (X-GM-THRID search "
-                    "rejected): %s",
-                    folder_name, exc,
+                    "Tier 1.5: skipping mailbox %s (X-GM-THRID search rejected): %s",
+                    folder_name,
+                    exc,
                 )
                 continue
             if not uids:
@@ -2890,9 +2821,7 @@ class ImapConnector:
             key=lambda m: m.get("date_received") or "",
         )
 
-    def _anchor_lookup_folders(
-        self, client: IMAPClient
-    ) -> Iterator[str]:
+    def _anchor_lookup_folders(self, client: IMAPClient) -> Iterator[str]:
         """Yield folder names to try in order when looking up the
         anchor's UID for Tier 1.5: INBOX first, then ``\\Sent`` (if
         distinct). Covers ~95% of cases per #125."""
@@ -2941,17 +2870,14 @@ class ImapConnector:
             except IMAPClientError as exc:
                 logger.debug(
                     "Tier 2: skipping mailbox %s (SELECT rejected): %s",
-                    folder_name, exc,
+                    folder_name,
+                    exc,
                 )
                 continue
             # Narrow-search: anchor UID + sibling-replies in this mailbox.
             try:
-                anchor_uids = client.search(
-                    ["HEADER", "Message-ID", bracketed]
-                )
-                ref_uids = client.search(
-                    ["HEADER", "References", bracketed]
-                )
+                anchor_uids = client.search(["HEADER", "Message-ID", bracketed])
+                ref_uids = client.search(["HEADER", "References", bracketed])
             except IMAPClientError:
                 continue
             relevant_uids = set(anchor_uids) | set(ref_uids)
@@ -2959,14 +2885,12 @@ class ImapConnector:
                 continue
             # Run THREAD; walk tree for clusters intersecting relevant_uids.
             try:
-                tree = client.thread(
-                    algorithm=algo, criteria="ALL", charset="UTF-8"
-                )
+                tree = client.thread(algorithm=algo, criteria="ALL", charset="UTF-8")
             except IMAPClientError as exc:
                 logger.debug(
-                    "Tier 2: THREAD rejected on mailbox %s: %s. "
-                    "Falling through to Tier 3.",
-                    folder_name, exc,
+                    "Tier 2: THREAD rejected on mailbox %s: %s. Falling through to Tier 3.",
+                    folder_name,
+                    exc,
                 )
                 # Mid-flight rejection — fall through to Tier 3 BFS,
                 # which produces a *complete* thread by re-walking via
@@ -2998,9 +2922,7 @@ class ImapConnector:
             if not cluster_uids:
                 continue
             try:
-                fetched = client.fetch(
-                    sorted(cluster_uids), [b"ENVELOPE", b"FLAGS"]
-                )
+                fetched = client.fetch(sorted(cluster_uids), [b"ENVELOPE", b"FLAGS"])
             except IMAPClientError:
                 continue
             self._merge_envelope_fetch_into(fetched, collected)
@@ -3057,7 +2979,8 @@ class ImapConnector:
                 # them silently.
                 logger.debug(
                     "find_thread_members: skipping mailbox %s: %s",
-                    mailbox_name, exc,
+                    mailbox_name,
+                    exc,
                 )
                 continue
 
@@ -3072,9 +2995,11 @@ class ImapConnector:
                         uids = client.search(["HEADER", header, id_quoted])
                     except IMAPClientError as exc:
                         logger.debug(
-                            "find_thread_members: search failed in %s for "
-                            "%s=%s: %s",
-                            mailbox_name, header, id_quoted, exc,
+                            "find_thread_members: search failed in %s for %s=%s: %s",
+                            mailbox_name,
+                            header,
+                            id_quoted,
+                            exc,
                         )
                         continue
                     uids_found.update(uids)
@@ -3082,9 +3007,7 @@ class ImapConnector:
             if not uids_found:
                 continue
 
-            fetched = client.fetch(
-                list(uids_found), [b"ENVELOPE", b"FLAGS"]
-            )
+            fetched = client.fetch(list(uids_found), [b"ENVELOPE", b"FLAGS"])
             for fetch_entry in fetched.values():
                 envelope = fetch_entry.get(b"ENVELOPE")
                 if envelope is None:

@@ -46,9 +46,7 @@ class TestConstructor:
 
 class TestStartTls:
     @patch("apple_mail_fast_mcp.smtp_sender.smtplib.SMTP")
-    def test_port_587_uses_starttls_then_login_and_send(
-        self, mock_smtp: MagicMock
-    ) -> None:
+    def test_port_587_uses_starttls_then_login_and_send(self, mock_smtp: MagicMock) -> None:
         client = mock_smtp.return_value.__enter__.return_value
         sender = SmtpSender("smtp.example.com", 587, "u@example.com", "pw")
 
@@ -84,9 +82,7 @@ class TestStartTls:
         assert kwargs["to_addrs"] == recipients
 
     @patch("apple_mail_fast_mcp.smtp_sender.smtplib.SMTP")
-    def test_envelope_from_strips_display_name(
-        self, mock_smtp: MagicMock
-    ) -> None:
+    def test_envelope_from_strips_display_name(self, mock_smtp: MagicMock) -> None:
         """A ``Display Name <addr>`` From header yields the bare address for
         the envelope (``_resolve_account_to_sender`` may return that form)."""
         client = mock_smtp.return_value.__enter__.return_value
@@ -102,9 +98,7 @@ class TestStartTls:
         assert client.send_message.call_args.kwargs["from_addr"] == "fred@example.com"
 
     @patch("apple_mail_fast_mcp.smtp_sender.smtplib.SMTP")
-    def test_explicit_envelope_from_overrides_header(
-        self, mock_smtp: MagicMock
-    ) -> None:
+    def test_explicit_envelope_from_overrides_header(self, mock_smtp: MagicMock) -> None:
         """An explicit ``envelope_from`` wins over the ``From:`` header."""
         client = mock_smtp.return_value.__enter__.return_value
         sender = SmtpSender("smtp.example.com", 587, "u@example.com", "pw")
@@ -125,9 +119,7 @@ class TestStartTls:
             sender.send(b"To: a@example.net\r\nSubject: x\r\n\r\nx", ["a@example.net"])
 
     @patch("apple_mail_fast_mcp.smtp_sender.smtplib.SMTP")
-    def test_bcc_header_stripped_from_wire_message(
-        self, mock_smtp: MagicMock
-    ) -> None:
+    def test_bcc_header_stripped_from_wire_message(self, mock_smtp: MagicMock) -> None:
         client = mock_smtp.return_value.__enter__.return_value
         sender = SmtpSender("smtp.example.com", 587, "u@example.com", "pw")
 
@@ -142,9 +134,7 @@ class TestStartTls:
 class TestSsl:
     @patch("apple_mail_fast_mcp.smtp_sender.smtplib.SMTP_SSL")
     @patch("apple_mail_fast_mcp.smtp_sender.smtplib.SMTP")
-    def test_port_465_uses_ssl_no_starttls(
-        self, mock_smtp: MagicMock, mock_ssl: MagicMock
-    ) -> None:
+    def test_port_465_uses_ssl_no_starttls(self, mock_smtp: MagicMock, mock_ssl: MagicMock) -> None:
         client = mock_ssl.return_value.__enter__.return_value
         sender = SmtpSender("smtp.example.com", 465, "u@example.com", "pw")
 
@@ -186,9 +176,7 @@ class TestTeardownAfterAccept:
     send a duplicate. Failures *before* acceptance must still propagate."""
 
     @patch("apple_mail_fast_mcp.smtp_sender.smtplib.SMTP")
-    def test_non_221_quit_after_accept_is_swallowed(
-        self, mock_smtp: MagicMock
-    ) -> None:
+    def test_non_221_quit_after_accept_is_swallowed(self, mock_smtp: MagicMock) -> None:
         """DATA→250 then a non-221 QUIT: ``send`` returns normally (no
         exception surfaces), so the caller never retries via AppleScript."""
         client = mock_smtp.return_value.__enter__.return_value
@@ -221,9 +209,7 @@ class TestTeardownAfterAccept:
         client.send_message.assert_called_once()
 
     @patch("apple_mail_fast_mcp.smtp_sender.smtplib.SMTP")
-    def test_send_message_failure_before_accept_propagates(
-        self, mock_smtp: MagicMock
-    ) -> None:
+    def test_send_message_failure_before_accept_propagates(self, mock_smtp: MagicMock) -> None:
         """A pre-acceptance failure (DATA rejected) must propagate so the
         caller can fall back to AppleScript — the message was never sent."""
         client = mock_smtp.return_value.__enter__.return_value
@@ -236,14 +222,10 @@ class TestTeardownAfterAccept:
             sender.send(_raw_with_bcc(), ["alice@example.net"])
 
     @patch("apple_mail_fast_mcp.smtp_sender.smtplib.SMTP")
-    def test_auth_failure_before_accept_propagates(
-        self, mock_smtp: MagicMock
-    ) -> None:
+    def test_auth_failure_before_accept_propagates(self, mock_smtp: MagicMock) -> None:
         """An AUTH failure is pre-acceptance and must propagate."""
         client = mock_smtp.return_value.__enter__.return_value
-        client.login.side_effect = smtplib.SMTPAuthenticationError(
-            535, b"bad creds"
-        )
+        client.login.side_effect = smtplib.SMTPAuthenticationError(535, b"bad creds")
         sender = SmtpSender("smtp.example.com", 587, "u@example.com", "pw")
 
         with pytest.raises(smtplib.SMTPException):

@@ -92,9 +92,7 @@ class TestOperationTimeout:
             pass
 
         # Connect uses the short timeout...
-        mock_cls.assert_called_once_with(
-            "h", port=993, ssl=True, timeout=CONNECT_TIMEOUT_S
-        )
+        mock_cls.assert_called_once_with("h", port=993, ssl=True, timeout=CONNECT_TIMEOUT_S)
         # ...and after login the socket is raised to the operation timeout.
         client.login.assert_called_once_with("u@e.com", "pw")
         client.socket().settimeout.assert_called_once_with(OPERATION_TIMEOUT_S)
@@ -162,7 +160,8 @@ class TestOperationTimeout:
 class TestIdleReconnect:
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_stale_entry_is_dropped_and_reopened(
-        self, mock_cls: MagicMock,
+        self,
+        mock_cls: MagicMock,
         short_idle_pool: ImapConnectionPool,
     ) -> None:
         """If `now - last_used > idle_timeout`, the next session() call
@@ -187,7 +186,8 @@ class TestIdleReconnect:
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
     def test_within_idle_window_reuses(
-        self, mock_cls: MagicMock,
+        self,
+        mock_cls: MagicMock,
         pool: ImapConnectionPool,
     ) -> None:
         """The default 270s window comfortably covers any tight burst of
@@ -210,9 +210,7 @@ class TestIdleReconnect:
 
 class TestErrorInvalidation:
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
-    def test_login_error_drops_entry(
-        self, mock_cls: MagicMock, pool: ImapConnectionPool
-    ) -> None:
+    def test_login_error_drops_entry(self, mock_cls: MagicMock, pool: ImapConnectionPool) -> None:
         """A LoginError raised inside the session block (e.g. server
         decided mid-session our auth is no longer valid) drops the
         cached entry. The exception still propagates so the orchestrator
@@ -250,9 +248,7 @@ class TestErrorInvalidation:
         assert mock_cls.call_count == 2
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
-    def test_oserror_drops_entry(
-        self, mock_cls: MagicMock, pool: ImapConnectionPool
-    ) -> None:
+    def test_oserror_drops_entry(self, mock_cls: MagicMock, pool: ImapConnectionPool) -> None:
         """Network drop mid-session (broken pipe, conn reset). Pool must
         invalidate so the next call reconnects rather than blindly
         reusing a dead socket."""
@@ -406,9 +402,7 @@ class TestPerConnectionLocking:
         ta.join(timeout=2)
         tb.join(timeout=2)
 
-        assert both_inside_now or both_were_inside.is_set(), (
-            "Different keys must run in parallel"
-        )
+        assert both_inside_now or both_were_inside.is_set(), "Different keys must run in parallel"
 
 
 # ---------------------------------------------------------------------------
@@ -452,9 +446,7 @@ class TestClose:
 
         clients[1].logout.assert_called_once()
 
-    def test_close_is_idempotent(
-        self, pool: ImapConnectionPool
-    ) -> None:
+    def test_close_is_idempotent(self, pool: ImapConnectionPool) -> None:
         pool.close()
         pool.close()  # second call must not raise on empty cache
 
@@ -528,9 +520,7 @@ class TestClose:
 
 class TestImapConnectorWithPool:
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
-    def test_no_pool_keeps_per_call_lifecycle(
-        self, mock_cls: MagicMock
-    ) -> None:
+    def test_no_pool_keeps_per_call_lifecycle(self, mock_cls: MagicMock) -> None:
         """Default behavior (pool=None) is unchanged: open + login +
         op + logout per call. This is what existing tests rely on."""
         client = MagicMock()
@@ -547,9 +537,7 @@ class TestImapConnectorWithPool:
         assert client.logout.call_count == 2
 
     @patch("apple_mail_fast_mcp.imap_connector.IMAPClient")
-    def test_with_pool_amortizes_login_across_calls(
-        self, mock_cls: MagicMock
-    ) -> None:
+    def test_with_pool_amortizes_login_across_calls(self, mock_cls: MagicMock) -> None:
         """The headline win: with a pool, two consecutive calls share
         one login + one logout (zero, technically — pool keeps it open
         for reuse). This test exercises the same observable change end-
