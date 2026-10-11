@@ -65,7 +65,7 @@ make test-integration  # Real Mail.app tests
 
 - **Type annotations** on all functions (mypy strict mode)
 - **Docstrings** on all public functions (Args, Returns, Raises)
-- **ruff** for linting and formatting (line length: 100)
+- **ruff** for linting and formatting (line length: 100) — `make lint` fails on unformatted code; run `make format` before pushing
 - **Structured responses**: `{"success": bool, "error": str, "error_type": str}`
 - **Security checklist** for every new feature (see [`docs/guides/SECURITY_CHECKLIST.md`](docs/guides/SECURITY_CHECKLIST.md))
 - **Cyclomatic complexity** ceiling of CC ≤ 20 per function (see [`docs/guides/COMPLEXITY.md`](docs/guides/COMPLEXITY.md))

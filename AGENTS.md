@@ -28,7 +28,7 @@ make install-tool          # Install the CLI from this checkout, pinned to uv.lo
 make test                  # Unit tests (~1s, mocked AppleScript)
 make test-integration      # Real Mail.app tests (requires test account)
 make test-e2e              # End-to-end MCP tool tests
-make lint                  # Ruff linting
+make lint                  # Ruff linting + format check
 make format                # Ruff formatting
 make typecheck             # Mypy strict mode
 make check-all             # All checks (lint, typecheck, test, complexity, version-sync, parity)
